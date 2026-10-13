@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: artex
+resources:
+  - ../k8s
+
+# 复制本目录到 deploy/private 后填写实际镜像；生产环境建议用 digest 固定版本。
+images:
+  - name: registry.example.com/project/artex
+    newName: registry.example.com/project/artex
+    newTag: latest
+  - name: postgres
+    newName: postgres
+    newTag: 16-alpine
+
+# 两个卷都必须使用集群共享存储；应用卷要求 RWX。
+patches:
+  - target:
+      kind: PersistentVolumeClaim
+      name: artex-data-shared
+    patch: |-
+      - op: replace
+        path: /spec/storageClassName
+        value: shared-storage
+  - target:
+      kind: StatefulSet
+      name: postgres
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: shared-storage

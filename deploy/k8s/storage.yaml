@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: artex-data-shared
+spec:
+  # 在私有覆盖文件中指定支持 RWX 的集群共享存储类。
+  accessModes: [ReadWriteMany]
+  storageClassName: shared-storage
+  resources:
+    requests:
+      storage: 10Gi

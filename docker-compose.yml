@@ -18,10 +18,12 @@ services:
     # 镜像源由本仓库自维护（原 autumn27/artex 已从 Docker Hub 删除）。
     # 正常部署直接拉取本镜像；拉取失败（或想改代码）时本地构建：
     #   docker compose build
-    image: mianhuatang11/artex:${ARTEX_TAG:-latest}
+    image: ${ARTEX_IMAGE:-mianhuatang11/artex}:${ARTEX_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        ARTEX_BUILD_VERSION: ${ARTEX_TAG:-dev}
     depends_on:
       postgres:
         condition: service_healthy

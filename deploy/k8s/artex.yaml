@@ -1,0 +1,136 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: artex
+  labels:
+    app.kubernetes.io/name: artex
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: artex
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: artex
+  labels:
+    app.kubernetes.io/name: artex
+spec:
+  replicas: 1
+  # 单实例调度器和 SQLite 数据目录在更新时保持单个写入进程。
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: artex
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: artex
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      imagePullSecrets:
+        - name: registry-pull
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command: [sh, -ec]
+          args:
+            - until pg_isready -h postgres -U artex -d artex; do sleep 2; done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+        - name: seed-skills
+          image: registry.example.com/project/artex:latest
+          command: [sh, -ec]
+          args:
+            - mkdir -p /data/skills; cp -an /app/skills/. /data/skills/
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: artex
+          image: registry.example.com/project/artex:latest
+          imagePullPolicy: IfNotPresent
+          args: [-addr, ":8787", -proxy, ":8788"]
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: artex-postgres
+                  key: password
+            - name: ARTEX_PG_DSN
+              value: postgres://artex:$(POSTGRES_PASSWORD)@postgres:5432/artex?sslmode=disable
+            - name: ARTEX_SKILL_DIR
+              value: /app/data/skills
+          ports:
+            - name: http
+              containerPort: 8787
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /api/auth/status
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: jwt-key
+              mountPath: /app/jwt.key
+              subPath: jwt.key
+              readOnly: true
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: artex-data-shared
+        - name: jwt-key
+          secret:
+            secretName: artex-auth
+            defaultMode: 0400
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi
+      terminationGracePeriodSeconds: 60

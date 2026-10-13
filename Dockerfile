@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# ARTEX container image.
 #
 # 多阶段构建：前端静态导出 → Go 单二进制（内嵌前端）→ 运行镜像。
 # 原 Docker Hub 镜像源（autumn27/artex）已失效，本仓库自此支持从纯源码自助构建：
@@ -10,7 +10,7 @@
 #   --build-arg NPM_REGISTRY=https://registry.npmmirror.com
 
 ########## 阶段 1：前端静态导出 ##########
-FROM node:20-bookworm AS web
+FROM node:22-alpine AS web
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 WORKDIR /web
 # --ignore-scripts：跳过 prepare(husky)——容器里没有 .git，husky 会失败；
@@ -18,32 +18,42 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm config set registry "$NPM_REGISTRY" && npm ci --ignore-scripts
 COPY web/ ./
-RUN NEXT_EXPORT=1 npm run build:static
+RUN npm run build:static
 
 ########## 阶段 2：Go 后端（内嵌前端，静态编译）##########
-FROM golang:1.26-bookworm AS gobuild
+FROM golang:1.26-alpine AS gobuild
 ARG TARGETARCH
+ARG ARTEX_BUILD_VERSION=dev
 ARG GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct
 WORKDIR /src
 COPY go.mod go.sum ./
+# go.mod 将 norma 替换为本地模块；下载依赖前必须先提供它的模块声明。
+COPY norma/go.mod norma/go.sum ./norma/
 RUN go mod download
 COPY . .
 # 前端静态产物从 web 阶段拷入（.dockerignore 已排除宿主 dist，不会冲突）
 COPY --from=web /web/out/ server/webui/dist/
-RUN CGO_ENABLED=0 GOARCH="${TARGETARCH}" go build -tags embedui -trimpath -o /out/artex ./cmd/artex
+RUN CGO_ENABLED=0 GOARCH="${TARGETARCH}" go build -tags embedui -trimpath \
+    -ldflags "-s -w -buildid= -X main.version=${ARTEX_BUILD_VERSION}" \
+    -o /out/artex ./cmd/artex
 
 ########## 阶段 3：运行镜像（同原版：工具 + Playwright 预装）##########
 FROM python:3.12-slim-bookworm
+ARG ARTEX_BUILD_VERSION=dev
+ARG VCS_REF
 ARG NPM_REGISTRY=https://registry.npmmirror.com
+LABEL org.opencontainers.image.title="ARTEX" \
+      org.opencontainers.image.version="$ARTEX_BUILD_VERSION" \
+      org.opencontainers.image.revision="$VCS_REF"
 # 运行层的全局 npm 装包与 chromium 下载同样走国内源（对全球网络同样可达）
 ENV npm_config_registry=$NPM_REGISTRY \
     PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
 # 常用工具：ripgrep / curl / vim，加一批 recon 常备件（按需增删）。
-# Node 从 NodeSource 装 20.x：bookworm 自带的 apt nodejs 是 18，Playwright 要求 >=20。
+# Node 从 NodeSource 装 22.x，与前端构建及发布工作流保持一致。
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates ripgrep curl wget vim git jq unzip \
       dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 # 预装 Playwright MCP 与 CLI（全局），运行时不再 npx 联网下载。

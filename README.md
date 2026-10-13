@@ -99,6 +99,16 @@ docker compose up -d          # 拉取 mianhuatang11/artex 镜像 + postgres
 
 镜像已含常用工具（ripgrep/curl/vim/npm/nmap…）；`./skills` 与 `./data` 以绑定挂载持久化。
 
+使用自建镜像仓库时，在 `.env` 中设置镜像路径和版本，例如：
+
+```dotenv
+ARTEX_IMAGE=registry.example.com/project/artex
+ARTEX_TAG=latest
+```
+
+将 `registry.example.com/project/artex` 替换为自己的镜像路径。私有仓库先执行 `docker login registry.example.com`，再执行 `docker compose pull && docker compose up -d`。实际配置只写入已被 Git 忽略的 `.env`。
+本地构建可通过 `--build-arg ARTEX_BUILD_VERSION=<版本>` 写入程序版本号。
+
 远程 MCP 可在系统设置中选择 `http`（Streamable HTTP）或 `sse`（旧版 SSE）。
 旧版 SSE 服务通常使用 `GET /sse` 建立事件流，再通过服务返回的
 `/message?sessionId=...` 接收 JSON-RPC 请求；配置时将 URL 填为 `/sse`，请求头按
@@ -143,6 +153,31 @@ UPX 自解压二进制可能与部分 Linux 内核、虚拟化环境或安全策
 ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 ./build.sh --target linux/amd64 --upx
 ```
+
+### 方式六：k3s / Kubernetes
+
+`deploy/k8s` 提供 ARTEX 单实例、PostgreSQL 16 和 LoadBalancer 的通用部署清单。应用数据与数据库各申请 10Gi 的集群共享存储；应用卷要求 RWX。自定义技能保存在应用卷，JWT 签名密钥保存在 Secret，Pod 重建后会继续使用。
+
+镜像地址 `registry.example.com/project/artex` 与存储类 `shared-storage` 是占位符，部署前必须配置。复制 `deploy/overlay.example` 到 `deploy/private`，在覆盖文件中填写自己的镜像路径、版本或摘要，以及支持 RWX 的集群共享存储类。数据库也使用共享存储，不要选用 `local-path` 等节点本地存储。`deploy/private` 已被 Git 和 Docker 构建上下文忽略，不应强制提交。
+
+先创建 `artex` 命名空间，并在该命名空间准备以下 Secret：
+
+| Secret | 必需字段 | 用途 |
+| --- | --- | --- |
+| `registry-pull` | `.dockerconfigjson` | 私有镜像仓库拉取凭据，类型为 `kubernetes.io/dockerconfigjson` |
+| `artex-postgres` | `password` | 数据库密码，使用随机十六进制字符串 |
+| `artex-auth` | `jwt.key` | 至少 32 字符的随机 JWT 签名密钥 |
+
+```bash
+cp -r deploy/overlay.example deploy/private
+# 编辑 deploy/private/kustomization.yaml，填写镜像与共享存储类
+kubectl apply -f deploy/k8s/namespace.yaml
+# 准备上述 Secret 后部署
+kubectl apply -k deploy/private
+kubectl -n artex get pods,pvc,service
+```
+
+访问 `artex` Service 分配的 LoadBalancer 地址，首次进入 `/setup/` 设置管理员密码，然后在「系统 → LLM 配置」添加并激活模型。升级时修改私有覆盖文件中的 ARTEX 镜像版本或摘要后重新应用；Deployment 使用 `Recreate`，保持单个调度进程。Secret 通过集群单独创建，不要把凭据写进部署清单。
 
 ---
 
