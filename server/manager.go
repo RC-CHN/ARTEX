@@ -19,8 +19,8 @@ import (
 	"github.com/RC-CHN/ARTEX/enrich"
 	"github.com/RC-CHN/ARTEX/guard"
 	"github.com/RC-CHN/ARTEX/intercept"
-	"github.com/RC-CHN/ARTEX/traffic"
 	actool "github.com/RC-CHN/ARTEX/norma/tool"
+	"github.com/RC-CHN/ARTEX/traffic"
 )
 
 // Task is one engagement: a description + goal + its own exploration store,
@@ -319,8 +319,8 @@ func (m *Manager) SetConcurrency(enabled bool, limit int) error {
 	return m.pg.SetSetting(settingConcurrencyOn, strconv.FormatBool(enabled))
 }
 
-// Workers returns the configured concurrent work-agent count (default 3). Read
-// per-task at engine.Run, so a change applies to tasks started afterwards.
+// Workers returns the concurrent work-agent count (default 3). The settings API
+// reconciles live task pools after persistence; reductions drain naturally.
 func (m *Manager) Workers() int {
 	v, ok, err := m.pg.GetSetting(settingWorkers)
 	if err != nil || !ok {

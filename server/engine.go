@@ -157,6 +157,7 @@ type Engine struct {
 }
 
 type taskRuntime struct {
+	pool   *workerPool
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -770,15 +771,17 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 		t.Notify() // already running — just nudge a planning round
 		return
 	}
-	workers := e.m.Workers()
-	rt := e.registerTaskRoutines(ctx, t.ID, 1+workers)
+	rt := e.registerTaskRoutines(ctx, t.ID, 2)
+	e.runtimeMu.Lock()
+	pool := newWorkerPool(rt.ctx, e.m.Workers(), func(loopCtx context.Context, i int, pool *workerPool) {
+		e.workerLoop(loopCtx, t, fmt.Sprintf("work#%d", i+1), pool, i)
+	})
+	rt.pool = pool
+	e.runtimeMu.Unlock()
 	e.deleteMu.RUnlock()
 	e.touch(t.ID)
 	runTaskRoutine(rt, func(loopCtx context.Context) { e.plannerLoop(loopCtx, t) })
-	for i := 0; i < workers; i++ {
-		name := fmt.Sprintf("work#%d", i+1)
-		runTaskRoutine(rt, func(loopCtx context.Context) { e.workerLoop(loopCtx, t, name) })
-	}
+	runTaskRoutine(rt, func(loopCtx context.Context) { <-loopCtx.Done(); pool.Close() })
 	e.startDeadlineCoordinator(ctx, t) // 任务级超时定时器(仅 timeout>0;去重)
 	// 仅在「完全没有活动意图(open+running)」时才 kick 首轮规划。带种子意图的任务:种子已
 	// 是 open,或已被上面刚起的 worker 抢先 claim 成 running——两种都算「有活干」,一律跳过
@@ -927,8 +930,11 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 	}
 }
 
-func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
+func (e *Engine) workerLoop(ctx context.Context, t *Task, name string, pool *workerPool, index int) {
 	for {
+		if !pool.allowed(index) {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -962,11 +968,21 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 			}
 			continue // 任务已终态(done/failed/timeout):停止领取遗留意图,别在完成后空跑 frontier
 		}
+		if !pool.begin(index) {
+			if sleepCtx(ctx, 100*time.Millisecond) {
+				return
+			}
+			continue
+		}
 		if !e.beginTaskOperation(t.ID) {
+			pool.end()
 			return
 		}
-		claimed := e.runWorkerStep(ctx, t, name, worker)
-		e.decInflight(t.ID)
+		claimed := func() bool {
+			defer pool.end()
+			defer e.decInflight(t.ID)
+			return e.runWorkerStep(ctx, t, name, worker)
+		}()
 		if !claimed && sleepCtx(ctx, 800*time.Millisecond) {
 			return
 		}

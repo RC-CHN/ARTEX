@@ -1124,7 +1124,7 @@ function ConcurrencySettingsDialog() {
         <DialogHeader>
           <DialogTitle>任务并发限制</DialogTitle>
           <DialogDescription>
-            限制同时运行的任务数量。达到上限后，新任务会按创建顺序排队并在空位出现时自动启动。
+            可在运行中修改。提高上限立即补位启动排队任务，降低上限等待已有任务完成；新任务按创建顺序排队。
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-5 py-2">
