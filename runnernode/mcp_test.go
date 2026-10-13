@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -55,6 +54,7 @@ func TestHTTPMCPReusedWithinSessionAndClosed(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(mcpReply(req))
 	}))
 	defer server.Close()
+	defer server.CloseClientConnections()
 	spec := baseSpec(t.TempDir())
 	spec.MCPs = []runner.MCPConfig{{Name: "fixture", Transport: "http", URL: server.URL, Headers: map[string]string{"X-Test-Secret": "configured"}}}
 	s, e := OpenLocalSession(context.Background(), t.Name(), spec)
@@ -75,36 +75,55 @@ func TestHTTPMCPReusedWithinSessionAndClosed(t *testing.T) {
 		t.Fatalf("session not reused or closed: initialize=%d call=%d delete=%d", initCount.Load(), calls.Load(), closed.Load())
 	}
 }
-func TestSSEMCPAndFailedLaterMCPClosesEarlierConnection(t *testing.T) {
-	var mu sync.Mutex
-	var stream http.ResponseWriter
-	ready := make(chan struct{})
+func TestSSEMCPReusedWithinSessionAndClosed(t *testing.T) {
+	// Only the GET handler owns the stream writer. Publishing the endpoint
+	// before assigning a shared writer allowed an immediate POST to panic and
+	// strand the stream handler behind a locked mutex during server shutdown.
+	responses := make(chan []byte, 16)
 	gone := make(chan struct{})
+	fixtureCtx, stopFixture := context.WithCancel(context.Background())
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
+			defer close(gone)
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = fmt.Fprint(w, "event: endpoint\ndata: /message\n\n")
 			w.(http.Flusher).Flush()
-			mu.Lock()
-			stream = w
-			mu.Unlock()
-			close(ready)
-			<-r.Context().Done()
-			close(gone)
-			return
+			for {
+				select {
+				case b := <-responses:
+					if _, err := fmt.Fprintf(w, "event: message\ndata: %s\n\n", b); err != nil {
+						return
+					}
+					w.(http.Flusher).Flush()
+				case <-r.Context().Done():
+					return
+				case <-fixtureCtx.Done():
+					return
+				}
+			}
 		}
 		var req map[string]any
-		_ = json.NewDecoder(r.Body).Decode(&req)
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if _, ok := req["id"]; ok {
 			b, _ := json.Marshal(mcpReply(req))
-			mu.Lock()
-			_, _ = fmt.Fprintf(stream, "event: message\ndata: %s\n\n", b)
-			stream.(http.Flusher).Flush()
-			mu.Unlock()
+			select {
+			case responses <- b:
+			case <-r.Context().Done():
+				return
+			case <-fixtureCtx.Done():
+				return
+			}
 		}
 		w.WriteHeader(202)
 	}))
-	defer server.Close()
+	t.Cleanup(func() {
+		stopFixture()
+		server.CloseClientConnections()
+		server.Close()
+	})
 	spec := baseSpec(t.TempDir())
 	spec.MCPs = []runner.MCPConfig{{Name: "sse_fixture", Transport: "sse", URL: server.URL}}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -113,10 +132,12 @@ func TestSSEMCPAndFailedLaterMCPClosesEarlierConnection(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	<-ready
-	r := s.Call(ctx, runner.ToolCall{ID: "sse-call", Name: "mcp__sse_fixture__echo", Input: json.RawMessage(`{}`)})
-	if r.Error != "" || r.Result.Flatten() != "remote fixture" {
-		t.Fatalf("SSE result: %+v", r)
+	t.Cleanup(func() { _ = s.Close() })
+	for _, id := range []string{"sse-one", "sse-two"} {
+		r := s.Call(ctx, runner.ToolCall{ID: id, Name: "mcp__sse_fixture__echo", Input: json.RawMessage(`{}`)})
+		if r.Error != "" || r.Result.Flatten() != "remote fixture" {
+			t.Fatalf("SSE result: %+v", r)
+		}
 	}
 	s.Close()
 	select {
@@ -137,9 +158,11 @@ func TestCancelledMCPInitializationReturnsPromptly(t *testing.T) {
 		close(gone)
 	}))
 	defer server.Close()
+	defer server.CloseClientConnections()
 	spec := baseSpec(t.TempDir())
 	spec.MCPs = []runner.MCPConfig{{Name: "hanging", Transport: "sse", URL: server.URL}}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	result := make(chan error, 1)
 	go func() {
 		s, e := OpenLocalSession(ctx, t.Name(), spec)
@@ -148,7 +171,11 @@ func TestCancelledMCPInitializationReturnsPromptly(t *testing.T) {
 		}
 		result <- e
 	}()
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("MCP stream did not open")
+	}
 	cancel()
 	select {
 	case e := <-result:
@@ -183,6 +210,7 @@ func TestMCPFailureCleansEarlierConnections(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(mcpReply(req))
 	}))
 	defer server.Close()
+	defer server.CloseClientConnections()
 	spec := baseSpec(t.TempDir())
 	spec.MCPs = []runner.MCPConfig{{Name: "first", Transport: "http", URL: server.URL}, {Name: "invalid", Transport: "invalid"}}
 	if s, e := OpenLocalSession(context.Background(), t.Name(), spec); e == nil {
@@ -206,15 +234,22 @@ func TestSandboxInputEOFInterruptsHalfOpenMCP(t *testing.T) {
 		close(gone)
 	}))
 	defer server.Close()
+	defer server.CloseClientConnections()
 	spec := baseSpec(t.TempDir())
 	spec.MCPs = []runner.MCPConfig{{Name: "half-open", Transport: "sse", URL: server.URL}}
 	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
 	done := make(chan error, 1)
 	go func() { done <- ServeSandbox(context.Background(), reader, io.Discard) }()
 	if e := json.NewEncoder(writer).Encode(SandboxRequest{ID: "open", Method: "open", SessionID: t.Name(), Spec: &spec}); e != nil {
 		t.Fatal(e)
 	}
-	<-entered
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("MCP stream did not open")
+	}
 	writer.Close()
 	select {
 	case <-done:
