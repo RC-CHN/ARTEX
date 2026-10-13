@@ -43,7 +43,9 @@ func trafficEvidenceServer(t *testing.T) (*Server, *db.RecordedFinding, func(str
 	s := New(ctx, m, t.TempDir(), t.TempDir(), t.TempDir())
 	s.archiveWG.Wait()
 	// The archive test below replaces the cancelled service context. Wait for
-	// the side-question snapshot writer too before reusing this fixture.
+	// every startup consumer of s.ctx (GC, scheduler, notifier and discovery),
+	// as well as the side-question writer, before reusing this fixture.
+	s.backgroundWG.Wait()
 	<-s.side.done
 	token, err := signJWT(s.jwtKey)
 	if err != nil {
