@@ -14,6 +14,34 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # 实验功能：docker compose --profile runners up -d runner-manager
+  # 一个管理进程按任务创建临时容器，无需预置多个常驻 worker。
+  runner-manager:
+    profiles: [runners]
+    image: ${ARTEX_IMAGE:-ghcr.io/rc-chn/artex}:${ARTEX_TAG:-latest}
+    entrypoint: [/usr/local/bin/artex-runner]
+    command: [-config, /etc/artex-runner/runner.json, -token-file, /run/secrets/runner_enrollment]
+    depends_on:
+      artex:
+        condition: service_started
+    environment:
+      ARTEX_RUNNER_SERVER_URL: ${ARTEX_RUNNER_SERVER_URL:-http://artex:8787}
+      ARTEX_RUNNER_DOCKER_HOST_DATA_DIR: ${ARTEX_RUNNER_DATA_DIR:-/var/lib/artex-runner}
+      ARTEX_RUNNER_DOCKER_NETWORK: ${ARTEX_RUNNER_NETWORK:-artex-runners}
+      DOCKER_CONFIG: /var/lib/artex-runner/docker-config
+    networks: [runners]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:size=64m]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${ARTEX_RUNNER_DATA_DIR:-/var/lib/artex-runner}:/var/lib/artex-runner
+      - ./deploy/runner/compose.json:/etc/artex-runner/runner.json:ro
+    secrets: [runner_enrollment]
+    stop_grace_period: 45s
+    restart: unless-stopped
+
   artex:
     # 本仓库的 GitHub Actions 发布到 GHCR。
     # 正常部署直接拉取本镜像；拉取失败（或想改代码）时本地构建：
@@ -38,6 +66,7 @@ services:
     ports:
       - "8787:8787"
       - "127.0.0.1:8788:8788"
+    networks: [default, runners]
     volumes:
       # 把数据目录（含 jwt.key、流量 blob 和历史索引备份）绑定到项目根目录的 data/，
       # 方便在宿主机直接查看/备份，容器重建也不丢。
@@ -49,3 +78,11 @@ services:
 
 volumes:
   pgdata:
+
+networks:
+  runners:
+    name: ${ARTEX_RUNNER_NETWORK:-artex-runners}
+
+secrets:
+  runner_enrollment:
+    file: ${ARTEX_RUNNER_TOKEN_FILE:-./deploy/private/runner.enrollment}

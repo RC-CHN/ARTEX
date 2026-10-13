@@ -112,6 +112,8 @@ ARTEX_TAG=latest
 `/message?sessionId=...` 接收 JSON-RPC 请求；配置时将 URL 填为 `/sse`，请求头按
 `Authorization=Bearer <token>` 填写。
 
+支持默认关闭的[实验性远程 Runner](docs/experimental-runners.md)：独立 Linux 主机主动注册，一个节点承载多个隔离线程，并按 CPU、内存、GPU 和环境能力调度。统一下发 MCP 配置和任务文件，仍可选择原有本机执行。
+
 ### 方式三：下载预编译二进制（Releases）
 
 到本仓库 [Releases](https://github.com/RC-CHN/ARTEX/releases) 下载对应平台的 zip 和 `SHA256SUMS` 并核对校验和：解压后得到 `artex` + `start.sh`（Windows 为 `start.bat`）+ `skills/` + `config.example.json`：

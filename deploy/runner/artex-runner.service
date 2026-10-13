@@ -1,0 +1,23 @@
+[Unit]
+Description=ARTEX experimental execution runner
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+RequiresMountsFor=/var/lib/artex-runner
+
+[Service]
+Type=simple
+User=artex-runner
+Group=artex-runner
+SupplementaryGroups=docker
+StateDirectory=artex-runner
+StateDirectoryMode=0700
+UMask=0077
+EnvironmentFile=-/etc/artex-runner/enrollment.env
+ExecStart=/usr/local/bin/artex-runner -config /etc/artex-runner/runner.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

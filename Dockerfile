@@ -37,6 +37,8 @@ ARG ARTEX_BUILD_VERSION=dev
 RUN CGO_ENABLED=0 GOARCH="${TARGETARCH}" go build -tags embedui -trimpath \
     -ldflags "-s -w -buildid= -X main.version=${ARTEX_BUILD_VERSION}" \
     -o /out/artex ./cmd/artex
+RUN CGO_ENABLED=0 GOARCH="${TARGETARCH}" go build -trimpath \
+    -ldflags "-s -w -buildid=" -o /out/artex-runner ./cmd/artex-runner
 
 ########## 阶段 3：固定 Node 运行时（与 Python 同为 Debian Bookworm）##########
 FROM node:22.23.3-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS node-runtime
@@ -78,11 +80,32 @@ RUN node install-browsers.cjs \
     && npm_config_offline=true npx --version \
     && rm -rf /var/lib/apt/lists/*
 
+########## Runner 管理客户端：仅管理进程持有 socket/API 凭据 ##########
+FROM docker:29.1.3-cli@sha256:4fa0ee1f3a7e4354c4ea34558b6d4ee32859baf4973d4c8ccc8e7fe3dd730c04 AS runner-clients
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+      amd64) checksum=6a12d6c39e4a611a3687ee24d8c733961bb4bae1ae975f5204400c0a6930c6fc ;; \
+      arm64) checksum=6db7c5d846c3b3ddfd39f3137a93fe96af3938860eefdbf2429805ee1656e381 ;; \
+      *) exit 1 ;; \
+    esac \
+    && wget -q -T 30 -O /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.33.5/bin/linux/${TARGETARCH}/kubectl" \
+    && echo "$checksum  /usr/local/bin/kubectl" | sha256sum -c - \
+    && chmod 755 /usr/local/bin/kubectl
+
+# 可独立构建轻量管理镜像：docker build --target runner-manager ...
+FROM runner-clients AS runner-manager
+COPY --from=gobuild /out/artex-runner /usr/local/bin/artex-runner
+ENTRYPOINT ["/usr/local/bin/artex-runner"]
+CMD ["-config", "/etc/artex-runner/runner.json"]
+
 ########## 阶段 5：应用（仅这一阶段和 Go 编译随版本变化）##########
 FROM runtime-tools AS runtime
 WORKDIR /app
 # 构建阶段产出的单二进制（内嵌前端）
 COPY --from=gobuild /out/artex /app/artex
+COPY --from=gobuild /out/artex-runner /usr/local/bin/artex-runner
+COPY --from=runner-clients /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=runner-clients /usr/local/bin/kubectl /usr/local/bin/kubectl
 # 守护启动脚本：进程退出后按退出码决定是否重新拉起，页面一键更新靠它完成换装。
 # 它同时负责把 SIGTERM 转发给 artex —— docker stop 只把信号发给 PID 1，
 # 不转发的话 artex 收不到、做不了优雅关闭，10 秒后被 SIGKILL 硬杀。

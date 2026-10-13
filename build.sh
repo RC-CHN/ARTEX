@@ -173,6 +173,9 @@ package_binary() {
   rm -rf "$package_root" "$archive"
   mkdir -p "$package_root"
   cp "$binary" "$package_root/"
+  runner_binary="$(dirname "$binary")/artex-runner"
+  [ "$goos" = "windows" ] && runner_binary="${runner_binary}.exe"
+  cp "$runner_binary" "$package_root/"
   # 守护启动脚本是正式入口：页面上的一键更新要靠它在进程退出后重新拉起，
   # 直接跑 artex 本体的话更新完就再也起不来了。按目标系统只带对应的那一份。
   if [ "$goos" = "windows" ]; then
@@ -223,6 +226,11 @@ build_target() {
     -ldflags "-s -w -buildid= -X main.version=${ARTEX_BUILD_VERSION}" \
     -o "$output" \
     ./cmd/artex
+
+  runner_output="$(dirname "$output")/artex-runner"
+  [ "$goos" = "windows" ] && runner_output="${runner_output}.exe"
+  GOSUMDB="$ARTEX_GOSUMDB" CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+    go build -trimpath -ldflags "-s -w -buildid=" -o "$runner_output" ./cmd/artex-runner
 
   compress_binary "$output" "$goos"
   if command -v file >/dev/null 2>&1; then file "$output"; fi

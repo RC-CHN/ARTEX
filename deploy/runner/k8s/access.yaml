@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: artex-runner-manager
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: artex-sandbox
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: artex-runner-manager
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [pods/attach]
+    verbs: [get, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: artex-runner-manager
+subjects:
+  - kind: ServiceAccount
+    name: artex-runner-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: artex-runner-manager
+---
+# 四个执行 Pod + 一个管理 Pod。扩大硬上限时同步修改此配额和 capabilities。
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: artex-runner-pool
+spec:
+  hard:
+    count/pods: "5"
+    requests.cpu: "4500m"
+    requests.memory: 8704Mi
+    limits.cpu: "5"
+    limits.memory: 9216Mi

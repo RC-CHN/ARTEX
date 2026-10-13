@@ -1,0 +1,16 @@
+{
+  "server_url": "https://artex.example.com",
+  "name": "external-worker-1",
+  "data_dir": "/var/lib/artex-runner",
+  "capabilities": {
+    "slots": 2,
+    "cpu_millis": 4000,
+    "memory_mib": 4096,
+    "labels": { "network": "external" },
+    "environments": ["default"],
+    "gpus": []
+  },
+  "allowed_images": [],
+  "mcp_overrides": {},
+  "env": {}
+}

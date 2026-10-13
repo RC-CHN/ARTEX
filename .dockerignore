@@ -13,6 +13,8 @@ web/out
 server/webui/dist
 /artex
 /artex.*
+/artex-runner
+/runner-data
 /dist
 /deploy/private
 *.log

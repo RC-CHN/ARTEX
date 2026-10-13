@@ -1,0 +1,14 @@
+{
+  "server_url": "http://artex:8787",
+  "allow_insecure_http": true,
+  "name": "compose-pool",
+  "executor": "docker",
+  "data_dir": "/var/lib/artex-runner",
+  "capabilities": {
+    "slots": 4,
+    "cpu_millis": 4000,
+    "memory_mib": 8192,
+    "environments": ["default"],
+    "labels": {"network": "compose"}
+  }
+}

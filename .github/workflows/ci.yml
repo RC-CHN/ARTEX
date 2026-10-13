@@ -74,10 +74,20 @@ jobs:
       - name: Two full integration runs
         run: go test ./... -count=2 -timeout=10m
       - name: Scheduling, cancellation, failover and shutdown races
-        run: go test -race ./server ./llmpool ./traffic ./enrich -count=1 -timeout=10m
+        run: go test -race ./agent ./server ./runner ./runnernode ./runnerfiles ./llmpool ./traffic ./enrich -count=1 -timeout=10m
+      - name: Runner isolation and file transfer in real Docker containers
+        env:
+          ARTEX_RUNNER_DOCKER_IMAGE: python@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
+          ARTEX_RUNNER_BINARY: /tmp/artex-runner-integration
+        run: |
+          CGO_ENABLED=0 go build -o "$ARTEX_RUNNER_BINARY" ./cmd/artex-runner
+          docker pull "$ARTEX_RUNNER_DOCKER_IMAGE"
+          go test -race ./integration -count=2 -timeout=5m
       - name: Local Norma SDK regression
         working-directory: norma
-        run: go test ./... -count=1 -timeout=10m
+        run: |
+          go test ./... -count=1 -timeout=10m
+          go test -race ./agentcore ./harness ./tool ./mcp -count=1 -timeout=10m
 
   frontend:
     name: Frontend cache regression and static export
@@ -133,3 +143,22 @@ jobs:
           cache-from: type=gha,scope=artex-linux-amd64
           cache-to: type=gha,mode=max,scope=artex-linux-amd64
       - run: python3 ci/image-smoke.py artex:ci ci
+      - name: Runner executable included in the runtime image
+        run: docker run --rm --entrypoint /usr/local/bin/artex-runner artex:ci -h
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            norma/go.sum
+      - name: Containerized manager and clean execution environments
+        env:
+          ARTEX_RUNNER_MANAGER_IMAGE: artex:ci
+          ARTEX_RUNNER_DOCKER_IMAGE: python@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
+          ARTEX_RUNNER_BINARY: /tmp/artex-runner-integration
+        run: |
+          CGO_ENABLED=0 go build -o "$ARTEX_RUNNER_BINARY" ./cmd/artex-runner
+          docker pull "$ARTEX_RUNNER_DOCKER_IMAGE"
+          go test -race ./integration -run TestManagedRunnerEnvironments -count=1 -timeout=5m
+          POSTGRES_PASSWORD=ci-validation docker compose --profile runners config --quiet
+          docker run --rm --entrypoint kubectl -v "$PWD:/src:ro" artex:ci kustomize /src/deploy/runner/k8s > /tmp/runner-k8s.yaml
