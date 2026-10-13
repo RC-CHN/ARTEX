@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"maps"
 	"net/http"
 	"net/url"
@@ -165,6 +166,10 @@ func (p runnerPGStore) Save(ctx context.Context, revision uint64, data json.RawM
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		err = runner.ErrStoreConflict
+	} else if err != nil {
+		// Log the database error, never the checkpoint: it contains tool output
+		// and runner configuration. Result delivery must not fail silently.
+		log.Printf("[runner] persist broker checkpoint failed: %v", err)
 	}
 	return next, err
 }

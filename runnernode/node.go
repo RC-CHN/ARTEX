@@ -902,6 +902,8 @@ func (n *Node) sendResults(ctx context.Context) {
 		}
 		n.mu.Unlock()
 		failed := false
+		var firstErr error
+		var failedCommand string
 		for _, result := range pending {
 			var response runner.ResultResponse
 			err := n.request(ctx, "results", result, &response)
@@ -912,7 +914,12 @@ func (n *Node) sendResults(ctx context.Context) {
 				var status *httpStatusError
 				if !errors.As(err, &status) || (status.status != http.StatusGone && status.status != http.StatusConflict) {
 					failed = true
-					break
+					if firstErr == nil {
+						firstErr, failedCommand = err, result.CommandID
+					}
+					// Keep this receipt for retry without delaying acknowledgments
+					// of other completed commands behind a rejected result.
+					continue
 				}
 			}
 			n.mu.Lock()
@@ -924,8 +931,14 @@ func (n *Node) sendResults(ctx context.Context) {
 		delay := 100 * time.Millisecond
 		if failed {
 			failures++
+			if failures == 1 || failures%10 == 0 {
+				n.Log.Printf("result delivery unavailable (%d consecutive attempts), command %s: %v; retaining completed result for retry without re-execution", failures, failedCommand, firstErr)
+			}
 			delay = min(time.Duration(1<<min(failures-1, 6))*250*time.Millisecond, 10*time.Second)
 		} else {
+			if failures > 0 {
+				n.Log.Print("result delivery recovered")
+			}
 			failures = 0
 		}
 		timer.Reset(delay)

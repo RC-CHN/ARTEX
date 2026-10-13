@@ -1,10 +1,12 @@
 package runnernode
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os/exec"
@@ -15,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RC-CHN/ARTEX/norma/tool"
 	"github.com/RC-CHN/ARTEX/runner"
 )
 
@@ -191,7 +194,9 @@ func TestResultRequiresExplicitAcknowledgment(t *testing.T) {
 			defer srv.Close()
 			n, _ := testNode(t)
 			n.Config.ServerURL = srv.URL
-			n.commands["pending"] = &commandState{queued: true, result: &runner.ResultRequest{CommandID: "pending"}}
+			var logs bytes.Buffer
+			n.Log = log.New(&logs, "", 0)
+			n.commands["pending"] = &commandState{queued: true, result: &runner.ResultRequest{CommandID: "pending", Result: tool.Text("private-tool-output")}}
 			ctx, cancel := context.WithTimeout(t.Context(), 700*time.Millisecond)
 			defer cancel()
 			n.sendResults(ctx)
@@ -200,6 +205,9 @@ func TestResultRequiresExplicitAcknowledgment(t *testing.T) {
 			}
 			if count := calls.Load(); count < 2 || count > 3 {
 				t.Fatalf("retry backoff requests=%d", count)
+			}
+			if !strings.Contains(logs.String(), "result delivery unavailable") || strings.Contains(logs.String(), "private-tool-output") {
+				t.Fatal("result delivery failure must be observable without logging its contents")
 			}
 		})
 	}
