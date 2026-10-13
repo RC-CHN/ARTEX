@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -259,6 +262,58 @@ func TestOlderControllerDoesNotDisableKubernetesAdmission(t *testing.T) {
 	n.applyPoll(t.Context(), runner.PollResponse{}, time.Now())
 	if !k.policyAt.IsZero() || !reflect.DeepEqual(k.policy, runner.PoolPolicy{}) {
 		t.Fatal("missing optional policy became a zero Pod limit")
+	}
+}
+
+func TestOptionalPoolProtocolNegotiationAndControllerRollback(t *testing.T) {
+	for _, rollback := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rollback=%t", rollback), func(t *testing.T) {
+			k := kubeFixture(t)
+			n, _ := testNode(t)
+			n.Executor = k
+			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+			defer cancel()
+			var polls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/register") {
+					_ = json.NewEncoder(w).Encode(runner.RegisterResponse{NodeID: "node", Credential: "fixture", Protocol: runner.ProtocolVersion})
+					return
+				}
+				var req runner.PollRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+					return
+				}
+				i := polls.Add(1)
+				if rollback && i == 2 {
+					if req.PoolStatus == nil {
+						t.Error("new controller never received negotiated status")
+					}
+					http.Error(w, "unknown field pool_status", http.StatusBadRequest)
+					return
+				}
+				if req.PoolStatus != nil {
+					t.Error("sent unsupported optional field to old controller")
+				}
+				response := runner.PollResponse{Epoch: "e", ServerTime: time.Now()}
+				if rollback && i == 1 {
+					response.Pool = &runner.PoolPolicy{Slots: 2}
+				}
+				_ = json.NewEncoder(w).Encode(response)
+				if i == 4 {
+					cancel()
+				}
+			}))
+			defer server.Close()
+			n.Config.ServerURL, n.HTTP = server.URL, server.Client()
+			_ = n.Run(ctx, "registration")
+			if polls.Load() != 4 {
+				t.Fatalf("controller compatibility stalled after %d polls", polls.Load())
+			}
+			if !k.policyAt.IsZero() {
+				t.Fatal("controller rollback retained stale administrative limits")
+			}
+		})
 	}
 }
 

@@ -265,6 +265,7 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 	go n.sendResults(ctx)
 	go n.checkpoints(ctx)
 	failures := 0
+	poolSupported := false // Negotiate optional fields before sending to strict older controllers.
 	for ctx.Err() == nil {
 		n.mu.Lock()
 		notes := make([]runner.NotificationEnvelope, 0, len(n.notifications))
@@ -274,7 +275,7 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 		n.mu.Unlock()
 		var poll runner.PollResponse
 		var poolStatus *runner.PoolStatus
-		if k, ok := n.Executor.(*KubernetesExecutor); ok {
+		if k, ok := n.Executor.(*KubernetesExecutor); ok && poolSupported {
 			value := k.PoolStatus()
 			poolStatus = &value
 		}
@@ -282,6 +283,9 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 		err := n.request(ctx, "poll", runner.PollRequest{NodeID: n.identity.NodeID, BootID: n.bootID, Protocol: runner.ProtocolVersion, Notifications: notes, Capabilities: &n.Config.Capabilities, PoolStatus: poolStatus}, &poll)
 		if err != nil {
 			var status *httpStatusError
+			if errors.As(err, &status) && status.status == http.StatusBadRequest {
+				poolSupported = false // Controller may have been rolled back.
+			}
 			if errors.As(err, &status) && (status.status == http.StatusUnauthorized || status.status == http.StatusForbidden || status.status == http.StatusGone) {
 				return fmt.Errorf("runner identity rejected; stopping local executions: %w", err)
 			}
@@ -298,6 +302,7 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 			continue
 		}
 		failures = 0
+		poolSupported = poll.Pool != nil
 		n.applyPoll(ctx, poll, sent)
 		// Also bound repeated outstanding commands from older controllers.
 		if remaining := 100*time.Millisecond - time.Since(sent); remaining > 0 {
@@ -310,6 +315,11 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 	return ctx.Err()
 }
 func (n *Node) applyPoll(ctx context.Context, poll runner.PollResponse, sent time.Time) {
+	if k, ok := n.Executor.(*KubernetesExecutor); ok && poll.Pool == nil {
+		k.poolMu.Lock()
+		k.policy, k.policyAt = runner.PoolPolicy{}, time.Time{}
+		k.poolMu.Unlock()
+	}
 	if k, ok := n.Executor.(*KubernetesExecutor); ok && poll.Pool != nil {
 		policy := runner.PoolPolicy{}
 		if poll.Pool != nil {
