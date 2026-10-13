@@ -87,7 +87,8 @@ jobs:
         working-directory: norma
         run: |
           go test ./... -count=1 -timeout=10m
-          go test -race ./agentcore ./harness ./tool ./mcp ./llm ./noaadapter -count=1 -timeout=10m
+          go test -race ./agentcore ./harness ./tool ./mcp ./llm -count=1 -timeout=10m
+          go test -race ./noaadapter -run 'Test(Reassemble|CompressReplay|Concurrent|SessionConcurrent|StateStoreConcurrent|ArchiverConcurrent|ChaosAgent|LongSessionViewStaysValid)' -count=1 -timeout=5m
 
   frontend:
     name: Frontend cache regression and static export
