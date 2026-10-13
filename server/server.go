@@ -945,7 +945,11 @@ func (s *Server) Handler() http.Handler {
 // --- handlers ---
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"ok": true, "service": "artex", "version": BuildVersion})
+	out := map[string]any{"ok": true, "service": "artex", "version": BuildVersion}
+	if tr := s.m.Traffic(); tr != nil {
+		out["traffic_backend"] = tr.Backend()
+	}
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {

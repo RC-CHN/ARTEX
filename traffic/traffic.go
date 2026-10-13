@@ -1,6 +1,6 @@
 // Package traffic implements the request-recording subsystem (docs §10): an
 // embedded go-mitmproxy proxy whose addon writes every target HTTP exchange into
-// a human-browsable file tree, with a sidecar SQLite index for paged queries.
+// PostgreSQL index with content-addressed files for large bodies.
 // Full capture, plaintext (no redaction), target HTTP only.
 package traffic
 
@@ -33,6 +33,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
+	"github.com/google/uuid"
 	mproxy "github.com/lqqyt2423/go-mitmproxy/proxy"
 	_ "modernc.org/sqlite"
 )
@@ -87,7 +88,7 @@ const ftsSchema = `CREATE VIRTUAL TABLE IF NOT EXISTS ex_fts USING fts5(
 );`
 
 const (
-	// maxInlineBody is the cutoff between a body stored inline (SQLite column) and
+	// maxInlineBody is the cutoff between a body stored inline (database column) and
 	// one spilled to the content-addressed blob store.
 	maxInlineBody = 256 * 1024
 	// blobPreview is how much of a spilled body stays inline so readers can tell
@@ -137,9 +138,8 @@ const TrafficSearchDescription = "查询记录代理已抓取的目标流量（�
 type Traffic struct {
 	dir   string
 	addr  string
-	db    *sql.DB
+	db    *indexDB
 	wmu   sync.Mutex // serializes record() vs DeleteHost (incl. blob GC)
-	seq   atomic.Int64
 	proxy *mproxy.Proxy
 	// fts reports whether the full-text index is available. False on a driver
 	// build without FTS5: recording and metadata search still work, body search
@@ -172,7 +172,8 @@ type Traffic struct {
 	upstream atomic.Pointer[url.URL]
 }
 
-// Open initializes the traffic tree, blob store and SQLite index under dir.
+// Open opens the legacy SQLite backend for migration tooling and benchmarks.
+// The application uses OpenPostgres; new production captures never use SQLite.
 func Open(dir, addr string) (*Traffic, error) {
 	for _, d := range []string{dir, filepath.Join(dir, "_index"), filepath.Join(dir, "_blobs"), filepath.Join(dir, "_ca")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -195,19 +196,23 @@ func Open(dir, addr string) (*Traffic, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := &Traffic{dir: dir, addr: addr, db: db, closed: make(chan struct{})}
+	t := &Traffic{dir: dir, addr: addr, db: &indexDB{DB: db}, closed: make(chan struct{})}
 	if err := t.initIndex(); err != nil {
 		db.Close()
 		return nil, err
 	}
 
+	return t.startProxy()
+}
+
+func (t *Traffic) startProxy() (*Traffic, error) {
 	p, err := mproxy.NewProxy(&mproxy.Options{
-		Addr:        addr,
+		Addr:        t.addr,
 		SslInsecure: true,
-		CaRootPath:  filepath.Join(dir, "_ca"),
+		CaRootPath:  filepath.Join(t.dir, "_ca"),
 	})
 	if err != nil {
-		db.Close()
+		t.db.Close()
 		return nil, err
 	}
 	// Upstream selection. By default (no global egress proxy set) targets are
@@ -381,7 +386,15 @@ func (t *Traffic) stopping() bool {
 		return false
 	}
 }
-func (t *Traffic) DB() *sql.DB { return t.db }
+func (t *Traffic) DB() *sql.DB { return t.db.DB }
+
+// Backend reports the active index engine, independently of file/blob storage.
+func (t *Traffic) Backend() string {
+	if t.db.postgres {
+		return "postgres"
+	}
+	return "sqlite"
+}
 
 // sink is the go-mitmproxy addon that records completed exchanges.
 type sink struct {
@@ -430,87 +443,74 @@ func proxyCausedErr(err error) bool {
 	return false
 }
 
-// record persists one exchange entirely in SQLite: metadata, bodies and the
-// full-text index. Nothing is written to a per-request directory — only bodies
-// above maxInlineBody spill to the content-addressed blob store.
+// record is the proxy callback. recordFlow exposes errors to migration and benchmarks.
 func (t *Traffic) record(f *mproxy.Flow) {
-	// The write lock covers blob + index writes, so DeleteHost (and its blob GC)
-	// can run under the same lock without racing a concurrent record.
-	t.wmu.Lock()
-	defer t.wmu.Unlock()
-	host := f.Request.URL.Hostname()
-	method := f.Request.Method
-	tmpl := db.TemplatePath(f.Request.URL.EscapedPath())
-	n := t.seq.Add(1)
-	now := time.Now()
-	id := fmt.Sprintf("%d-%04d", now.Unix(), n%10000)
-
-	ct := f.Response.Header.Get("Content-Type")
-	url := f.Request.URL.String()
-	reqHead := fmt.Sprintf("%s %s %s\n%s", method, f.Request.URL.RequestURI(), f.Request.Proto, requestHeaderLines(f.Request))
-	respHead := fmt.Sprintf("HTTP %d\n%s", f.Response.StatusCode, headerLines(f.Response.Header))
-	// Bodies are spilled before the transaction opens: blob writes are filesystem
-	// work and must not sit inside the SQLite write lock.
-	reqB := t.spill(f.Request.Body, f.Request.Header.Get("Content-Type"))
-	respB := t.spill(f.Response.Body, ct)
-
-	tx, err := t.db.Begin()
-	if err != nil {
-		log.Printf("[traffic] 记录 %s 失败（开启事务）：%v", url, err)
-		return
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op once committed
-
-	// path stays empty for db-resident exchanges; a non-empty path marks a legacy
-	// row whose bodies still live in the old on-disk tree (see Get).
-	res, err := tx.Exec(`INSERT OR REPLACE INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
-VALUES(?,?,?,?,?,?,?,?,?,?,'')`,
-		id, now.Unix(), host, method, tmpl, url, f.Response.StatusCode, ct,
-		len(f.Request.Body), len(f.Response.Body))
-	if err != nil {
-		log.Printf("[traffic] 记录 %s 失败（写索引）：%v", url, err)
-		return
-	}
-	rowid, err := res.LastInsertId()
-	if err != nil {
-		log.Printf("[traffic] 记录 %s 失败（取 rowid）：%v", url, err)
-		return
-	}
-
-	if _, err := tx.Exec(`INSERT OR REPLACE INTO exchange_bodies(id,req_head,req_body,req_blob,resp_head,resp_body,resp_blob)
-VALUES(?,?,?,?,?,?,?)`,
-		id, reqHead, reqB.inline, nullIfEmpty(reqB.hash), respHead, respB.inline, nullIfEmpty(respB.hash)); err != nil {
-		log.Printf("[traffic] 记录 %s 失败（写正文）：%v", url, err)
-		return
-	}
-
-	for _, h := range []string{reqB.hash, respB.hash} {
-		if h == "" {
-			continue
-		}
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO blob_refs(hash,exchange_id) VALUES(?,?)`, h, id); err != nil {
-			log.Printf("[traffic] 记录 %s 失败（登记 blob 引用）：%v", url, err)
-			return
-		}
-	}
-
-	if t.fts {
-		// The index is fed from memory, so a body that spilled to _blobs is still
-		// fully searchable even though only its preview is stored inline.
-		idx := strings.Join([]string{url, reqHead, reqB.index, respHead, respB.index}, "\n")
-		if _, err := tx.Exec(`INSERT INTO ex_fts(rowid,content) VALUES(?,?)`, rowid, idx); err != nil {
-			log.Printf("[traffic] 记录 %s 失败（写全文索引）：%v", url, err)
-			return
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		log.Printf("[traffic] 记录 %s 失败（提交）：%v", url, err)
+	if err := t.recordFlow(f); err != nil {
+		log.Printf("[traffic] 记录流量失败: %v", err)
 	}
 }
 
+// recordFlow persists metadata, inline bodies and search text atomically. Large
+// bodies are spilled before the database write; the writer lock excludes blob GC.
+func (t *Traffic) recordFlow(f *mproxy.Flow) error {
+	t.wmu.Lock()
+	defer t.wmu.Unlock()
+	ct := f.Response.Header.Get("Content-Type")
+	reqB := t.spill(f.Request.Body, f.Request.Header.Get("Content-Type"))
+	respB := t.spill(f.Response.Body, ct)
+	item := ArchiveExchange{
+		ID: uuid.NewString(), TS: time.Now().Unix(), Host: f.Request.URL.Hostname(),
+		Method: f.Request.Method, URLTemplate: db.TemplatePath(f.Request.URL.EscapedPath()),
+		URL: f.Request.URL.String(), Status: f.Response.StatusCode, ContentType: ct,
+		ReqLen: len(f.Request.Body), RespLen: len(f.Response.Body),
+		ReqHead:  fmt.Sprintf("%s %s %s\n%s", f.Request.Method, f.Request.URL.RequestURI(), f.Request.Proto, requestHeaderLines(f.Request)),
+		RespHead: fmt.Sprintf("HTTP %d\n%s", f.Response.StatusCode, headerLines(f.Response.Header)),
+		ReqBody:  reqB.inline, RespBody: respB.inline, ReqBlob: reqB.hash, RespBlob: respB.hash,
+	}
+	content := strings.Join([]string{item.URL, item.ReqHead, reqB.index, item.RespHead, respB.index}, "\n")
+	if t.db.postgres {
+		_, err := t.db.Exec(postgresInsertExchange, exchangeArgs(item, "", content)...)
+		return err
+	}
+	tx, err := t.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := t.insertExchange(tx, item, "", content); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// insertExchange is shared by the SQLite reference backend and archive imports.
+func (t *Traffic) insertExchange(tx *indexTx, item ArchiveExchange, path, content string) error {
+	var rowid int64
+	err := tx.QueryRow(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?) RETURNING rowid`, item.ID, item.TS, item.Host, item.Method, item.URLTemplate,
+		item.URL, item.Status, item.ContentType, item.ReqLen, item.RespLen, path).Scan(&rowid)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO exchange_bodies(id,req_head,req_body,req_blob,resp_head,resp_body,resp_blob)
+VALUES(?,?,?,?,?,?,?)`, item.ID, t.headerValue(item.ReqHead), item.ReqBody, nullIfEmpty(item.ReqBlob), t.headerValue(item.RespHead), item.RespBody, nullIfEmpty(item.RespBlob)); err != nil {
+		return err
+	}
+	for _, hash := range []string{item.ReqBlob, item.RespBlob} {
+		if hash != "" {
+			if _, err := tx.Exec(`INSERT INTO blob_refs(hash,exchange_id) VALUES(?,?) ON CONFLICT DO NOTHING`, hash, item.ID); err != nil {
+				return err
+			}
+		}
+	}
+	if t.fts {
+		_, err = tx.Exec(`INSERT INTO ex_fts(rowid,content) VALUES(?,?)`, rowid, searchText(content))
+	}
+	return err
+}
+
 // storedBody is one body after the inline/spill decision: inline is what goes in
-// the SQLite column (the whole body, or a preview when spilled), hash names the
+// the database column (the whole body, or a preview when spilled), hash names the
 // blob when it spilled, and index is the text handed to FTS (empty for binary).
 type storedBody struct {
 	inline []byte
@@ -800,6 +800,9 @@ func (t *Traffic) ftsFilter(term string) (cond string, arg any, ok bool) {
 	if !t.fts || utf8.RuneCountInString(term) < minTrigram {
 		return "", nil, false
 	}
+	if t.db.postgres {
+		return `rowid IN (SELECT rowid FROM ex_fts WHERE content ILIKE ? ESCAPE '\')`, literalLike(term), true
+	}
 	return `rowid IN (SELECT rowid FROM ex_fts WHERE ex_fts MATCH ?)`, ftsQuote(term), true
 }
 
@@ -923,7 +926,7 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	if strings.EqualFold(strings.TrimSpace(f.Order), "asc") {
 		dir = "ASC"
 	}
-	// id embeds capture timestamp + sequence, so a trailing id DESC makes the order
+	// A unique id tie-breaker makes the order
 	// total and pagination stable even when the sort column has many ties.
 	sel := `SELECT id,ts,host,method,url_template,url,status,content_type,resp_len,path FROM exchanges` +
 		where + ` ORDER BY ` + col + ` ` + dir + `, id DESC LIMIT ? OFFSET ?`
@@ -1023,7 +1026,7 @@ func (t *Traffic) Count() (int, error) {
 
 // DeleteHost removes every recorded exchange whose host contains the given
 // substring — mirroring the UI's host filter, so what you filtered is what gets
-// deleted. Everything lives in SQLite, so the deletion is one transaction across
+// deleted. All index rows share one database, so deletion is one transaction across
 // the index, bodies, full-text index and blob references. Content-addressed
 // blobs are shared across hosts and so are garbage-collected afterwards rather
 // than deleted by host. Returns rows deleted.
@@ -1144,6 +1147,9 @@ func (t *Traffic) allHostTrees() ([]string, error) {
 // takes effect through the VACUUM that follows it, and both must run on the same
 // connection. Callers must hold wmu.
 func (t *Traffic) compactIndex() error {
+	if t.db.postgres {
+		return t.vacuumPostgres()
+	}
 	ctx := context.Background()
 	conn, err := t.db.Conn(ctx)
 	if err != nil {
@@ -1179,7 +1185,7 @@ func (t *Traffic) compactIndex() error {
 // deleteWhere removes every trace of the exchanges matching the condition:
 // full-text index rows, bodies, blob references, and finally the index rows.
 // Order matters — each sub-select reads exchanges, so that table is emptied last.
-func (t *Traffic) deleteWhere(tx *sql.Tx, where string, args ...any) (int64, error) {
+func (t *Traffic) deleteWhere(tx *indexTx, where string, args ...any) (int64, error) {
 	if t.fts {
 		// ex_fts is contentless and addressed by rowid, hence the rowid sub-select.
 		if _, err := tx.Exec(`DELETE FROM ex_fts WHERE rowid IN (SELECT rowid FROM exchanges WHERE `+where+`)`, args...); err != nil {
@@ -1269,9 +1275,9 @@ func (t *Traffic) stageTreesForArchive(dirs, hosts []string, archiveID, taskID i
 		}
 		planned = append(planned, stagedTrafficPath{source: source})
 	}
-	// 归档路径即使一个历史 host 目录都没有(新装机的流量只落在 SQLite + _blobs)
-	// 也必须留下 journal：崩溃点若落在 PostgreSQL 提交与 SQLite 提交之间，重启后
-	// SQLite 事务被回滚，只有这份 journal 能让恢复流程补做 host 行的删除。少了它，
+	// 归档路径即使一个历史 host 目录都没有(新装机的流量落在 PostgreSQL + _blobs)
+	// 也必须留下 journal：崩溃点若落在 业务库提交与流量事务提交之间，重启后
+	// 流量事务被回滚，只有这份 journal 能让恢复流程补做 host 行的删除。少了它，
 	// 已转冷任务的独占流量会永久留在热库里。
 	uniqueHosts := uniqueArchiveHosts(hosts)
 	if len(planned) == 0 && len(uniqueHosts) == 0 {
@@ -1382,15 +1388,15 @@ func (t *Traffic) DeleteHostsExact(hosts []string) (int64, error) {
 	return deleted, nil
 }
 
-// HostDeleteStage keeps the SQLite delete transaction open so a task deletion
-// can be coordinated with PostgreSQL: the traffic side is staged here and only
+// HostDeleteStage keeps the traffic delete transaction open so a task deletion
+// can be coordinated with the business transaction: traffic is staged here and only
 // committed once the caller's own transaction has succeeded. The Traffic write
 // lock is held until Commit or Rollback, so no recorder can add rows or a blob
 // reference for a host that is mid-deletion. Rolling back is just a transaction
 // rollback now that nothing is moved on disk.
 type HostDeleteStage struct {
 	traffic  *Traffic
-	tx       *sql.Tx
+	tx       *indexTx
 	stageDir string
 	moves    []stagedTrafficPath
 	deleted  int64
@@ -1475,7 +1481,7 @@ func (t *Traffic) stageDeleteHostsExact(hosts []string, archiveID, taskID int64)
 }
 
 // RecoverHostDeleteStages resolves filesystem moves left by a process exit.
-// SQLite rolls open transactions back on restart, while the supplied callback
+// The database rolls open transactions back on restart, while the supplied callback
 // identifies task archives whose PostgreSQL compaction already committed.
 func (t *Traffic) RecoverHostDeleteStages(archiveCommitted func(int64, int64) (bool, error)) error {
 	if t == nil {
@@ -1644,14 +1650,14 @@ func (s *HostDeleteStage) rollbackLocked() error {
 	return errors.Join(errs...)
 }
 
-// Commit makes the staged deletion permanent. SQLite is committed only after
+// Commit makes the staged deletion permanent. The traffic transaction is committed only after
 // the caller has committed its PostgreSQL task deletion.
 func (s *HostDeleteStage) Commit() error {
 	if s == nil || s.done {
 		return nil
 	}
 	if err := s.tx.Commit(); err != nil {
-		// A failed SQLite commit normally rolls the transaction back. Restore the
+		// A failed traffic commit normally rolls the transaction back. Restore the
 		// trees so the traffic store remains internally consistent and recoverable.
 		restoreErr := restoreTrees(s.stageDir, s.moves)
 		s.done = true
@@ -1676,6 +1682,11 @@ func (s *HostDeleteStage) Commit() error {
 // write-ahead log and shared-memory file, since those are what an operator sees
 // the data directory holding.
 func (t *Traffic) indexBytes() int64 {
+	if t.db.postgres {
+		var size int64
+		_ = t.db.QueryRow(`SELECT COALESCE(sum(pg_total_relation_size(c.oid)),0)::bigint FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() AND c.relkind='r'`).Scan(&size)
+		return size
+	}
 	base := filepath.Join(t.dir, "_index", "index.sqlite")
 	var total int64
 	for _, p := range []string{base, base + "-wal", base + "-shm"} {
@@ -1702,6 +1713,9 @@ func (t *Traffic) indexBytes() int64 {
 // Best-effort throughout. Failing to reclaim costs disk space, never
 // correctness, so errors are logged and the next deletion resumes the work.
 func (t *Traffic) reclaim() {
+	if t.db.postgres {
+		return
+	} // PostgreSQL autovacuum reuses dead tuples and maintains GIN.
 	if !t.reclaiming.CompareAndSwap(false, true) {
 		return // one pass at a time; a second would only contend for the lock
 	}

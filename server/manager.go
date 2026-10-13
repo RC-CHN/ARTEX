@@ -375,9 +375,10 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	}
 	m := &Manager{dir: dir, pg: pg, assets: pg.Assets(), tasks: map[string]*Task{}, interceptor: intercept.New(pg)}
 	if proxyAddr != "" {
-		tr, err := traffic.Open(filepath.Join(dir, "traffic"), proxyAddr)
+		tr, err := traffic.OpenPostgres(filepath.Join(dir, "traffic"), proxyAddr, dsn)
 		if err != nil {
-			log.Printf("[traffic] disabled: %v", err)
+			pg.Close()
+			return nil, fmt.Errorf("open PostgreSQL traffic index: %w", err)
 		} else {
 			err = tr.RecoverHostDeleteStages(func(_ int64, taskID int64) (bool, error) {
 				if taskID <= 0 {

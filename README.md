@@ -179,11 +179,31 @@ kubectl -n artex get pods,pvc,service
 
 访问 `artex` Service 分配的 LoadBalancer 地址，首次进入 `/setup/` 设置管理员密码，然后在「系统 → LLM 配置」添加并激活模型。升级时修改私有覆盖文件中的 ARTEX 镜像版本或摘要后重新应用；Deployment 使用 `Recreate`，保持单个调度进程。Secret 通过集群单独创建，不要把凭据写进部署清单。
 
+### 流量索引与旧版本迁移
+
+运行时流量索引复用 `ARTEX_PG_DSN` 指定的 PostgreSQL，在独立的 `artex_traffic` schema 中保存元数据、报文头、小正文和 blob 引用。大正文保留在共享卷的 `data/traffic/_blobs`；使用 `pg_trgm` 的 GIN 索引支持中文和任意子串搜索。数据库用户需有创建 schema 与 `pg_trgm` 扩展的权限；受限环境可由管理员预先安装 `CREATE EXTENSION pg_trgm WITH SCHEMA public;`。
+
+从 SQLite 版本升级时，先停止旧实例并备份 PostgreSQL 与应用数据卷，再启动新版本。Kubernetes 保持单副本和 `Recreate`。检测到 `data/traffic/_index/index.sqlite` 后，程序会复制数据库及 WAL 到临时目录，保留原文件，验证完整性与 blob 校验和，然后在一个 PostgreSQL 事务中导入历史 ID、正文和引用、重建搜索索引并写入完成标记。迁移失败会终止启动，事务回滚后可修复问题并重试；成功后重启不会重复导入或恢复已删除的流量。
+
+`/api/health` 中的 `traffic_backend` 应为 `postgres`。迁移后的新录制只写 PostgreSQL，SQLite 文件作为迁移前备份保留；回退旧版本需要同时恢复升级前的数据库与文件快照，不能仅回退镜像。普通删除交给 PostgreSQL autovacuum 回收可复用空间，「清空流量」额外执行限时 `VACUUM (ANALYZE)`。
+
+流量存储回归测试与 benchmark 使用独立的测试数据库，通过 `ARTEX_TRAFFIC_TEST_DSN` 显式指定；每次使用独立 schema 并自动清理。不要将其指向生产数据库。
+
+```bash
+export ARTEX_TRAFFIC_TEST_DSN='postgres://test_user:test_password@127.0.0.1:5432/artex_test?sslmode=disable'
+go test ./traffic -count=1
+go test ./traffic -run '^$' -bench '^BenchmarkTrafficIndex$' -benchmem -benchtime=2s -count=3 -cpu=4
+```
+
+默认构造 10,000 条、每条 4 KiB 正文的数据，分布于 100 个主机；可用 `ARTEX_TRAFFIC_BENCH_ROWS` 调整规模。测试比较 SQLite WAL 本地文件与 PostgreSQL 的读取、主机分页、正文搜索、筛选分页、并发读取和录制，报告平均耗时、P50/P95、内存分配与初始索引占用。建库、生成数据和清理不计入耗时；SQLite 仅用作性能基线与兼容测试，不作为共享文件系统上的生产后端。
+
+[三轮实测结果与原始数据](benchmarks/traffic-index.md)：在所测 10,000 条语料下，PostgreSQL 录制与主机分页较快，单条读取和正文搜索较慢；这次迁移优先解决共享文件系统上的 SQLite WAL 依赖，具体性能取舍见报告。
+
 ---
 
 ## 更新升级
 
-> 升级只换程序、不动数据：Postgres 数据卷 `pgdata`、`./data`（jwt.key / SQLite 等）、`./skills` 都会保留。**数据库迁移无需手动执行**——`artex` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份 `./data` 与数据库。
+> 升级只换程序、不动数据：Postgres 数据卷 `pgdata`、`./data`（流量 blob / 会话记录等）、`./skills` 都会保留。**数据库迁移无需手动执行**——`artex` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份 `./data` 与数据库。
 
 ### 方式一：页面一键更新（推荐）
 

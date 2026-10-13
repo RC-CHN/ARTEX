@@ -21,7 +21,7 @@ metadata:
     app.kubernetes.io/name: artex
 spec:
   replicas: 1
-  # 单实例调度器和 SQLite 数据目录在更新时保持单个写入进程。
+  # 单实例调度器与旧索引迁移在更新时保持单个写入进程。
   strategy:
     type: Recreate
   revisionHistoryLimit: 3

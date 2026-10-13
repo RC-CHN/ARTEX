@@ -42,7 +42,7 @@ type ArchiveExchange struct {
 }
 
 // ExportHosts writes an exact-host snapshot to dir. It holds the traffic writer
-// lock while reading SQLite and blobs, so each body and its index row come from
+// lock while reading the index and blobs, so each body and its index row come from
 // one consistent point in time.
 func (t *Traffic) ExportHosts(hosts []string, dir string) (int64, error) {
 	if t == nil || len(hosts) == 0 {
@@ -178,8 +178,8 @@ func (t *Traffic) ImportArchive(dir string) (int64, error) {
 	defer tx.Rollback() //nolint:errcheck
 	var imported int64
 	for _, item := range snapshot.Exchanges {
-		res, err := tx.Exec(`INSERT OR IGNORE INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
-VALUES(?,?,?,?,?,?,?,?,?,?,'')`, item.ID, item.TS, item.Host, item.Method, item.URLTemplate,
+		res, err := tx.Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,'') ON CONFLICT DO NOTHING`, item.ID, item.TS, item.Host, item.Method, item.URLTemplate,
 			item.URL, item.Status, item.ContentType, item.ReqLen, item.RespLen)
 		if err != nil {
 			return imported, err
@@ -189,13 +189,13 @@ VALUES(?,?,?,?,?,?,?,?,?,?,'')`, item.ID, item.TS, item.Host, item.Method, item.
 			continue
 		}
 		if _, err := tx.Exec(`INSERT INTO exchange_bodies(id,req_head,req_body,req_blob,resp_head,resp_body,resp_blob)
-VALUES(?,?,?,?,?,?,?)`, item.ID, item.ReqHead, item.ReqBody, nullIfEmpty(item.ReqBlob),
-			item.RespHead, item.RespBody, nullIfEmpty(item.RespBlob)); err != nil {
+VALUES(?,?,?,?,?,?,?)`, item.ID, t.headerValue(item.ReqHead), item.ReqBody, nullIfEmpty(item.ReqBlob),
+			t.headerValue(item.RespHead), item.RespBody, nullIfEmpty(item.RespBlob)); err != nil {
 			return imported, err
 		}
 		for _, hash := range []string{item.ReqBlob, item.RespBlob} {
 			if hash != "" {
-				if _, err := tx.Exec(`INSERT OR IGNORE INTO blob_refs(hash,exchange_id) VALUES(?,?)`, hash, item.ID); err != nil {
+				if _, err := tx.Exec(`INSERT INTO blob_refs(hash,exchange_id) VALUES(?,?) ON CONFLICT DO NOTHING`, hash, item.ID); err != nil {
 					return imported, err
 				}
 			}
@@ -205,8 +205,11 @@ VALUES(?,?,?,?,?,?,?)`, item.ID, item.ReqHead, item.ReqBody, nullIfEmpty(item.Re
 			if err := tx.QueryRow(`SELECT rowid FROM exchanges WHERE id=?`, item.ID).Scan(&rowID); err != nil {
 				return imported, err
 			}
-			content := strings.Join([]string{item.URL, item.ReqHead, string(item.ReqBody), item.RespHead, string(item.RespBody)}, "\n")
-			if _, err := tx.Exec(`INSERT INTO ex_fts(rowid,content) VALUES(?,?)`, rowID, content); err != nil {
+			content, err := t.exchangeSearchText(item)
+			if err != nil {
+				return imported, err
+			}
+			if _, err := tx.Exec(`INSERT INTO ex_fts(rowid,content) VALUES(?,?)`, rowID, searchText(content)); err != nil {
 				return imported, err
 			}
 		}

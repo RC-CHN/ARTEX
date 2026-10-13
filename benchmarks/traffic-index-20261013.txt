@@ -1,0 +1,59 @@
+goos: linux
+goarch: amd64
+pkg: github.com/Autumn-27/artex/traffic
+cpu: Intel(R) Xeon(R) CPU Max 9470C
+BenchmarkTrafficIndex
+BenchmarkTrafficIndex/SQLite
+    benchmark_test.go:63: backend=SQLite corpus_rows=10000 body_bytes=4096 index_bytes=192369008
+BenchmarkTrafficIndex/SQLite/Get
+BenchmarkTrafficIndex/SQLite/Get-4     	   67183	     36051 ns/op	        33.96 p50-us	        44.27 p95-us	   14864 B/op	      56 allocs/op
+BenchmarkTrafficIndex/SQLite/Get-4     	   66674	     37694 ns/op	        34.89 p50-us	        47.34 p95-us	   14864 B/op	      56 allocs/op
+BenchmarkTrafficIndex/SQLite/Get-4     	   66988	     36075 ns/op	        34.27 p50-us	        43.34 p95-us	   14864 B/op	      56 allocs/op
+BenchmarkTrafficIndex/SQLite/HostPage
+BenchmarkTrafficIndex/SQLite/HostPage-4         	    7635	    292626 ns/op	       283.5 p50-us	       366.7 p95-us	   41320 B/op	     894 allocs/op
+BenchmarkTrafficIndex/SQLite/HostPage-4         	    7965	    290103 ns/op	       282.5 p50-us	       361.6 p95-us	   41320 B/op	     894 allocs/op
+BenchmarkTrafficIndex/SQLite/HostPage-4         	    7722	    290907 ns/op	       281.1 p50-us	       363.5 p95-us	   41320 B/op	     894 allocs/op
+BenchmarkTrafficIndex/SQLite/BodySearch
+BenchmarkTrafficIndex/SQLite/BodySearch-4       	     946	   2473785 ns/op	      2393 p50-us	      2797 p95-us	   10440 B/op	     217 allocs/op
+BenchmarkTrafficIndex/SQLite/BodySearch-4       	     960	   2446318 ns/op	      2378 p50-us	      2725 p95-us	   10440 B/op	     217 allocs/op
+BenchmarkTrafficIndex/SQLite/BodySearch-4       	     985	   2444302 ns/op	      2358 p50-us	      2772 p95-us	   10440 B/op	     217 allocs/op
+BenchmarkTrafficIndex/SQLite/FilteredPage
+BenchmarkTrafficIndex/SQLite/FilteredPage-4     	     475	   4993737 ns/op	      4889 p50-us	      5572 p95-us	   42520 B/op	     922 allocs/op
+BenchmarkTrafficIndex/SQLite/FilteredPage-4     	     481	   5099206 ns/op	      5051 p50-us	      5856 p95-us	   42520 B/op	     922 allocs/op
+BenchmarkTrafficIndex/SQLite/FilteredPage-4     	     469	   5233897 ns/op	      5160 p50-us	      5994 p95-us	   42520 B/op	     922 allocs/op
+BenchmarkTrafficIndex/SQLite/ParallelGet
+BenchmarkTrafficIndex/SQLite/ParallelGet-4      	   94711	     24107 ns/op	   14868 B/op	      56 allocs/op
+BenchmarkTrafficIndex/SQLite/ParallelGet-4      	   98559	     24479 ns/op	   14868 B/op	      56 allocs/op
+BenchmarkTrafficIndex/SQLite/ParallelGet-4      	  101014	     24383 ns/op	   14869 B/op	      56 allocs/op
+BenchmarkTrafficIndex/SQLite/Record4KiB
+BenchmarkTrafficIndex/SQLite/Record4KiB-4       	     706	   3923702 ns/op	      1840 p50-us	     16670 p95-us	   12130 B/op	      89 allocs/op
+BenchmarkTrafficIndex/SQLite/Record4KiB-4       	     723	   3703405 ns/op	      1858 p50-us	     10094 p95-us	   12125 B/op	      89 allocs/op
+BenchmarkTrafficIndex/SQLite/Record4KiB-4       	     670	   3468346 ns/op	      1877 p50-us	      7792 p95-us	   12126 B/op	      89 allocs/op
+BenchmarkTrafficIndex/PostgreSQL
+    benchmark_test.go:63: backend=PostgreSQL corpus_rows=10000 body_bytes=4096 index_bytes=178511872
+BenchmarkTrafficIndex/PostgreSQL/Get
+BenchmarkTrafficIndex/PostgreSQL/Get-4          	   22442	    102979 ns/op	       101.5 p50-us	       117.1 p95-us	   15976 B/op	      63 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/Get-4          	   22880	    102512 ns/op	       100.8 p50-us	       116.7 p95-us	   15976 B/op	      63 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/Get-4          	   23292	    104104 ns/op	       102.2 p50-us	       117.6 p95-us	   15976 B/op	      63 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/HostPage
+BenchmarkTrafficIndex/PostgreSQL/HostPage-4     	   14420	    158295 ns/op	       153.8 p50-us	       186.8 p95-us	   42336 B/op	     899 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/HostPage-4     	   15162	    163487 ns/op	       155.3 p50-us	       203.3 p95-us	   42336 B/op	     899 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/HostPage-4     	   15256	    160407 ns/op	       153.9 p50-us	       200.1 p95-us	   42336 B/op	     899 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/BodySearch
+BenchmarkTrafficIndex/PostgreSQL/BodySearch-4   	     421	   5667283 ns/op	      5568 p50-us	      6211 p95-us	   18248 B/op	     228 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/BodySearch-4   	     418	   6056109 ns/op	      5892 p50-us	      7561 p95-us	   18248 B/op	     228 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/BodySearch-4   	     423	   5713584 ns/op	      5649 p50-us	      6350 p95-us	   18248 B/op	     228 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/FilteredPage
+BenchmarkTrafficIndex/PostgreSQL/FilteredPage-4 	     151	  15622996 ns/op	     15394 p50-us	     16988 p95-us	   51176 B/op	     940 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/FilteredPage-4 	     152	  15561494 ns/op	     15360 p50-us	     17174 p95-us	   51176 B/op	     940 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/FilteredPage-4 	     151	  16054771 ns/op	     15769 p50-us	     17953 p95-us	   51176 B/op	     940 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/ParallelGet
+BenchmarkTrafficIndex/PostgreSQL/ParallelGet-4  	   85954	     29511 ns/op	   15976 B/op	      63 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/ParallelGet-4  	   76072	     30040 ns/op	   15976 B/op	      63 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/ParallelGet-4  	   82320	     31724 ns/op	   15976 B/op	      63 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/Record4KiB
+BenchmarkTrafficIndex/PostgreSQL/Record4KiB-4   	    1304	   1744885 ns/op	      1278 p50-us	      1579 p95-us	   45411 B/op	      60 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/Record4KiB-4   	    1868	   1775074 ns/op	      1274 p50-us	      1566 p95-us	   45409 B/op	      60 allocs/op
+BenchmarkTrafficIndex/PostgreSQL/Record4KiB-4   	    1504	   1715097 ns/op	      1270 p50-us	      1570 p95-us	   45408 B/op	      60 allocs/op
+PASS
+ok  	github.com/Autumn-27/artex/traffic	175.536s
