@@ -4,6 +4,8 @@
 
 See [the deployment guide](../docs/experimental-runners.md#容器化管理器与动态执行池) for the optional Compose manager and Kubernetes pool templates. One manager creates execution environments on demand. The UI can persistently adjust concurrency, CPU and memory budgets within the node's hard capacity; reductions affect subsequent allocations while existing executions retain their resources. The Kubernetes backend uses shared RWX storage, scoped Pod permissions, no host socket and no execution service account token. GPU execution currently uses the Docker backend.
 
+Optional `warm_idle` on a controller environment prewarms concrete queued Kubernetes layouts, within the same physical Pod/CPU/memory budgets. Image, environment, resources, working directory and file mounts must match exactly. Inputs and MCP initialization start only after exclusive assignment. Every Pod is used once and destroyed. When no matching Pod is ready, the unchanged cold Pod can start alongside input transfer. Idle cleanup never removes possible recovery artifacts; the Docker backend is unchanged. See the deployment guide for configuration and retention details.
+
 Build with `go build -o artex-runner ./cmd/artex-runner`. A minimal node configuration is:
 
 ```json
