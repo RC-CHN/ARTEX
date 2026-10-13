@@ -1,6 +1,7 @@
+# Module path display normalized after the repository rename; original measurements are unchanged.
 goos: linux
 goarch: amd64
-pkg: github.com/Autumn-27/artex/traffic
+pkg: github.com/RC-CHN/ARTEX/traffic
 cpu: Intel(R) Xeon(R) CPU Max 9470C
 BenchmarkTrafficIndex
 BenchmarkTrafficIndex/SQLite
@@ -56,4 +57,4 @@ BenchmarkTrafficIndex/PostgreSQL/Record4KiB-4   	    1304	   1744885 ns/op	     
 BenchmarkTrafficIndex/PostgreSQL/Record4KiB-4   	    1868	   1775074 ns/op	      1274 p50-us	      1566 p95-us	   45409 B/op	      60 allocs/op
 BenchmarkTrafficIndex/PostgreSQL/Record4KiB-4   	    1504	   1715097 ns/op	      1270 p50-us	      1570 p95-us	   45408 B/op	      60 allocs/op
 PASS
-ok  	github.com/Autumn-27/artex/traffic	175.536s
+ok  	github.com/RC-CHN/ARTEX/traffic	175.536s
