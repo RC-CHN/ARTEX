@@ -40,8 +40,11 @@ type nodeSession struct {
 	sandbox            Sandbox
 	syncer             *runnerfiles.Syncer
 	mu                 sync.Mutex
+	stopMu             sync.Mutex // serialize and confirm process cleanup
 	ended              bool
 	stopped            bool
+	cleanupRunning     bool
+	cleanupAfter       time.Time
 	syncErr            error
 	checkpointRunning  bool
 	ready              chan struct{}
@@ -266,6 +269,10 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 		sent := time.Now()
 		err := n.request(ctx, "poll", runner.PollRequest{NodeID: n.identity.NodeID, BootID: n.bootID, Protocol: runner.ProtocolVersion, Notifications: notes, Capabilities: &n.Config.Capabilities}, &poll)
 		if err != nil {
+			var status *httpStatusError
+			if errors.As(err, &status) && (status.status == http.StatusUnauthorized || status.status == http.StatusForbidden || status.status == http.StatusGone) {
+				return fmt.Errorf("runner identity rejected; stopping local executions: %w", err)
+			}
 			failures++
 			if failures == 1 || failures%10 == 0 {
 				n.Log.Printf("controller poll unavailable (%d consecutive failures); lease watchdog remains active", failures)
@@ -323,7 +330,7 @@ func (n *Node) applyPoll(ctx context.Context, poll runner.PollResponse, sent tim
 	}
 	n.mu.Unlock()
 	for _, s := range old {
-		go n.abort(s)
+		n.scheduleAbort(s)
 	}
 	for _, cmd := range poll.Commands {
 		n.acceptCommand(ctx, cmd)
@@ -574,14 +581,11 @@ func (n *Node) executeCommand(ctx context.Context, cmd runner.Command) runner.Re
 				if e != nil {
 					result.Error = e.Error()
 				}
-				if e = sandbox.Stop(); e != nil {
-					result.Error = e.Error()
-					result.UnknownOutcome = true
-				}
 			}
-			s.mu.Lock()
-			s.stopped = !result.UnknownOutcome
-			s.mu.Unlock()
+			if e := n.stopSession(s); e != nil {
+				result.Error = e.Error()
+				result.UnknownOutcome = true
+			}
 			if !result.UnknownOutcome && s.syncer != nil {
 				if e := s.syncer.Push(s.ctx); e != nil {
 					result.Error = "final file publication: " + e.Error()
@@ -705,8 +709,19 @@ func (n *Node) abort(s *nodeSession) error {
 	s.cancel()
 	s.mu.Lock()
 	s.ended = true
-	sandbox := s.sandbox
 	s.mu.Unlock()
+	return n.stopSession(s)
+}
+
+func (n *Node) stopSession(s *nodeSession) error {
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
+	s.mu.Lock()
+	sandbox, stopped := s.sandbox, s.stopped
+	s.mu.Unlock()
+	if stopped {
+		return nil
+	}
 	if sandbox != nil {
 		err := sandbox.Stop()
 		if err == nil {
@@ -725,16 +740,53 @@ func (n *Node) abort(s *nodeSession) error {
 	}
 	return nil
 }
+
+// A slow/unavailable container runtime must not create another blocked Stop
+// goroutine on every poll/watchdog tick. Explicit close still waits for proof.
+func (n *Node) scheduleAbort(s *nodeSession) {
+	s.cancel()
+	s.mu.Lock()
+	s.ended = true
+	if s.stopped || s.cleanupRunning || time.Now().Before(s.cleanupAfter) {
+		s.mu.Unlock()
+		return
+	}
+	s.cleanupRunning = true
+	s.mu.Unlock()
+	go func() {
+		err := n.stopSession(s)
+		s.mu.Lock()
+		s.cleanupRunning = false
+		if err != nil {
+			s.cleanupAfter = time.Now().Add(5 * time.Second)
+		}
+		s.mu.Unlock()
+		if err != nil {
+			n.Log.Printf("session %s cleanup unconfirmed; retaining reservation and retrying: %v", s.id, err)
+		}
+	}()
+}
 func (n *Node) stopAll() {
 	n.mu.Lock()
 	sessions := []*nodeSession{}
 	for _, s := range n.sessions {
 		sessions = append(sessions, s)
 	}
-	n.sessions = map[string]*nodeSession{}
 	n.mu.Unlock()
 	for _, s := range sessions {
 		_ = n.abort(s)
+	}
+	// Keep preparing sessions reachable: Start may return a sandbox after this
+	// pass. Run waits for commands, then repeats cleanup before releasing its lock.
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	for id, s := range n.sessions {
+		s.mu.Lock()
+		stopped := s.stopped
+		s.mu.Unlock()
+		if stopped {
+			delete(n.sessions, id)
+		}
 	}
 }
 func (n *Node) watchdog(ctx context.Context) {
@@ -755,19 +807,20 @@ func (n *Node) watchdog(ctx context.Context) {
 			}
 			n.mu.Unlock()
 			for _, s := range expired {
-				go n.abort(s)
+				n.scheduleAbort(s)
 			}
 		}
 	}
 }
 func (n *Node) sendResults(ctx context.Context) {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+	timer := time.NewTimer(100 * time.Millisecond)
+	defer timer.Stop()
+	failures := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
 		n.mu.Lock()
 		pending := []runner.ResultRequest{}
@@ -777,11 +830,17 @@ func (n *Node) sendResults(ctx context.Context) {
 			}
 		}
 		n.mu.Unlock()
+		failed := false
 		for _, result := range pending {
 			var response runner.ResultResponse
-			if err := n.request(ctx, "results", result, &response); err != nil {
+			err := n.request(ctx, "results", result, &response)
+			if err == nil && !response.Accepted {
+				err = errors.New("controller did not acknowledge result")
+			}
+			if err != nil {
 				var status *httpStatusError
 				if !errors.As(err, &status) || (status.status != http.StatusGone && status.status != http.StatusConflict) {
+					failed = true
 					break
 				}
 			}
@@ -791,6 +850,14 @@ func (n *Node) sendResults(ctx context.Context) {
 			}
 			n.mu.Unlock()
 		}
+		delay := 100 * time.Millisecond
+		if failed {
+			failures++
+			delay = min(time.Duration(1<<min(failures-1, 6))*250*time.Millisecond, 10*time.Second)
+		} else {
+			failures = 0
+		}
+		timer.Reset(delay)
 	}
 }
 func (n *Node) checkpoints(ctx context.Context) {
@@ -835,6 +902,12 @@ func (n *Node) checkpoints(ctx context.Context) {
 					err = nil
 				}
 				if err != nil {
+					s.mu.Lock()
+					ending := s.ended
+					s.mu.Unlock()
+					if ending || s.ctx.Err() != nil {
+						return // expected drain/cancellation, not a new file failure
+					}
 					n.Log.Printf("session %s background file checkpoint failed: %v; preserving local snapshot for recovery", s.id, err)
 					s.mu.Lock()
 					first := s.syncErr == nil

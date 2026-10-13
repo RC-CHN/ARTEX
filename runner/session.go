@@ -400,12 +400,17 @@ func (s *Session) Close() error {
 		return ErrClosed
 	}
 	if r == nil || r.State == "closed" {
+		var err error
+		if r != nil && r.Reason != "" {
+			err = errors.New(r.Reason)
+		}
 		h.mu.Unlock()
-		return nil
+		return err
 	}
 	if !r.live() {
+		err := fmt.Errorf("%w: %s", ErrFenced, r.Reason)
 		h.mu.Unlock()
-		return &OutcomeError{Cause: ErrFenced}
+		return &OutcomeError{Cause: err}
 	}
 	if r.State != "draining" {
 		r.State = "draining"
@@ -429,8 +434,12 @@ func (s *Session) Close() error {
 			return nil
 		}
 		if h.closed || r == nil || !r.live() || !h.opts.Clock().Before(r.LeaseUntil) {
+			err := ErrFenced
+			if r != nil && r.Reason != "" {
+				err = fmt.Errorf("%w: %s", ErrFenced, r.Reason)
+			}
 			h.mu.Unlock()
-			return &OutcomeError{Cause: ErrFenced}
+			return &OutcomeError{Cause: err}
 		}
 		wake := h.wake
 		h.mu.Unlock()

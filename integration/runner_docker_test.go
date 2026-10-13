@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,6 +88,20 @@ func TestRunnerDockerExecutionAndIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	node.Log = log.New(io.Discard, "", 0)
+	// Fault injection only targets artifact transport. The actual tool command
+	// must keep exactly one side effect while its committed upload loses an ACK.
+	var lostArtifactACK atomic.Int32
+	node.HTTP.Transport = runnerFaultTransport(func(req *http.Request) (*http.Response, error) {
+		res, err := http.DefaultTransport.RoundTrip(req)
+		if req.Method == http.MethodPut && req.URL.Query().Get("path") == "i1/retry-counter" && err == nil && res.StatusCode == http.StatusOK {
+			if lostArtifactACK.Add(1) == 1 {
+				_, _ = io.Copy(io.Discard, res.Body)
+				res.Body.Close()
+				return nil, io.ErrUnexpectedEOF
+			}
+		}
+		return res, err
+	})
 	nodeCtx, stopNode := context.WithCancel(context.Background())
 	nodeDone := make(chan error, 1)
 	go func() { nodeDone <- node.Run(nodeCtx, token) }()
@@ -136,6 +151,10 @@ func TestRunnerDockerExecutionAndIsolation(t *testing.T) {
 	a := newDockerSDK(t, ctx, sessions[0], "/app/data/task/i1")
 	b := newDockerSDK(t, ctx, sessions[1], "/app/data/task/i2")
 	t.Cleanup(func() { _ = a.session.Close(); _ = b.session.Close() })
+	mustDockerCall(t, ctx, a, "Bash", map[string]any{"command": "printf x >> retry-counter"})
+	if content, err := os.ReadFile(filepath.Join(taskDir, "i1", "retry-counter")); err != nil || string(content) != "x" || lostArtifactACK.Load() != 2 {
+		t.Fatalf("artifact retry changed/replayed execution: content=%q uploads=%d err=%v", content, lostArtifactACK.Load(), err)
+	}
 	// Reproduce live output files spanning several checkpoints. A changing
 	// source is deferred, not a reason to cancel the entire execution environment.
 	writer := `import pathlib,time
@@ -303,6 +322,10 @@ pathlib.Path('writer-complete').write_text('done')`
 	eventually(t, ctx, "canceled sandbox and all children removed", func() bool { return containerRemoved(ctx, containers[1]) })
 	t.Log("real Docker sandboxes: two parallel workers, SDK/background tools, shared published mirrors, planner whole-workspace snapshot, native /home and /tmp paths, isolation, stdio MCP, close and cancellation passed")
 }
+
+type runnerFaultTransport func(*http.Request) (*http.Response, error)
+
+func (f runnerFaultTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 type dockerSDK struct {
 	session *agentcore.Session

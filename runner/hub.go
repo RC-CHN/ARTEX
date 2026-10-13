@@ -92,7 +92,8 @@ func New(opts Options) (*Hub, error) {
 	// expires. Fresh polls cannot extend a predecessor's lease.
 	for _, s := range h.state.Sessions {
 		if s.State != "closed" && s.State != "expired" {
-			s.State, s.Reason, s.HoldUntilExpiry = "fenced", "controller restarted; previous execution outcome may be unknown", true
+			s.State, s.HoldUntilExpiry = "fenced", true
+			s.addReason("controller restarted; previous execution outcome may be unknown")
 		}
 	}
 	h.expireLocked()
@@ -164,7 +165,8 @@ func (h *Hub) expireLocked() bool {
 	}
 	for id, s := range h.state.Sessions {
 		if s.State != "closed" && s.State != "expired" && !now.Before(s.LeaseUntil) {
-			s.State, s.Reason, s.FinishedAt = "expired", "runner lease expired; remote outcome may be unknown", now
+			s.State, s.FinishedAt = "expired", now
+			s.addReason("runner lease expired; remote outcome may be unknown")
 			changed = true
 		}
 		if !s.FinishedAt.IsZero() && now.Sub(s.FinishedAt) > 24*time.Hour {
@@ -426,7 +428,8 @@ func (h *Hub) fenceLocked(s *sessionRecord, reason string, hold bool) {
 	if s.State == "closed" || s.State == "expired" {
 		return
 	}
-	s.State, s.Reason = "fenced", reason
+	s.State = "fenced"
+	s.addReason(reason)
 	s.HoldUntilExpiry = s.HoldUntilExpiry || hold
 	for _, c := range s.Commands {
 		if c.Command.Kind == CommandClose {

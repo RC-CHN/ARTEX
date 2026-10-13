@@ -275,17 +275,19 @@ func (p *ProcessExecutor) Start(ctx context.Context, id string, spec runner.RunS
 }
 
 type rpcSandbox struct {
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	stop    func() error
-	stopErr error
-	once    sync.Once
-	writeMu sync.Mutex
-	mu      sync.Mutex
-	pending map[string]chan SandboxReply
-	done    chan struct{}
-	err     error
-	next    atomic.Uint64
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stop      func() error
+	stopErr   error
+	stopMu    sync.Mutex
+	stopped   bool
+	killOnce  sync.Once
+	writeGate chan struct{} // initialized under mu; waiting writers can cancel
+	mu        sync.Mutex
+	pending   map[string]chan SandboxReply
+	done      chan struct{}
+	err       error
+	next      atomic.Uint64
 }
 
 func startRPC(cmd *exec.Cmd, stop func() error, log io.Writer) (*rpcSandbox, error) {
@@ -343,10 +345,34 @@ func (s *rpcSandbox) finish(err error) {
 		close(s.done)
 	}
 }
-func (s *rpcSandbox) write(req SandboxRequest) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	return json.NewEncoder(s.stdin).Encode(req)
+func (s *rpcSandbox) write(ctx context.Context, req SandboxRequest) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	s.mu.Lock()
+	if s.writeGate == nil {
+		s.writeGate = make(chan struct{}, 1)
+	}
+	gate := s.writeGate
+	s.mu.Unlock()
+	select {
+	case gate <- struct{}{}:
+		defer func() { <-gate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// A child/attach process may stop reading stdin. A partially written JSON
+	// frame cannot be safely resumed; closing the pipe interrupts the write and
+	// lets the owner fence this attempt and confirm process cleanup.
+	interrupt := context.AfterFunc(ctx, func() { _ = s.stdin.Close() })
+	err := json.NewEncoder(s.stdin).Encode(req)
+	interrupt()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 func (s *rpcSandbox) Request(ctx context.Context, req SandboxRequest) (SandboxReply, error) {
 	req.ID = strconv.FormatUint(s.next.Add(1), 10)
@@ -362,7 +388,7 @@ func (s *rpcSandbox) Request(ctx context.Context, req SandboxRequest) (SandboxRe
 	s.pending[req.ID] = ch
 	s.mu.Unlock()
 	defer func() { s.mu.Lock(); delete(s.pending, req.ID); s.mu.Unlock() }()
-	if err := s.write(req); err != nil {
+	if err := s.write(ctx, req); err != nil {
 		return SandboxReply{}, err
 	}
 	select {
@@ -381,11 +407,21 @@ func (s *rpcSandbox) Request(ctx context.Context, req SandboxRequest) (SandboxRe
 		s.mu.Unlock()
 		return SandboxReply{}, err
 	case <-ctx.Done():
-		_ = s.write(SandboxRequest{Method: "cancel", CancelID: req.ID})
+		cancelCtx, done := context.WithTimeout(context.Background(), time.Second)
+		_ = s.write(cancelCtx, SandboxRequest{Method: "cancel", CancelID: req.ID})
+		done()
 		return SandboxReply{}, ctx.Err()
 	}
 }
 func (s *rpcSandbox) Stop() error {
-	s.once.Do(func() { s.stdin.Close(); s.stopErr = s.stop(); _ = killProcess(s.cmd) })
+	s.stopMu.Lock()
+	defer s.stopMu.Unlock()
+	if s.stopped {
+		return nil
+	}
+	s.stdin.Close()
+	s.stopErr = s.stop()
+	s.killOnce.Do(func() { _ = killProcess(s.cmd) })
+	s.stopped = s.stopErr == nil
 	return s.stopErr
 }

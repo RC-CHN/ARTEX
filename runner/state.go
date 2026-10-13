@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
@@ -100,6 +101,18 @@ type commandRecord struct {
 
 func (s *sessionRecord) live() bool {
 	return s.State == "opening" || s.State == "active" || s.State == "draining"
+}
+
+// Keep the originating failure when cleanup, expiry or a controller restart
+// supplies a later consequence. Repeated fencing must not grow diagnostics.
+func (s *sessionRecord) addReason(reason string) {
+	if reason == "" || strings.Contains(s.Reason, reason) {
+		return
+	}
+	if s.Reason != "" {
+		s.Reason += "; "
+	}
+	s.Reason += reason
 }
 func (s *sessionRecord) reserved(now time.Time) bool {
 	return s.State != "closed" && s.State != "expired" && now.Before(s.LeaseUntil)

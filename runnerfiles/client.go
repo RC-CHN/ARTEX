@@ -19,9 +19,10 @@ import (
 )
 
 type Client struct {
-	BaseURL    string // controller origin, without /runner/v1/files
-	Credential string
-	HTTP       *http.Client
+	BaseURL     string // controller origin, without /runner/v1/files
+	Credential  string
+	HTTP        *http.Client
+	IdleTimeout time.Duration // default one minute without transfer progress
 }
 
 func (c *Client) request(ctx context.Context, method, action, session, mount, p string, body io.Reader) (*http.Request, error) {
@@ -43,11 +44,7 @@ func (c *Client) request(ctx context.Context, method, action, session, mount, p 
 	return r, e
 }
 func (c *Client) do(r *http.Request) (*http.Response, error) {
-	cl := c.HTTP
-	if cl == nil {
-		cl = http.DefaultClient
-	}
-	res, e := cl.Do(r)
+	res, e := c.transferRequest(r)
 	if e != nil {
 		return nil, e
 	}
@@ -73,12 +70,23 @@ func (c *Client) do(r *http.Request) (*http.Response, error) {
 		cause = ErrDigest
 	case 413:
 		cause = ErrLimit
+	case 408, 429, 500, 502, 503, 504:
+		cause = fmt.Errorf("%w: HTTP %d", ErrUnavailable, res.StatusCode)
 	default:
 		cause = fmt.Errorf("HTTP %d", res.StatusCode)
 	}
 	return nil, fmt.Errorf("%w: %s", cause, strings.TrimSpace(string(b)))
 }
 func (c *Client) Manifest(ctx context.Context, session, mount string) ([]Entry, error) {
+	var entries []Entry
+	err := retryTransfer(ctx, func() (err error) {
+		entries, err = c.manifest(ctx, session, mount)
+		return err
+	})
+	return entries, err
+}
+
+func (c *Client) manifest(ctx context.Context, session, mount string) ([]Entry, error) {
 	r, e := c.request(ctx, "GET", "manifest", session, mount, "", nil)
 	if e != nil {
 		return nil, e
@@ -91,7 +99,7 @@ func (c *Client) Manifest(ctx context.Context, session, mount string) ([]Entry, 
 	var entries []Entry
 	e = json.NewDecoder(io.LimitReader(res.Body, 32<<20)).Decode(&entries)
 	if e != nil {
-		return nil, e
+		return nil, transferError(ctx, e)
 	}
 	seen := map[string]bool{}
 	for _, f := range entries {
@@ -130,6 +138,29 @@ func (c *Client) download(ctx context.Context, session, mount string, entry Entr
 	if err := validateEntry(entry); err != nil {
 		return err
 	}
+	if expectedLocal == "" {
+		if err := os.MkdirAll(destination, 0700); err != nil {
+			return err
+		}
+		root, name, err := openParent(Mount{Source: destination}, entry.Path, true)
+		if err != nil {
+			return err
+		}
+		expectedLocal, err = localVersion(ctx, root, name)
+		root.Close()
+		if err != nil {
+			return err
+		}
+	}
+	return retryTransfer(ctx, func() error {
+		return c.downloadOnce(ctx, session, mount, entry, destination, expectedLocal)
+	})
+}
+
+func (c *Client) downloadOnce(ctx context.Context, session, mount string, entry Entry, destination, expectedLocal string) error {
+	if err := validateEntry(entry); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(destination, 0700); err != nil {
 		return err
 	}
@@ -165,6 +196,7 @@ func (c *Client) download(ctx context.Context, session, mount string, entry Entr
 	defer res.Body.Close()
 	h := sha256.New()
 	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(contextReader{ctx, res.Body}, entry.Size+1))
+	err = transferError(ctx, err)
 	if err == nil && (n != entry.Size || hex.EncodeToString(h.Sum(nil)) != entry.Digest) {
 		err = ErrDigest
 	}
@@ -230,10 +262,16 @@ func (c *Client) Upload(ctx context.Context, session, mount, rootPath string, en
 	if copied.Digest != entry.Digest || copied.Size != entry.Size {
 		return fmt.Errorf("%w: %s changed before upload", ErrSourceBusy, entry.Path)
 	}
-	if _, err = snapshot.Seek(0, io.SeekStart); err != nil {
-		return err
-	}
-	req, err := c.request(ctx, "PUT", "blob", session, mount, entry.Path, snapshot)
+	// Keep the same immutable bytes AND original If-Match after a lost ACK.
+	// Re-snapshotting a live file could mistake our own committed write for a
+	// conflicting publisher. SectionReader also prevents HTTP from closing it.
+	return retryTransfer(ctx, func() error {
+		return c.uploadSnapshot(ctx, session, mount, entry, expected, io.NewSectionReader(snapshot, 0, entry.Size))
+	})
+}
+
+func (c *Client) uploadSnapshot(ctx context.Context, session, mount string, entry Entry, expected string, body io.Reader) error {
+	req, err := c.request(ctx, "PUT", "blob", session, mount, entry.Path, body)
 	if err != nil {
 		return err
 	}
@@ -247,7 +285,7 @@ func (c *Client) Upload(ctx context.Context, session, mount, rootPath string, en
 	defer res.Body.Close()
 	var published Entry
 	if err = json.NewDecoder(io.LimitReader(res.Body, 4096)).Decode(&published); err != nil {
-		return err
+		return transferError(ctx, err)
 	}
 	if published.Path != entry.Path || published.Digest != entry.Digest || published.Size != entry.Size {
 		return ErrDigest

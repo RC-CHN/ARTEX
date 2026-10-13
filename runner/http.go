@@ -417,7 +417,11 @@ func (h *Hub) acceptResult(req ResultRequest, authenticated string) error {
 		} else if !s.HoldUntilExpiry {
 			s.State = "closed"
 			s.FinishedAt = h.opts.Clock()
-			s.Reason = req.Error
+			if s.Reason == "" {
+				s.addReason(req.Error)
+			} else if req.Error != "" && req.Error != s.Reason {
+				s.addReason("cleanup: " + req.Error)
+			}
 		}
 	default:
 		return errors.New("unsupported command kind")
