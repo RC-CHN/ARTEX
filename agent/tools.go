@@ -59,9 +59,9 @@ type ToolSet struct {
 	taskID          int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
 	// coverageDisabled mirrors tasks.coverage_enabled=false. Stored inverted so the
 	// zero value (all existing ToolSet constructions) means ENABLED — matching the
-	// DB default (true). When true: graphOverviewData drops the coverage block, the
-	// auto-scope hook (insertAssets) is skipped, and add_task_scope/list_untested_assets
-	// are filtered out of the agent's tool list. The scope field stays regardless.
+	// DB default (true). When true: graphOverviewData omits coverage metrics and
+	// list_untested_assets is filtered out. Task scope and the auto-scope hook stay
+	// active because they define the task's asset boundary independently of metrics.
 	coverageDisabled bool
 	// ownerNode is the exploration node that writes attach to: assets this run
 	// touches get anchored to it as lineage/provenance (NOT visibility — the asset
@@ -169,8 +169,8 @@ func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
 func (t *ToolSet) SetTaskID(id int64) { t.taskID = id }
 
 // SetCoverageEnabled records whether this task has the asset-coverage feature on
-// (default enabled). Passing false makes graphOverviewData omit the coverage block
-// and DropCoverageTools filter the two coverage-only tools out of the agent's tool
+// (default enabled). Passing false makes graphOverviewData omit coverage metrics
+// and DropCoverageTools filter coverage-only tools out of the agent's tool
 // list. It does NOT stop scope accumulation: insertAssets' auto-scope hook runs
 // either way, because task_scope is the task's range boundary (the filter basis for
 // asset queries), not merely a coverage denominator.
@@ -518,12 +518,15 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	out["related_tasks"] = t.relatedTaskOverviews()
 	// coverage：粗略的资产测试覆盖度参考——范围(task_scope)内的资产里，被 fact 碰过的
 	// 占比 + by_type(按类型的 总数/已测)。要看未测的具体资产由 agent 按需调 list_untested_assets 自行判断。仅任务上下文有。
-	// 资产覆盖度功能关闭时(coverageDisabled)：只保留 host_count(目标主机数的感知信息)，
+	// 资产覆盖度功能关闭时(coverageDisabled)：保留 scope 和 host_count(目标主机数的感知信息)，
 	// 丢弃 denominator/tested/pct/by_type/note 等覆盖度度量，避免污染上下文、也不诱导
-	// 已隐藏的 add_task_scope/list_untested_assets。
+	// 已隐藏的 list_untested_assets。
 	if t.as != nil && t.ts != nil && t.taskID > 0 {
 		{
 			m := map[string]any{}
+			if scope, err := t.taskScopeOverview(); err == nil {
+				m["scope"] = scope
+			}
 			if !t.coverageDisabled {
 				if cov, err := t.as.TaskCoverageWithSources(t.taskID); err == nil {
 					m["denominator"] = cov.Denominator

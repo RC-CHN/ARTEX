@@ -216,6 +216,11 @@ type DeleteTaskResult struct {
 // Manager owns the PostgreSQL data source (asset graph + every task's exploration
 // graph + config) and the in-memory set of task handles.
 type Manager struct {
+	closeMu     sync.Mutex
+	closeOnce   sync.Once
+	closeHooks  []func()
+	closeErr    error
+	closing     bool
 	dir         string
 	pg          *pgdb.DB
 	assets      *pgdb.AssetStore
@@ -802,12 +807,25 @@ func (m *Manager) SetGlobalProxy(raw string) error {
 }
 
 func (m *Manager) Close() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.traffic != nil {
-		m.traffic.Close()
-	}
-	return m.pg.Close()
+	m.closeOnce.Do(func() {
+		m.closeMu.Lock()
+		m.closing = true
+		hooks := append([]func(){}, m.closeHooks...)
+		m.closeMu.Unlock()
+		for i := len(hooks) - 1; i >= 0; i-- {
+			hooks[i]()
+		}
+		if m.enrich != nil {
+			m.enrich.Close()
+		}
+		if m.traffic != nil {
+			m.closeErr = m.traffic.Close()
+		}
+		if m.pg != nil {
+			m.closeErr = errors.Join(m.closeErr, m.pg.Close())
+		}
+	})
+	return m.closeErr
 }
 
 // isTerminalStatus reports whether a task status is terminal (done/failed/timeout).

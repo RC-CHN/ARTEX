@@ -19,26 +19,44 @@ import (
 // newLLMHealthRegistry builds the process-wide circuit-breaker registry, mirroring
 // state into PG so a cooling-off window survives a restart. Writes are async and
 // best-effort — the in-memory copy is authoritative.
-func newLLMHealthRegistry(pg *db.DB) *llmpool.Registry {
+func newLLMHealthRegistry(pg *db.DB, writes *asyncWrites) *llmpool.Registry {
 	if pg == nil {
 		return llmpool.NewRegistry(nil, nil)
 	}
-	persist := func(id int64, st llmpool.State) {
-		h := db.LLMHealth{ProfileID: id, Fails: st.Fails, Trips: st.Trips, LastError: st.LastError}
-		if !st.OpenUntil.IsZero() {
-			t := st.OpenUntil
-			h.OpenUntil = &t
-		}
-		go func() {
+	return newLLMHealthRegistryWithStore(pg, writes)
+}
+
+type llmHealthStore interface {
+	SaveLLMHealth(db.LLMHealth) error
+	ClearLLMHealth(int64) error
+	LoadLLMHealth() ([]db.LLMHealth, error)
+}
+
+func newLLMHealthRegistryWithStore(pg llmHealthStore, writes *asyncWrites) *llmpool.Registry {
+	var reg *llmpool.Registry
+	flush := func(id int64) {
+		writes.start(func() {
+			// Registry invokes callbacks after releasing its mutex, so callbacks
+			// from concurrent Trip/Pass calls may arrive out of order. Resolve the
+			// latest state inside serialized I/O rather than saving their snapshots.
+			st := reg.Get(id)
+			if st == (llmpool.State{}) {
+				if err := pg.ClearLLMHealth(id); err != nil {
+					log.Printf("[llmpool] 熔断状态清理失败: %v", err)
+				}
+				return
+			}
+			h := db.LLMHealth{ProfileID: id, Fails: st.Fails, Trips: st.Trips, LastError: st.LastError}
+			if !st.OpenUntil.IsZero() {
+				t := st.OpenUntil
+				h.OpenUntil = &t
+			}
 			if err := pg.SaveLLMHealth(h); err != nil {
 				log.Printf("[llmpool] 熔断状态落库失败: %v", err)
 			}
-		}()
+		})
 	}
-	forget := func(id int64) {
-		go func() { _ = pg.ClearLLMHealth(id) }()
-	}
-	reg := llmpool.NewRegistry(persist, forget)
+	reg = llmpool.NewRegistry(func(id int64, _ llmpool.State) { flush(id) }, flush)
 	// Restore only windows that haven't expired (LoadLLMHealth filters), so a
 	// profile that finished cooling while we were down comes back healthy.
 	if rows, err := pg.LoadLLMHealth(); err == nil {

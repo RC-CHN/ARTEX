@@ -469,7 +469,13 @@ func (s *Server) runConversation(c *db.Conversation, msg, busyKey string, userMe
 	if len(userMessage) == 1 {
 		ctx = intercept.WithReviewContext(ctx, "", intercept.ReviewBackground{Source: intercept.BackgroundUserMessage, Text: userMessage[0]})
 	}
-	go s.runConversationTurn(ctx, cancel, c, msg, busyKey)
+	if !s.background(func() { s.runConversationTurn(ctx, cancel, c, msg, busyKey) }) {
+		cancel(agent.AbortShutdown)
+		s.chatMu.Lock()
+		delete(s.chatBusy, busyKey)
+		delete(s.chatCancel, busyKey)
+		s.chatMu.Unlock()
+	}
 }
 
 // runConversationSync runs ONE agent turn on a conversation and BLOCKS until the
@@ -639,7 +645,10 @@ func (s *Server) pumpLocked(agentKey string) {
 	for s.triggerActive[agentKey] < limit && len(s.triggerQ[agentKey]) > 0 {
 		item := s.nextTriggerRun(agentKey, cfg)
 		s.triggerActive[agentKey]++
-		go s.runAndPump(agentKey, item)
+		if !s.background(func() { s.runAndPump(agentKey, item) }) {
+			s.triggerActive[agentKey]--
+			return
+		}
 	}
 }
 

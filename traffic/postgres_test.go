@@ -58,7 +58,7 @@ func TestPostgresCaptureSearchEvidenceAndArchive(t *testing.T) {
 	if tr.Backend() != "postgres" {
 		t.Fatal("unexpected backend")
 	}
-	body := []byte(strings.Repeat("searchable payload 中文正文 ", 18000) + "deep-marker 100%_literal\\path")
+	body := []byte(strings.Repeat("searchable payload 中文正文 ", 18000) + "Deep-Marker 100%_literal\\path")
 	flow := newFlow("api.example.com:8443", "POST", "/v1/login", []byte(`{"password":"P@ssw0rd"}`), body)
 	// Raw headers can contain non-UTF-8 octets; bytea must preserve them exactly.
 	flow.Request.Header.Set("X-Legacy", string([]byte{0xff, 0xfe}))
@@ -178,7 +178,7 @@ func TestPostgresMigrationPreservesIDsBodiesBlobsAndLegacyPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := old.recordFlow(newFlow("old.example", "POST", "/capture", []byte("password=old"), []byte(strings.Repeat("long body ", 30000)+"tail-migration-marker"))); err != nil {
+	if err := old.recordFlow(newFlow("old.example", "POST", "/capture", []byte("password=old"), []byte(strings.Repeat("long body ", 30000)+"Tail-Migration-Marker"))); err != nil {
 		t.Fatal(err)
 	}
 	id := onlyExchangeID(t, old)
@@ -362,5 +362,101 @@ func TestPostgresMigrationRejectsNonemptyDestination(t *testing.T) {
 	var got string
 	if err := d.QueryRow(`SELECT id FROM ` + pgx.Identifier{schema, "exchanges"}.Sanitize()).Scan(&got); err != nil || got != id {
 		t.Fatalf("existing PostgreSQL capture changed: %q %v", got, err)
+	}
+}
+
+func TestPostgresFoldedSearchUpgrade(t *testing.T) {
+	dir := t.TempDir()
+	dsn, schema := postgresTestSchema(t)
+	tr, err := openPostgres(dir, "127.0.0.1:0", dsn, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "MixedCase ÄPFEL Αθήνα МОСКВА 中文正文 100%_literal\\Path quoted'question?"
+	if err := tr.recordFlow(newFlow("upgrade.example", "POST", "/MixedPath", nil, []byte(body))); err != nil {
+		t.Fatal(err)
+	}
+	id := onlyExchangeID(t, tr)
+	reqBefore, respBefore, err := tr.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the preceding PG release: an unfolded search document and no
+	// folded-search migration marker. Raw evidence remains untouched.
+	if _, err := tr.db.Exec(`DROP TRIGGER fold_search_document ON ex_fts`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.db.Exec(`UPDATE ex_fts SET content=?`, body); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tr.db.Exec(`DELETE FROM migrations WHERE name='folded-search-v2'`); err != nil {
+		t.Fatal(err)
+	}
+	// An injected upgrade failure must roll back both the content and marker.
+	if _, err := tr.db.Exec(`ALTER TABLE ex_fts ADD CONSTRAINT reject_fold CHECK(content LIKE '%MixedCase%') NOT VALID`); err != nil {
+		t.Fatal(err)
+	}
+	tr.Close()
+	if broken, err := openPostgres(dir, "127.0.0.1:0", dsn, schema); err == nil {
+		broken.Close()
+		t.Fatal("expected folded-index upgrade failure")
+	}
+	d, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	var count int
+	if err := d.QueryRow(`SELECT count(*) FROM ` + pgx.Identifier{schema, "migrations"}.Sanitize() + ` WHERE name='folded-search-v2'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("failed migration marked complete: %d %v", count, err)
+	}
+	var original string
+	if err := d.QueryRow(`SELECT content FROM ` + pgx.Identifier{schema, "ex_fts"}.Sanitize()).Scan(&original); err != nil || original != body {
+		t.Fatalf("failed migration changed document: %q %v", original, err)
+	}
+	if _, err := d.Exec(`ALTER TABLE ` + pgx.Identifier{schema, "ex_fts"}.Sanitize() + ` DROP CONSTRAINT reject_fold`); err != nil {
+		t.Fatal(err)
+	}
+	tr, err = openPostgres(dir, "127.0.0.1:0", dsn, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, term := range []string{"mixedcase", "Äpfel", "Αθήνα", "москва", "中文正文", `100%_literal\path`, "QUOTED'QUESTION?"} {
+		var matches bool
+		if err := tr.db.QueryRow(`SELECT ?::text ILIKE ?`, body, literalLike(term)).Scan(&matches); err != nil || !matches {
+			t.Fatalf("invalid comparison fixture %q: %v", term, err)
+		}
+		got, err := tr.query("upgrade.example", "", term, 0, 10)
+		if err != nil || len(got) != 1 || got[0].ID != id {
+			t.Fatalf("folded search differs from ILIKE for %q: %v %v", term, got, err)
+		}
+	}
+	if req, resp, err := tr.Get(id); err != nil || req != reqBefore || resp != respBefore {
+		t.Fatalf("search migration changed evidence: %v", err)
+	}
+	// Simulate an older application writing after an image rollback. The DB
+	// trigger keeps it searchable when the optimized binary starts again.
+	if _, err := tr.db.Exec(`UPDATE ex_fts SET content=?`, "Rollback-MiXeD-Marker"); err != nil {
+		t.Fatal(err)
+	}
+	if hits, err := tr.query("upgrade.example", "", "rollback-mixed-marker", 0, 10); err != nil || len(hits) != 1 {
+		t.Fatalf("old writer bypassed search normalization: %v %v", hits, err)
+	}
+	var xminBefore string
+	if err := tr.db.QueryRow(`SELECT xmin::text FROM ex_fts`).Scan(&xminBefore); err != nil {
+		t.Fatal(err)
+	}
+	tr.Close()
+	tr, err = openPostgres(dir, "127.0.0.1:0", dsn, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	var xminAfter string
+	if err := tr.db.QueryRow(`SELECT xmin::text FROM ex_fts`).Scan(&xminAfter); err != nil || xminBefore != xminAfter {
+		t.Fatalf("restart rewrote an upgraded document: %q/%q %v", xminBefore, xminAfter, err)
+	}
+	if n, err := tr.DeleteHost("UPGRADE.EXAMPLE"); err != nil || n != 1 {
+		t.Fatalf("metadata case-insensitive delete changed: %d %v", n, err)
 	}
 }

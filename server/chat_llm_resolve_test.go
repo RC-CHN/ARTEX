@@ -38,10 +38,10 @@ func TestChatUnavailableReasonDistinguishesStates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
+	defer func() {
 		_, _ = m.pg.Exec(`UPDATE llm_profiles SET is_default=false WHERE id=$1`, id)
 		_ = m.pg.DeleteProfile(id)
-	})
+	}()
 
 	// Profile exists but is not activated.
 	if reason := s.chatUnavailableReason(); !strings.Contains(reason, "没有已激活") {
@@ -81,7 +81,7 @@ func TestResolveChatAgentHonoursConversationProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = m.pg.DeleteProfile(id) })
+	defer func() { _ = m.pg.DeleteProfile(id) }()
 
 	// A conversation that pinned this profile resolves a chat agent despite the
 	// nil global fallback; without the fix the send precheck rejected it outright.

@@ -1,0 +1,11 @@
+{
+  "name": "artex-container-tools",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned browser tools for the ARTEX runtime image",
+  "dependencies": {
+    "@playwright/cli": "0.1.22",
+    "@playwright/mcp": "0.0.83",
+    "playwright": "1.64.0"
+  }
+}

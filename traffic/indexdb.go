@@ -36,15 +36,21 @@ func bindIndexSQL(query string, postgres bool) string {
 			parameter++
 			out.WriteByte('$')
 			out.WriteString(strconv.Itoa(parameter))
-		} else if !quoted && strings.HasPrefix(query[i:], " LIKE ") {
-			// SQLite LIKE is case-insensitive for ASCII. Retain that behavior.
-			out.WriteString(" ILIKE ")
-			i += len(" LIKE ") - 1
 		} else {
 			out.WriteByte(ch)
 		}
 	}
 	return out.String()
+}
+
+// Metadata keeps SQLite's case-insensitive matching on PostgreSQL. Apply only
+// to application-owned condition templates, never parameters or search SQL:
+// folded search documents deliberately use case-sensitive LIKE.
+func (t *Traffic) metadataLike(condition string) string {
+	if t.db.postgres {
+		return strings.ReplaceAll(condition, " LIKE ", " ILIKE ")
+	}
+	return condition
 }
 
 func (d *indexDB) Exec(query string, args ...any) (sql.Result, error) {

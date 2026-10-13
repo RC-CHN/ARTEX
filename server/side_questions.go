@@ -74,7 +74,7 @@ func (s *Server) initSideQuestions() {
 		s.side.seen[key] = [2]int64{snap.RunID, snap.Version}
 		s.side.pending[key] = snap
 	})
-	go func() {
+	s.background(func() {
 		defer close(s.side.done)
 		tick := time.NewTicker(250 * time.Millisecond)
 		defer tick.Stop()
@@ -87,7 +87,7 @@ func (s *Server) initSideQuestions() {
 				return
 			}
 		}
-	}()
+	})
 }
 
 func (s *Server) flushSideSnapshots() {
@@ -413,7 +413,15 @@ func (s *Server) handleSideQuestions(w http.ResponseWriter, r *http.Request, p s
 		s.side.mu.Lock()
 		s.side.runs[e.ID] = sideRun{key: key, parent: p, cancel: cancel, done: make(chan struct{})}
 		s.side.mu.Unlock()
-		go s.runSide(ctx, cancel, *e, p, provider, *snap, agentQuestion)
+		if !s.background(func() { s.runSide(ctx, cancel, *e, p, provider, *snap, agentQuestion) }) {
+			cancel()
+			s.side.mu.Lock()
+			if run, ok := s.side.runs[e.ID]; ok {
+				close(run.done)
+			}
+			delete(s.side.runs, e.ID)
+			s.side.mu.Unlock()
+		}
 	}
 	writeJSON(w, 202, e)
 }
@@ -434,7 +442,10 @@ func (s *Server) runSide(ctx context.Context, cancel context.CancelFunc, e sideq
 	}
 	// Deletions can race between request insertion and registration. Observe the
 	// persisted lifecycle even while a provider is blocked without emitting text.
+	watchDone := make(chan struct{})
+	defer func() { cancel(); <-watchDone }()
 	go func() {
+		defer close(watchDone)
 		tick := time.NewTicker(500 * time.Millisecond)
 		defer tick.Stop()
 		for {

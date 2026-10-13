@@ -53,11 +53,13 @@ func StartLogCapture() { log.SetOutput(logSink) }
 //  1. Restores the last 100 log rows from DB into the ring so the /logs page
 //     shows history immediately after restart.
 //  2. Starts an async goroutine that persists every subsequent log line to DB.
-func (s *logSinkT) SetDB(ctx context.Context, pg *db.DB) {
+func (s *logSinkT) SetDB(ctx context.Context, pg *db.DB) <-chan struct{} {
 	if pg == nil {
-		return
+		return nil
 	}
+	var done chan struct{}
 	s.dbOnce.Do(func() {
+		done = make(chan struct{})
 		ch := make(chan dbWriteReq, 2000)
 		s.mu.Lock()
 		s.dbCh = ch
@@ -89,6 +91,7 @@ func (s *logSinkT) SetDB(ctx context.Context, pg *db.DB) {
 		// Async writer: picks from channel and inserts into server_logs.
 		// Uses os.Stderr directly to report errors and avoids recursive log calls.
 		go func() {
+			defer close(done)
 			for {
 				select {
 				case req, ok := <-ch:
@@ -115,6 +118,7 @@ func (s *logSinkT) SetDB(ctx context.Context, pg *db.DB) {
 			}
 		}()
 	})
+	return done
 }
 
 // Write implements io.Writer for the log package: one call per log.Printf line.

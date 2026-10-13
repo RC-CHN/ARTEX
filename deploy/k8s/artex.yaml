@@ -91,7 +91,8 @@ spec:
               port: http
             periodSeconds: 5
             timeoutSeconds: 3
-            failureThreshold: 60
+            # Allow the one-time search-index backfill its 30-minute budget.
+            failureThreshold: 372
           readinessProbe:
             httpGet:
               path: /api/auth/status

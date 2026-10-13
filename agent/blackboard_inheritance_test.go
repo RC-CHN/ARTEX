@@ -27,7 +27,7 @@ func callReadJSON(t *testing.T, tool actool.CoreTool, input string) any {
 
 func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	d := testDB(t)
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	companies := d.Companies()
 	companyID, _, err := companies.UpsertCompany(fmt.Sprintf("overview-scope-%d", time.Now().UnixNano()), "")
@@ -85,6 +85,9 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	scopeRows, ok := coverage["scope"].([]map[string]any)
 	if !ok || len(scopeRows) != 1 {
 		t.Fatalf("task scope missing: %#v", coverage["scope"])
+	}
+	if scopeRows[0]["company_id"] != companyID || scopeRows[0]["company_name"] != companiesName(t, companies, companyID) {
+		t.Fatalf("company scope identity missing: %#v", scopeRows[0])
 	}
 	companyScope, ok := scopeRows[0]["company_scope"].([]map[string]any)
 	if !ok || len(companyScope) != len(inputs) {
@@ -155,6 +158,14 @@ func TestGraphOverviewExpandsAssociatedCompanyScope(t *testing.T) {
 	if hc, _ := disabledCoverage["host_count"].(int); hc < 1 {
 		t.Fatalf("coverage-disabled task lost company asset host count: %#v", disabledCoverage["host_count"])
 	}
+	disabledScope, ok := disabledCoverage["scope"].([]map[string]any)
+	if !ok || len(disabledScope) != 1 {
+		t.Fatalf("coverage-disabled task lost its scope: %#v", disabledCoverage["scope"])
+	}
+	disabledCompanyScope, ok := disabledScope[0]["company_scope"].([]map[string]any)
+	if !ok || len(disabledCompanyScope) != len(inputs) {
+		t.Fatalf("coverage-disabled task lost company rules: %#v", disabledScope[0])
+	}
 	if _, exists := disabledCoverage["denominator"]; exists {
 		t.Fatalf("coverage-disabled task unexpectedly exposed metrics: %#v", disabledCoverage)
 	}
@@ -185,7 +196,7 @@ func companiesName(t *testing.T, companies *db.CompanyStore, companyID int64) st
 
 func TestBlackboardToolsReadDirectSources(t *testing.T) {
 	d := testDB(t)
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	grand, err := d.CreateTask("grand", "grand goal", nil, 0, 0)
 	if err != nil {
@@ -369,7 +380,7 @@ func TestBlackboardToolsReadDirectSources(t *testing.T) {
 // model which ids it deferred, after de-duplicating and dropping invalid ids.
 func TestGetWorkerTraceStepIDsDegradeGracefully(t *testing.T) {
 	d := testDB(t)
-	defer d.Close()
+	t.Cleanup(func() { _ = d.Close() })
 
 	task, err := d.CreateTask("trace-cap", "goal", nil, 0, 0)
 	if err != nil {

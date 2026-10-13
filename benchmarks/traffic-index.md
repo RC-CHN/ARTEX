@@ -1,5 +1,7 @@
 # 流量索引 benchmark（2026-10-13）
 
+此报告记录首次迁移版 `f937c63` 的历史结果；后续搜索优化及测试修复见[优化报告](traffic-index-optimized.md)。
+
 环境：Linux amd64，Intel Xeon CPU Max 9470C；Go 1.26.3，`-cpu=4`；SQLite 驱动 `modernc.org/sqlite v1.52.0`，本地临时文件、WAL 与默认同步设置；PostgreSQL 16.14 独立 Docker 数据卷、经 loopback TCP 连接，`fsync` / `synchronous_commit` / `full_page_writes` 均为 `on`。数据库没有业务流量。
 
 同一 Go API、同一确定性语料：10,000 条记录，100 个主机，4 KiB 正文（不同 SHA-256 文本块），1% 带搜索词。读取数据在写基准前保持不变；建库、语料生成、ANALYZE、采样数组分配及清理不计时。每项 2 秒 × 3 轮，表中取三轮中位数，低者更好。P95 列也是各轮 P95 的中位数，不是合并样本的 P95。

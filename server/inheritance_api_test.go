@@ -27,10 +27,10 @@ func TestInheritedActivityDetailAndRelationDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
+	defer func() {
 		_, _ = m.DeleteTask(current.ID, DeleteTaskOptions{})
 		_, _ = m.DeleteTask(source.ID, DeleteTaskOptions{})
-	})
+	}()
 
 	plannerStep, err := source.Store.AppendActivity(db.Activity{
 		Worker: "planner", Kind: "text", Summary: "private planner", Detail: "private planner detail",
@@ -85,8 +85,8 @@ func TestInheritedActivityDetailAndRelationDeletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	currentAfter, ok := m.Task(current.ID)
-	if !ok || len(currentAfter.SourceTaskIDs) != 0 {
-		t.Fatalf("deleted source remained in live task DTO state: %+v", currentAfter)
+	if !ok || len(currentAfter.lifecycleSnapshot().SourceTaskIDs) != 0 {
+		t.Fatalf("deleted source remained in live task DTO state: %+v", currentAfter.lifecycleSnapshot())
 	}
 }
 

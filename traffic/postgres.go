@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,13 @@ CREATE TABLE IF NOT EXISTS ex_fts (
   content TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ex_fts_trgm ON ex_fts USING gin(content public.gin_trgm_ops);
+-- Enforce the derived-document invariant at the database boundary, including
+-- writes from an older binary after an image rollback and archive restores.
+CREATE OR REPLACE FUNCTION fold_search_document() RETURNS trigger
+LANGUAGE plpgsql AS $$ BEGIN NEW.content := lower(NEW.content); RETURN NEW; END $$;
+CREATE OR REPLACE TRIGGER fold_search_document
+BEFORE INSERT OR UPDATE OF content ON ex_fts
+FOR EACH ROW EXECUTE FUNCTION fold_search_document();
 CREATE TABLE IF NOT EXISTS migrations (
   name TEXT PRIMARY KEY, source_sha256 TEXT NOT NULL, exchanges BIGINT NOT NULL,
   bodies BIGINT NOT NULL, blob_refs BIGINT NOT NULL, completed_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -63,6 +71,26 @@ const postgresInsertExchange = `WITH ex AS (
 )
 INSERT INTO ex_fts(rowid,content) SELECT rowid,$16 FROM ex`
 
+// Fold only the derived search document. Raw HTTP headers/bodies retain their
+// exact bytes. Using the database's lower() both here and on the search term
+// preserves locale-aware case matching without lowercasing every candidate's
+// potentially multi-megabyte content during every GIN recheck.
+// This runs under the schema advisory lock and commits with its marker, so an
+// existing PG index upgrades atomically and a restart never repeats the rewrite.
+const foldSearchIndex = `
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM migrations WHERE name='folded-search-v2') THEN
+    -- Re-run the write trigger once for documents created before it existed.
+    UPDATE ex_fts SET content=content;
+    INSERT INTO migrations(name,source_sha256,exchanges,bodies,blob_refs)
+      SELECT 'folded-search-v2','',
+        (SELECT count(*) FROM exchanges),
+        (SELECT count(*) FROM exchange_bodies),
+        (SELECT count(*) FROM blob_refs);
+  END IF;
+END $$;
+`
+
 func exchangeArgs(item ArchiveExchange, path, content string) []any {
 	return []any{item.ID, item.TS, item.Host, item.Method, item.URLTemplate, item.URL,
 		item.Status, item.ContentType, item.ReqLen, item.RespLen, path,
@@ -77,6 +105,14 @@ func OpenPostgres(dir, addr, dsn string) (*Traffic, error) {
 }
 
 func openPostgres(dir, addr, dsn, schema string) (*Traffic, error) {
+	migrationTimeout := 30 * time.Minute
+	if value := os.Getenv("ARTEX_TRAFFIC_MIGRATION_TIMEOUT"); value != "" {
+		var err error
+		migrationTimeout, err = time.ParseDuration(value)
+		if err != nil || migrationTimeout < time.Second {
+			return nil, fmt.Errorf("ARTEX_TRAFFIC_MIGRATION_TIMEOUT must be a duration of at least 1s")
+		}
+	}
 	for _, name := range []string{"_blobs", "_ca"} {
 		if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
 			return nil, err
@@ -97,18 +133,25 @@ func openPostgres(dir, addr, dsn, schema string) (*Traffic, error) {
 	d.SetConnMaxIdleTime(5 * time.Minute)
 	t := &Traffic{dir: dir, addr: addr, db: &indexDB{DB: d, postgres: true}, fts: true, closed: make(chan struct{})}
 	fail := func(err error) (*Traffic, error) { d.Close(); return nil, err }
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), migrationTimeout)
 	defer cancel()
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return fail(err)
 	}
 	defer tx.Rollback()
+	// Backfills can exceed the normal request timeout. Keep the longer budget
+	// local to this transaction; pooled runtime connections retain two minutes.
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('statement_timeout',$1,true)`, strconv.FormatInt(migrationTimeout.Milliseconds(), 10)); err != nil {
+		tx.Rollback()
+		return fail(err)
+	}
 	for _, query := range []string{
 		`SELECT pg_advisory_xact_lock(7337741003)`,
 		`CREATE SCHEMA IF NOT EXISTS ` + quotedSchema,
 		`CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public`,
 		postgresSchema,
+		foldSearchIndex,
 	} {
 		if _, err := tx.ExecContext(ctx, query); err != nil {
 			tx.Rollback()

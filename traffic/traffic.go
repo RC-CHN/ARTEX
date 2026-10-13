@@ -161,6 +161,15 @@ type Traffic struct {
 	// stopping() treats as "not closing".
 	closed    chan struct{}
 	closeOnce sync.Once
+	closeErr  error
+	// lifecycleMu serializes proxy start, recorder/reaper admission, and close.
+	lifecycleMu   sync.Mutex
+	closing       bool
+	recordsClosed bool
+	started       bool
+	startDone     chan struct{}
+	recording     sync.WaitGroup
+	clients       map[*mproxy.ClientConn]net.Conn
 	// pass is the set of hosts whose MITM interception failed for a proxy/protocol
 	// reason; connections to them are tunneled transparently (fail-open) so the
 	// request still reaches the target — unrecorded — instead of being killed.
@@ -360,22 +369,6 @@ func (t *Traffic) CACertPath() string {
 	return filepath.Join(t.dir, "_ca", "mitmproxy-ca-cert.pem")
 }
 
-// Start runs the proxy (blocking); run in a goroutine.
-func (t *Traffic) Start() error { return t.proxy.Start() }
-
-// Close waits for background tree reclamation to finish before closing the
-// index, so shutdown never leaves a goroutine unlinking files out from under a
-// removed data directory. Index-space reclamation is signalled to stop first:
-// it holds a whole minutes-long budget, and finishing it is never worth delaying
-// shutdown for — the next deletion resumes it.
-func (t *Traffic) Close() error {
-	if t.closed != nil {
-		t.closeOnce.Do(func() { close(t.closed) })
-	}
-	t.reaping.Wait()
-	return t.db.Close()
-}
-
 // stopping reports whether Close has been called. A nil channel (the zero value)
 // is never ready, so this reads as "not closing" without a separate guard.
 func (t *Traffic) stopping() bool {
@@ -453,6 +446,10 @@ func (t *Traffic) record(f *mproxy.Flow) {
 // recordFlow persists metadata, inline bodies and search text atomically. Large
 // bodies are spilled before the database write; the writer lock excludes blob GC.
 func (t *Traffic) recordFlow(f *mproxy.Flow) error {
+	if !t.beginRecording() {
+		return ErrClosed
+	}
+	defer t.recording.Done()
 	t.wmu.Lock()
 	defer t.wmu.Unlock()
 	ct := f.Response.Header.Get("Content-Type")
@@ -483,7 +480,7 @@ func (t *Traffic) recordFlow(f *mproxy.Flow) error {
 	return tx.Commit()
 }
 
-// insertExchange is shared by the SQLite reference backend and archive imports.
+// insertExchange writes the SQLite reference backend used by tests and benchmarks.
 func (t *Traffic) insertExchange(tx *indexTx, item ArchiveExchange, path, content string) error {
 	var rowid int64
 	err := tx.QueryRow(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
@@ -801,7 +798,7 @@ func (t *Traffic) ftsFilter(term string) (cond string, arg any, ok bool) {
 		return "", nil, false
 	}
 	if t.db.postgres {
-		return `rowid IN (SELECT rowid FROM ex_fts WHERE content ILIKE ? ESCAPE '\')`, literalLike(term), true
+		return `rowid IN (SELECT rowid FROM ex_fts WHERE content LIKE lower(?) ESCAPE '\')`, literalLike(term), true
 	}
 	return `rowid IN (SELECT rowid FROM ex_fts WHERE ex_fts MATCH ?)`, ftsQuote(term), true
 }
@@ -878,13 +875,13 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 		args = append(args, vs...)
 	}
 	if h := strings.TrimSpace(f.Host); h != "" {
-		add("host LIKE ?", "%"+h+"%")
+		add(t.metadataLike("host LIKE ?"), "%"+h+"%")
 	}
 	if m := strings.TrimSpace(f.Method); m != "" {
 		add("method=?", strings.ToUpper(m))
 	}
 	if p := strings.TrimSpace(f.Path); p != "" {
-		add("url_template LIKE ?", "%"+p+"%")
+		add(t.metadataLike("url_template LIKE ?"), "%"+p+"%")
 	}
 	if cond, sargs, ok := statusFilter(f.Status); ok {
 		add(cond, sargs...)
@@ -897,7 +894,7 @@ func (t *Traffic) Page(f PageQuery, page, size int) (rows []ExchangeMeta, total 
 	}
 	if s := strings.TrimSpace(f.Query); s != "" {
 		like := "%" + s + "%"
-		const meta = "host LIKE ? OR url LIKE ? OR url_template LIKE ? OR method LIKE ? OR content_type LIKE ? OR CAST(status AS TEXT) LIKE ?"
+		meta := t.metadataLike("host LIKE ? OR url LIKE ? OR url_template LIKE ? OR method LIKE ? OR content_type LIKE ? OR CAST(status AS TEXT) LIKE ?")
 		// Metadata match OR full-text match: one search box, widest recall. Terms
 		// too short for trigram silently fall back to metadata only.
 		if cond, arg, ok := t.ftsFilter(s); ok {
@@ -1036,7 +1033,7 @@ func (t *Traffic) DeleteHost(host string) (int64, error) {
 	defer t.wmu.Unlock()
 	// Resolved before the rows go away: with a substring match, the index is the
 	// only record of which host directories the filter actually hit.
-	legacy, err := t.hostTrees(`host LIKE ?`, like)
+	legacy, err := t.hostTrees(t.metadataLike(`host LIKE ?`), like)
 	if err != nil {
 		return 0, err
 	}
@@ -1045,7 +1042,7 @@ func (t *Traffic) DeleteHost(host string) (int64, error) {
 		return 0, err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op once committed
-	n, err := t.deleteWhere(tx, `host LIKE ?`, like)
+	n, err := t.deleteWhere(tx, t.metadataLike(`host LIKE ?`), like)
 	if err != nil {
 		return 0, err
 	}
@@ -1364,7 +1361,7 @@ func (t *Traffic) reapStage(stageDir string) {
 	if stageDir == "" {
 		return
 	}
-	t.reaping.Go(func() {
+	t.startReaper(func() {
 		if err := os.RemoveAll(stageDir); err != nil {
 			log.Printf("[traffic] 清理历史流量目录 %s 失败：%v", stageDir, err)
 		}
@@ -1719,7 +1716,7 @@ func (t *Traffic) reclaim() {
 	if !t.reclaiming.CompareAndSwap(false, true) {
 		return // one pass at a time; a second would only contend for the lock
 	}
-	t.reaping.Go(func() {
+	if !t.startReaper(func() {
 		defer t.reclaiming.Store(false)
 		// One pinned connection for the whole pass: a long reclamation issues
 		// hundreds of statements, and letting the pool hand each one a different
@@ -1765,7 +1762,9 @@ func (t *Traffic) reclaim() {
 		if _, err := conn.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
 			log.Printf("[traffic] 截断 WAL 失败：%v", err)
 		}
-	})
+	}) {
+		t.reclaiming.Store(false)
+	}
 }
 
 // reclaimChunk does one bounded step and reports whether it made progress, which
@@ -1932,7 +1931,7 @@ func (t *Traffic) query(host, contains, bodyContains string, page, limit int) ([
 			// so constrain the original URL authority as a compatibility fallback.
 			// New and old captures therefore share the same search contract.
 			authority := net.JoinHostPort(hostName, port)
-			q += ` AND (url LIKE ? OR url LIKE ? OR url LIKE ?)`
+			q += t.metadataLike(` AND (url LIKE ? OR url LIKE ? OR url LIKE ?)`)
 			args = append(args,
 				"%://"+authority+"/%",
 				"%://"+authority+"?%",
@@ -1941,7 +1940,7 @@ func (t *Traffic) query(host, contains, bodyContains string, page, limit int) ([
 		}
 	}
 	if contains != "" {
-		q += ` AND (url LIKE ? OR url_template LIKE ?)`
+		q += t.metadataLike(` AND (url LIKE ? OR url_template LIKE ?)`)
 		args = append(args, "%"+contains+"%", "%"+contains+"%")
 	}
 	if b := strings.TrimSpace(bodyContains); b != "" {

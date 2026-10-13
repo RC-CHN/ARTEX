@@ -7,6 +7,7 @@
 package enrich
 
 import (
+	"context"
 	"crypto/tls"
 	"html"
 	"io"
@@ -48,6 +49,9 @@ type Engine struct {
 	cool   sync.Map // dedup/cooldown: "kind:id" -> time.Time (last run)
 	once   sync.Once
 	closed chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 const (
@@ -74,15 +78,18 @@ func New(as *db.AssetStore, proxy func() string, workers int) *Engine {
 		log.Printf("[enrich] dnsx 初始化失败，DNS 解析停用：%v", err)
 		resolv = nil
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
+		ctx: ctx, cancel: cancel,
 		as:     as,
 		resolv: resolv,
 		client: buildClient(proxy),
 		jobs:   make(chan job, queueSize),
 		closed: make(chan struct{}),
 	}
+	e.wg.Add(workers)
 	for i := 0; i < workers; i++ {
-		go e.worker()
+		go func() { defer e.wg.Done(); e.worker() }()
 	}
 	return e
 }
@@ -126,6 +133,11 @@ func (e *Engine) enqueue(j job) {
 		return
 	}
 	select {
+	case <-e.closed:
+		return
+	default:
+	}
+	select {
 	case e.jobs <- j:
 	default: // queue full → drop (best-effort enrichment)
 		log.Printf("[enrich] 队列已满，丢弃任务 kind=%d id=%d", j.kind, j.id)
@@ -134,16 +146,27 @@ func (e *Engine) enqueue(j job) {
 
 func id0(id int64) bool { return id <= 0 }
 
-// Close stops the workers (idempotent).
+// Close cancels HTTP probes and joins workers before their database is closed.
 func (e *Engine) Close() {
 	if e == nil {
 		return
 	}
-	e.once.Do(func() { close(e.closed) })
+	e.once.Do(func() {
+		close(e.closed)
+		if e.cancel != nil {
+			e.cancel()
+		}
+	})
+	e.wg.Wait()
 }
 
 func (e *Engine) worker() {
 	for {
+		select {
+		case <-e.closed:
+			return
+		default:
+		}
 		select {
 		case <-e.closed:
 			return
@@ -183,6 +206,9 @@ func (e *Engine) doDNS(id int64, host string) {
 	}
 	data, err := e.resolv.QueryMultiple(host)
 	if err != nil || data == nil {
+		return
+	}
+	if e.ctx != nil && e.ctx.Err() != nil {
 		return
 	}
 	ips := uniq(append(append([]string{}, data.A...), data.AAAA...))
@@ -226,7 +252,7 @@ func (e *Engine) doHTTP(id int64, rawURL string) {
 	if host == "" {
 		return
 	}
-	req, err := http.NewRequest("GET", rawURL, nil)
+	req, err := http.NewRequestWithContext(e.ctx, "GET", rawURL, nil)
 	if err != nil {
 		return
 	}

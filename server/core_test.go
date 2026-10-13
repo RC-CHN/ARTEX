@@ -47,22 +47,8 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 		return rec.Code, out
 	}
 
-	// doRetry retries on 5xx (transient DB conflicts from parallel test packages).
-	doRetry := func(method, path string, body any) (int, map[string]any) {
-		var code int
-		var out map[string]any
-		for i := 0; i < 5; i++ {
-			code, out = do(method, path, body)
-			if code < 500 {
-				break
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
-		return code, out
-	}
-
 	// create a task → 201, returns PG task (string id + exploration_id)
-	code, out := doRetry("POST", "/api/tasks", map[string]string{"description": "smoke", "goal": "测试 SQLi/XSS"})
+	code, out := do("POST", "/api/tasks", map[string]string{"description": "smoke", "goal": "测试 SQLi/XSS"})
 	if code != 201 {
 		t.Fatalf("create task: %d (%v)", code, out)
 	}
@@ -89,14 +75,14 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 	}
 
 	// it shows in the task list
-	code, out = doRetry("GET", "/api/tasks", nil)
+	code, out = do("GET", "/api/tasks", nil)
 	if code != 200 {
 		t.Fatalf("list tasks: %d", code)
 	}
 
 	// The task detail header consumes the top-level engine mode while some clients
 	// read the active-task snapshot. Keep both representations in sync.
-	code, out = doRetry("GET", "/api/stats?task="+id, nil)
+	code, out = do("GET", "/api/stats?task="+id, nil)
 	if code != 200 {
 		t.Fatalf("task stats: %d (%v)", code, out)
 	}
@@ -138,7 +124,7 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 	}
 	// A non-canonical path still resolves to the one canonical task key for the
 	// barrier, workspace, in-memory registry and DB delete.
-	code, out = doRetry("DELETE", "/api/tasks/000"+id, map[string]bool{
+	code, out = do("DELETE", "/api/tasks/000"+id, map[string]bool{
 		"delete_files":       true,
 		"delete_findings":    true,
 		"delete_llm_records": true,

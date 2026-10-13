@@ -342,6 +342,11 @@ func TestCompanyScopeAttribution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertCompany: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := cs.DeleteCompany(cid); err != nil {
+			t.Errorf("delete fixture company and scope: %v", err)
+		}
+	})
 
 	// a pre-existing asset (inserted BEFORE any scope) — must be back-filled.
 	preID, err := as.UpsertSubdomain(UpsertSubdomainReq{Domain: sub})

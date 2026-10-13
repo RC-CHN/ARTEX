@@ -106,7 +106,10 @@ type Engine struct {
 	// deleteMu makes installing the delete barrier atomic with registering a new
 	// task operation. Once BeginDelete returns, every admitted writer is reflected
 	// in inflight and every later writer is rejected.
-	deleteMu sync.RWMutex
+	deleteMu     sync.RWMutex
+	closed       bool
+	closeOnce    sync.Once
+	operationsWG sync.WaitGroup
 
 	// Every long-lived task goroutine (planner, workers and deadline coordinator)
 	// runs under one task-scoped context. Successful deletion cancels that context,
@@ -322,8 +325,15 @@ func (e *Engine) Resume(t *Task) {
 // execContextFor returns a live per-task context derived from parent, recreating
 // it if a prior pause cancelled it.
 func (e *Engine) execContextFor(parent context.Context, taskID string) context.Context {
+	e.deleteMu.RLock()
+	defer e.deleteMu.RUnlock()
 	e.execMu.Lock()
 	defer e.execMu.Unlock()
+	if e.closed {
+		ctx, cancel := context.WithCancelCause(parent)
+		cancel(agent.AbortShutdown)
+		return ctx
+	}
 	if e.IsPaused(taskID) {
 		// never hand out a live context while paused (guards the claim→Execute race)
 		c, cancel := context.WithCancelCause(parent)
@@ -387,10 +397,14 @@ func (e *Engine) ActiveLLMCalls(taskID string) int64 {
 func (e *Engine) touch(taskID string) { e.lastAct.Store(taskID, time.Now().Unix()) }
 
 func NewEngine(m *Manager) *Engine {
-	return &Engine{m: m, debounce: 800 * time.Millisecond, bc: NewBroadcaster(),
+	e := &Engine{m: m, debounce: 800 * time.Millisecond, bc: NewBroadcaster(),
 		execCancel: map[string]context.CancelCauseFunc{}, execCtx: map[string]context.Context{},
 		work: map[int64]*workExecution{}, steerBox: map[int64][]string{},
 		runtimes: map[string]*taskRuntime{}}
+	if m != nil {
+		m.onClose(e.Close)
+	}
+	return e
 }
 
 // registerWork records the cancel for the work currently running intentID.
@@ -746,9 +760,8 @@ func (e *Engine) ReadyFor(t *Task) bool {
 // but no-op until an LLM is configured (so a task created while idle picks up
 // automatically once LLM is set from the UI).
 func (e *Engine) Run(ctx context.Context, t *Task) {
-	workers := e.m.Workers()
 	e.deleteMu.RLock()
-	if e.IsDeleting(t.ID) {
+	if e.closed || e.IsDeleting(t.ID) {
 		e.deleteMu.RUnlock()
 		return
 	}
@@ -757,6 +770,7 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 		t.Notify() // already running — just nudge a planning round
 		return
 	}
+	workers := e.m.Workers()
 	rt := e.registerTaskRoutines(ctx, t.ID, 1+workers)
 	e.deleteMu.RUnlock()
 	e.touch(t.ID)
@@ -1088,12 +1102,12 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		e.touch(t.ID)
 		return true
 	}
-	// if a pause cancelled this run mid-flight, return the intent to the frontier
-	// so it is re-claimed on resume — the worker will resume the prior LLM
-	// conversation from its transcript instead of restarting from scratch.
-	if ectx.Err() != nil && taskExecutionPaused(context.Cause(ectx)) {
+	// Pausing, deletion rollback, and process shutdown leave interrupted work
+	// recoverable. In particular, a provider returning nil after cancellation
+	// must not turn an interrupted intent into a completed one.
+	if ectx.Err() != nil && (taskExecutionPaused(context.Cause(ectx)) || errors.Is(context.Cause(ectx), agent.AbortShutdown)) {
 		if err := transitionIntentState(t.Store, intent.ID, "running", "open"); err != nil {
-			log.Printf("[worker %s] task %s 意图 #%d 任务暂停回退失败: %v", name, t.ID, intent.ID, err)
+			log.Printf("[worker %s] task %s 意图 #%d 中断回退失败: %v", name, t.ID, intent.ID, err)
 		}
 		return true
 	}

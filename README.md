@@ -181,7 +181,9 @@ kubectl -n artex get pods,pvc,service
 
 ### 流量索引与旧版本迁移
 
-运行时流量索引复用 `ARTEX_PG_DSN` 指定的 PostgreSQL，在独立的 `artex_traffic` schema 中保存元数据、报文头、小正文和 blob 引用。大正文保留在共享卷的 `data/traffic/_blobs`；使用 `pg_trgm` 的 GIN 索引支持中文和任意子串搜索。数据库用户需有创建 schema 与 `pg_trgm` 扩展的权限；受限环境可由管理员预先安装 `CREATE EXTENSION pg_trgm WITH SCHEMA public;`。
+运行时流量索引复用 `ARTEX_PG_DSN` 指定的 PostgreSQL，在独立的 `artex_traffic` schema 中保存元数据、报文头、小正文和 blob 引用。大正文保留在共享卷的 `data/traffic/_blobs`；使用 `pg_trgm` 的 GIN 索引支持中文和任意子串搜索。派生搜索文档由数据库写入触发器统一转小写，查询使用 `LIKE lower(...)`，避免逐次对候选大正文做大小写转换；原始报文保持字节不变。数据库用户需有创建 schema 与 `pg_trgm` 扩展的权限；受限环境可由管理员预先安装 `CREATE EXTENSION pg_trgm WITH SCHEMA public;`。
+
+旧 PostgreSQL 搜索文档会在启动时一次性规范化，与 `folded-search-v2` 标记在同一事务提交；触发器也兼容旧镜像写入。PG 搜索索引回填默认限时 30 分钟，可通过 `ARTEX_TRAFFIC_MIGRATION_TIMEOUT=60m` 调整，并相应延长部署的 startup probe；正常查询仍限时 2 分钟。
 
 从 SQLite 版本升级时，先停止旧实例并备份 PostgreSQL 与应用数据卷，再启动新版本。Kubernetes 保持单副本和 `Recreate`。检测到 `data/traffic/_index/index.sqlite` 后，程序会复制数据库及 WAL 到临时目录，保留原文件，验证完整性与 blob 校验和，然后在一个 PostgreSQL 事务中导入历史 ID、正文和引用、重建搜索索引并写入完成标记。迁移失败会终止启动，事务回滚后可修复问题并重试；成功后重启不会重复导入或恢复已删除的流量。
 
@@ -197,7 +199,22 @@ go test ./traffic -run '^$' -bench '^BenchmarkTrafficIndex$' -benchmem -benchtim
 
 默认构造 10,000 条、每条 4 KiB 正文的数据，分布于 100 个主机；可用 `ARTEX_TRAFFIC_BENCH_ROWS` 调整规模。测试比较 SQLite WAL 本地文件与 PostgreSQL 的读取、主机分页、正文搜索、筛选分页、并发读取和录制，报告平均耗时、P50/P95、内存分配与初始索引占用。建库、生成数据和清理不计入耗时；SQLite 仅用作性能基线与兼容测试，不作为共享文件系统上的生产后端。
 
-[三轮实测结果与原始数据](benchmarks/traffic-index.md)：在所测 10,000 条语料下，PostgreSQL 录制与主机分页较快，单条读取和正文搜索较慢；这次迁移优先解决共享文件系统上的 SQLite WAL 依赖，具体性能取舍见报告。
+[搜索优化后三轮实测](benchmarks/traffic-index-optimized.md)：同一 10,000 条语料下，PG 正文搜索从 5.714 ms 降至 1.832 ms（−67.9%），组合筛选从 15.623 ms 降至 6.929 ms（−55.6%）；录制从 1.745 ms 增至 1.917 ms（+9.9%）。正文搜索快于本轮 SQLite，组合筛选仍略慢；详见报告中的完整延迟、P95 和测试边界。[首次迁移基线](benchmarks/traffic-index.md)继续保留。
+
+### 开发回归与镜像构建
+
+全项目集成测试使用显式的 `ARTEX_TEST_PG_DSN`（兼容 `ARTEX_PG_DSN`）。测试用户需要 `CREATEDB` 权限；每个包创建独立数据库，结束后自动删除，不在指定的管理数据库中清理业务表。未设置时跳过 PG 集成测试，不读取应用的 `config.json`。流量包继续使用独立 schema 的 `ARTEX_TRAFFIC_TEST_DSN`。
+
+```bash
+export ARTEX_TEST_PG_DSN='postgres://test_user:test_password@127.0.0.1:5432/artex_test?sslmode=disable'
+export ARTEX_TRAFFIC_TEST_DSN="$ARTEX_TEST_PG_DSN"
+go test ./... -count=2
+go test -race ./server ./traffic ./enrich
+```
+
+关闭服务时会停止接收后台工作、取消并等待任务及日志写入，再关闭数据库。关联公司的任务范围会进入 Planner / 主 Agent 概览，即使覆盖率统计关闭或尚未发现资产也保留范围规则。
+
+容器基础镜像固定摘要，浏览器工具通过公开 npm lockfile 固定直接及传递依赖。发布版本参数只影响编译和镜像标签，工具安装层可复用。构建阶段验证各工具实际使用的 Chromium 与 MCP 调用；详见 [构建与缓存验证](deploy/container-tools/BUILDING.md)。
 
 ---
 
