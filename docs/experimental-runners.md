@@ -57,6 +57,10 @@ Compose 执行容器加入独立的 `artex-runners` 网络，可访问 `artex:87
 - 页面生成令牌后，通过 `kubectl -n artex-runners create secret generic artex-runner-enrollment --from-file=token=私有令牌文件` 保存。应用私有 overlay；节点上线后可以删除该一次性 Secret，持久凭据支持以后重启。
 - 页面将执行镜像设置成固定摘要并选择环境网络出口，再切换 Agent 模式。执行镜像地址也必须是集群可达入口；Kustomize 的 `images` 不会改写数据库里的执行镜像。
 
+使用 Harbor 等代理缓存时，要验证固定的摘要已经保存在内网仓库。缓存可能只保留已拉取的平台，并生成与上游不同的多架构索引；上游健康时原索引可被转发，上游不可用后却可能返回 `not found`。单一架构集群可从经过验证的发布索引中选择对应平台的镜像摘要，核对内网清单内容与摘要一致后，分别配置主服务、管理器和数据库中的执行环境。混合架构集群应完整同步所需平台及索引，或为不同 Runner 配置对应架构的镜像，不能把 AMD64 摘要直接用于 ARM64 主机。
+
+升级验证应覆盖每个可调度节点的实际镜像拉取与最小容器启动，并检查代理缓存的本地清单是否完整。仅在已缓存镜像的一个节点上看到 Pod 就绪，不能证明其他节点或上游故障时也能启动。修改主服务和管理器的 Deployment 会重建容器，应等待活动执行归零；只修改中央执行环境镜像则作用于后续领取。
+
 模板默认硬上限为 **4 个执行 Pod**，ResourceQuota 额外允许 **1 个管理 Pod**。扩大硬上限时同时修改 `capabilities.slots`、CPU/内存容量及 ResourceQuota；平时在页面调整并发及资源额度即可。执行器在互斥区内核对实际 Pod 数和资源预留后创建，Pending/Terminating Pod 也计数；API 不可达时停止新增。不会用强制删除来假装旧进程已经结束。
 
 Pod 使用非 root 身份、只读根文件系统、禁止提权、移除 capabilities、独立临时卷、CPU/内存配额，并禁止挂载 ServiceAccount token。管理器只有专用命名空间内的 Pod 创建/查询/删除/attach 权限。心跳独立于工具调用及文件同步，管理器失联后沙箱在 30 秒内停止工具；管理器重启先清理自己的遗留 Pod，再领取任务。
@@ -88,6 +92,8 @@ Runner 状态快照以 PostgreSQL `JSON` 原样保存，升级时自动将旧 `J
 - `environments`：环境的镜像摘要、CPU 毫核、内存 MiB、进程数、GPU 数量、标签、显式环境变量和只读输入目录。
 - `acquire_timeout_seconds`：等待容量及初始化沙箱的时限，不是 Agent 的总执行时间。
 - `mcp`：个别 MCP 的执行位置及中央覆盖配置。
+
+Worker 的单次执行总时限在 Agent 配置的“运行时长（秒）”中设置，对应 `run_seconds`；设为 `0` 即不限时，并持久保存。它与 `acquire_timeout_seconds`、单个工具的超时、Runner 心跳租约和手动取消独立。修改后用于后续执行，已经启动的执行保留启动时的截止时间；任务自身显式设置的截止时间仍然有效。
 
 Runner 的 `capabilities.environments` 声明它接收的环境名称，`labels` 表示网络位置或额外软件能力。默认继承控制端镜像；`allowed_images` 可以限定允许的摘要，`image_override` 可以显式选择节点自己的固定镜像。覆盖镜像也必须包含 sandbox 可执行文件及所需依赖。节点配置变化需要重启 runner 后重新报告能力。
 
