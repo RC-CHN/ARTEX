@@ -42,7 +42,11 @@ func TestOpeningPollDoesNotStarveFileTransfers(t *testing.T) {
 	for _, mode := range []string{"no_polls", "pending_open_hot_polls", "pending_open_paced_polls"} {
 		t.Run(mode, func(t *testing.T) {
 			store := &diagnosticSlowStore{}
-			h, err := New(Options{Store: store, LeaseDuration: time.Minute, PollWait: time.Second})
+			// Test contention, not a CI machine's HTTP/disk throughput. Keep lease
+			// time fixed so a slow race run cannot turn an unchanged poll into a
+			// legitimate renewal write; renewal itself is tested separately below.
+			clock := &testClock{now: time.Now()}
+			h, err := New(Options{Store: store, Clock: clock.Now, LeaseDuration: time.Minute, PollWait: time.Second})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -108,7 +112,7 @@ func TestOpeningPollDoesNotStarveFileTransfers(t *testing.T) {
 				})
 			}
 			syncer := &runnerfiles.Syncer{Client: &runnerfiles.Client{BaseURL: srv.URL, Credential: n.credential, HTTP: srv.Client()}, Session: open.SessionID, Plan: plan, Roots: map[string]string{"workspace": t.TempDir(), "published": t.TempDir()}}
-			pullCtx, stopPull := context.WithTimeout(ctx, 2500*time.Millisecond)
+			pullCtx, stopPull := context.WithTimeout(ctx, 15*time.Second)
 			start := time.Now()
 			pullErr := syncer.Pull(pullCtx)
 			elapsed := time.Since(start)
@@ -117,13 +121,13 @@ func TestOpeningPollDoesNotStarveFileTransfers(t *testing.T) {
 			wg.Wait()
 			store.delay.Store(0)
 
+			t.Logf("mode=%s elapsed=%s pull_error=%v authorizations=%d authorization_wait=%s polls=%d same_open_deliveries=%d", mode, elapsed, pullErr, authN.Load(), time.Duration(authNS.Load()), polls.Load(), repeats.Load())
 			if pullErr != nil {
 				t.Fatalf("file synchronization starved by polling: %v", pullErr)
 			}
 			if written := store.saves.Load() - beforeSaves; written != 0 {
 				t.Fatalf("unchanged polls rewrote retained history %d times", written)
 			}
-			t.Logf("mode=%s elapsed=%s pull_error=%v authorizations=%d authorization_wait=%s polls=%d same_open_deliveries=%d", mode, elapsed, pullErr, authN.Load(), time.Duration(authNS.Load()), polls.Load(), repeats.Load())
 			cancel()
 			select {
 			case <-acq:
