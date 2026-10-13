@@ -1,9 +1,90 @@
 package llm
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func assertOpenAIToolOrder(t *testing.T, msgs []oaMessage) {
+	t.Helper()
+	pending := map[string]bool{}
+	for i, m := range msgs {
+		if m.Role == "tool" {
+			if m.ToolCallID == "" || !pending[m.ToolCallID] {
+				t.Fatalf("message %d has an unexpected tool result %q", i, m.ToolCallID)
+			}
+			delete(pending, m.ToolCallID)
+			continue
+		}
+		if len(pending) > 0 {
+			t.Fatalf("message %d interrupts unanswered tool calls %v", i, pending)
+		}
+		for _, c := range m.ToolCalls {
+			if c.ID == "" || pending[c.ID] {
+				t.Fatalf("invalid or duplicate call id %q", c.ID)
+			}
+			pending[c.ID] = true
+		}
+	}
+	if len(pending) > 0 {
+		t.Fatalf("unanswered tail: %v", pending)
+	}
+}
+
+func TestSanitizeRequiresResultsInTheSameExchange(t *testing.T) {
+	call := oaMessage{Role: "assistant", ToolCalls: []oaToolCall{oaCall("a")}}
+	result := oaMessage{Role: "tool", ToolCallID: "a", Content: "original result"}
+	for _, tc := range []struct {
+		name    string
+		msgs    []oaMessage
+		results int
+	}{
+		{"summary between call and result", []oaMessage{call, {Role: "user", Content: "summary"}, result}, 0},
+		{"result precedes call", []oaMessage{result, call}, 0},
+		{"assistant interrupts", []oaMessage{call, {Role: "assistant", Content: "interrupted"}, result}, 0},
+		{"old result cannot answer reused id", []oaMessage{call, result, call}, 1},
+		{"duplicate result", []oaMessage{call, result, result}, 1},
+		{"duplicate call", []oaMessage{{Role: "assistant", ToolCalls: []oaToolCall{oaCall("a"), oaCall("a")}}, result}, 1},
+		{"empty ids", []oaMessage{{Role: "assistant", ToolCalls: []oaToolCall{oaCall("")}}, {Role: "tool"}}, 0},
+		{"parallel reverse completion", []oaMessage{{Role: "assistant", ToolCalls: []oaToolCall{oaCall("a"), oaCall("b")}}, {Role: "tool", ToolCallID: "b", Content: "second"}, result}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sanitizeOpenAIMessages(tc.msgs, true)
+			assertOpenAIToolOrder(t, got)
+			if countRole(got, "tool") != tc.results {
+				t.Fatalf("result count: %d, want %d", countRole(got, "tool"), tc.results)
+			}
+			if again := sanitizeOpenAIMessages(got, true); !reflect.DeepEqual(got, again) {
+				t.Fatal("send guard is not idempotent")
+			}
+		})
+	}
+}
+
+func TestBuildBodyPreservesEmptyToolResultContent(t *testing.T) {
+	p := &openaiProvider{cfg: Config{Model: "fixture"}}
+	raw, err := p.buildBody(CompletionRequest{Messages: []Message{toolUseMsg("empty"), {Role: RoleUser, Content: []ContentBlock{{Type: BlockToolResult, ToolUseID: "empty"}}}}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range body.Messages {
+		if m["role"] == "tool" {
+			if v, ok := m["content"]; !ok || v != "" {
+				t.Fatal("empty tool result must include an empty content field")
+			}
+			return
+		}
+	}
+	t.Fatal("empty result was discarded")
+}
 
 func oaCall(id string) oaToolCall {
 	tc := oaToolCall{ID: id, Type: "function"}

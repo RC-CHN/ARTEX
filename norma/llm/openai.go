@@ -14,7 +14,7 @@ type openaiProvider struct{ cfg Config }
 
 type oaMessage struct {
 	Role             string       `json:"role"`
-	Content          string       `json:"content,omitempty"`
+	Content          string       `json:"content"` // empty tool results still require this field
 	ReasoningContent string       `json:"reasoning_content,omitempty"`
 	ToolCalls        []oaToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string       `json:"tool_call_id,omitempty"`
@@ -50,14 +50,14 @@ type oaReq struct {
 	// MaxTokens and MaxCompletionTokens are mutually exclusive: buildBody fills
 	// exactly one of them per Config.MaxTokensField, and omitempty drops the
 	// other. Sending both would make OpenAI reject the request.
-	MaxTokens           int      `json:"max_tokens,omitempty"`
-	MaxCompletionTokens int      `json:"max_completion_tokens,omitempty"`
-	Temperature         *float64 `json:"temperature,omitempty"`
-	Stop            []string      `json:"stop,omitempty"`
-	Thinking        *oaThinking   `json:"thinking,omitempty"`
-	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
-	Stream          bool          `json:"stream"`
-	StreamOptions   *oaStreamOpts `json:"stream_options,omitempty"`
+	MaxTokens           int           `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int           `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64      `json:"temperature,omitempty"`
+	Stop                []string      `json:"stop,omitempty"`
+	Thinking            *oaThinking   `json:"thinking,omitempty"`
+	ReasoningEffort     string        `json:"reasoning_effort,omitempty"`
+	Stream              bool          `json:"stream"`
+	StreamOptions       *oaStreamOpts `json:"stream_options,omitempty"`
 }
 
 type oaStreamOpts struct {
@@ -147,8 +147,8 @@ const reasoningElidedPlaceholder = "(reasoning elided by context compaction)"
 // req.Messages (noa compaction, the built-in compactor, or a host that assembled
 // them directly):
 //
-//   - Every assistant tool_call is answered by a following role:tool message,
-//     and every role:tool answers a tool_call still present. A half-pair in
+//   - Every assistant tool_call is answered in the immediately following run of
+//     role:tool messages, and each result answers one call exactly once. A half-pair in
 //     either direction is a 400 ("tool_calls must be followed by tool messages"
 //     / an unexpected tool message).
 //   - In thinking mode, an assistant message replaying tool_calls carries
@@ -160,22 +160,34 @@ const reasoningElidedPlaceholder = "(reasoning elided by context compaction)"
 // real content whole upstream should mean the placeholder path never runs. The
 // input slice is mutated in place and also returned.
 func sanitizeOpenAIMessages(msgs []oaMessage, thinking bool) []oaMessage {
-	// Which tool_call ids actually have a role:tool response.
-	responded := map[string]bool{}
-	for _, m := range msgs {
-		if m.Role == "tool" && m.ToolCallID != "" {
-			responded[m.ToolCallID] = true
-		}
-	}
-	// Pass 1: drop unanswered tool_calls from each assistant message.
+	// Only contiguous tool messages after this assistant can answer its calls.
+	// A result beyond another user/assistant turn (or in an earlier exchange)
+	// does not make a call valid, even when the ID occurs elsewhere in history.
+	acceptedResults := make(map[int]bool)
 	for i := range msgs {
 		if msgs[i].Role != "assistant" || len(msgs[i].ToolCalls) == 0 {
 			continue
 		}
-		kept := make([]oaToolCall, 0, len(msgs[i].ToolCalls))
+		pending := make(map[string]bool)
 		for _, tc := range msgs[i].ToolCalls {
-			if responded[tc.ID] {
+			if tc.ID != "" {
+				pending[tc.ID] = true
+			}
+		}
+		answered := make(map[string]bool)
+		for j := i + 1; j < len(msgs) && msgs[j].Role == "tool"; j++ {
+			id := msgs[j].ToolCallID
+			if pending[id] {
+				answered[id] = true
+				acceptedResults[j] = true
+				delete(pending, id)
+			}
+		}
+		kept := make([]oaToolCall, 0, len(answered))
+		for _, tc := range msgs[i].ToolCalls {
+			if answered[tc.ID] {
 				kept = append(kept, tc)
+				delete(answered, tc.ID)
 			}
 		}
 		msgs[i].ToolCalls = kept
@@ -188,18 +200,10 @@ func sanitizeOpenAIMessages(msgs []oaMessage, thinking bool) []oaMessage {
 			msgs[i].Content = "…"
 		}
 	}
-	// Pass 2: drop role:tool messages whose call no longer survives.
-	surviving := map[string]bool{}
-	for _, m := range msgs {
-		if m.Role == "assistant" {
-			for _, tc := range m.ToolCalls {
-				surviving[tc.ID] = true
-			}
-		}
-	}
+	// Drop orphaned, out-of-order, duplicate and empty-ID results.
 	out := make([]oaMessage, 0, len(msgs))
-	for _, m := range msgs {
-		if m.Role == "tool" && m.ToolCallID != "" && !surviving[m.ToolCallID] {
+	for i, m := range msgs {
+		if m.Role == "tool" && !acceptedResults[i] {
 			continue
 		}
 		out = append(out, m)
