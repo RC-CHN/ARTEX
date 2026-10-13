@@ -20,6 +20,7 @@ import (
 	"github.com/RC-CHN/ARTEX/config"
 	"github.com/RC-CHN/ARTEX/selfupdate"
 	"github.com/RC-CHN/ARTEX/server"
+	"github.com/RC-CHN/ARTEX/skills"
 )
 
 // version is the build version, injected at release time via
@@ -112,6 +113,10 @@ func run() int {
 		skillDir = abs
 	}
 	log.Printf("[config] skill 目录: %s", skillDir)
+	if err := skills.SeedDefaults(skillDir); err != nil {
+		log.Printf("[skills] 无法初始化内置技能: %v", err)
+		return 1
+	}
 	srv := server.New(ctx, mgr, skillDir, *dataDir, config.BaseDir())
 	httpSrv := &http.Server{
 		Addr:              *addr,

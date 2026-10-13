@@ -323,6 +323,8 @@ ON CONFLICT DO NOTHING`, r.kind, r.pattern, r.note); err != nil {
 // that MCP is enabled/configured.
 var builtinSkillVisibility = map[string][]string{
 	"api-recon": {"auto", "pentest", "worker"},
+	"nuclei":    {"mainagent", "planner", "worker", "auto", "pentest"},
+	"vulnx":     {"mainagent", "planner", "worker", "auto", "pentest"},
 }
 
 // seedBuiltinSkillVisibility binds the shipped built-in skills to their default
@@ -332,8 +334,9 @@ func (d *DB) seedBuiltinSkillVisibility() error {
 	for skillName, agentKeys := range builtinSkillVisibility {
 		for _, key := range agentKeys {
 			if _, err := d.Exec(`
+WITH agent AS MATERIALIZED (SELECT id FROM agents WHERE key=$1 FOR UPDATE)
 INSERT INTO agent_skill_visibility(agent_id, skill_name, enabled)
-SELECT id, $2, true FROM agents WHERE key=$1
+SELECT id, $2, true FROM agent
 ON CONFLICT (agent_id, skill_name) DO NOTHING`, key, skillName); err != nil {
 				return fmt.Errorf("skill %s → agent %s: %w", skillName, key, err)
 			}

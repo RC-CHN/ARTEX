@@ -73,17 +73,17 @@ func detect(searchPath string, manifest map[string]struct {
 func (i Inventory) Prompt() string {
 	var lines []string
 	if i.Vulnx != nil {
-		lines = append(lines, "- vulnx（"+version(i.Vulnx.Version)+"）：在线检索 CVE。可用 vulnx search '<产品关键词>' --json 或 vulnx id <CVE编号> --json；查询需要联网，无 API key 时可能限流。需要代理时显式传 --proxy，代理地址取自环境说明。")
+		lines = append(lines, "- vulnx（"+version(i.Vulnx.Version)+"）：在线 CVE 情报查询工具。")
 	}
 	if i.Nuclei != nil {
-		line := "- nuclei（" + version(i.Nuclei.Version) + "）：按模板检测目标。可先 nuclei -tl -tags cve 查看模板，再对任务范围内的目标运行 nuclei -u <URL> -id <模板ID> -jsonl。"
+		line := "- nuclei（" + version(i.Nuclei.Version) + "）：模板漏洞检测工具。"
 		if i.Nuclei.Templates != "" {
-			line += "内置模板版本 " + version(i.Nuclei.Templates) + "，默认不自动更新；可用 -t 指定工作目录中的其他模板。"
+			line += "内置模板版本 " + version(i.Nuclei.Templates) + "。"
 		}
 		lines = append(lines, line)
 	}
 	if len(lines) == 0 {
 		return ""
 	}
-	return "\n\n【当前执行环境可用工具】\n" + strings.Join(lines, "\n") + "\n产品/版本匹配只是候选线索；依据实际检测证据判断是否存在漏洞。工具可通过 Bash 调用。"
+	return "\n\n【当前执行环境可用工具】\n" + strings.Join(lines, "\n") + "\n可通过 Bash 调用。若 Skill 工具列出了同名技能，先加载该技能获取操作流程；Skill 的可见性以当前 Agent 配置为准。"
 }

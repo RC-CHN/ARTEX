@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	actool "github.com/RC-CHN/ARTEX/norma/tool"
 	"github.com/RC-CHN/ARTEX/agent"
 	"github.com/RC-CHN/ARTEX/db"
+	actool "github.com/RC-CHN/ARTEX/norma/tool"
 )
 
 // hasSkillTool reports whether the packed tool set contains the Skill meta-tool.
@@ -34,7 +34,7 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	if err != nil {
 		t.Skipf("postgres unavailable (%v) — skipping", err)
 	}
-	defer pg.Close()
+	t.Cleanup(func() { _ = pg.Close() }) // restore visibility before closing the pool
 
 	// Filesystem skill fixture: <skillDir>/t-assemble/SKILL.md. The directory name
 	// (t-assemble) is the visibility key matched against AgentSkillNames.
@@ -62,7 +62,11 @@ func TestAssembleVisibleSkill(t *testing.T) {
 	if err := pg.SetAgentSkillVisibility(ag.ID, nil); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = pg.SetAgentSkillVisibility(ag.ID, orig) })
+	t.Cleanup(func() {
+		if err := pg.SetAgentSkillVisibility(ag.ID, orig); err != nil {
+			t.Error(err)
+		}
+	})
 
 	// before: skill not visible → no Skill meta-tool
 	extra, _, cleanup := agent.ToolAugment(context.Background(), "planner")

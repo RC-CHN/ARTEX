@@ -815,7 +815,7 @@ type MCPServer struct {
 	Env       json.RawMessage `json:"env"`
 	URL       string          `json:"url,omitempty"`
 	Enabled   bool            `json:"enabled"`
-	Insecure  bool            `json:"insecure"` // http: skip TLS cert verification (self-signed servers, issue #108)
+	Insecure  bool            `json:"insecure"`        // http: skip TLS cert verification (self-signed servers, issue #108)
 	Tools     []string        `json:"tools,omitempty"` // cached tool names (mcp_tools_cache)
 }
 
@@ -987,7 +987,13 @@ func (d *DB) SetAgentSkillVisibility(agentID int64, names []string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM agent_skill_visibility WHERE agent_id=$1`, agentID); err != nil {
+	// Serialize bulk replacement and single toggles for the same agent. Keep
+	// disabled rows so startup's insert-if-absent defaults cannot resurrect them.
+	var lockedID int64
+	if err := tx.QueryRow(`SELECT id FROM agents WHERE id=$1 FOR UPDATE`, agentID).Scan(&lockedID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE agent_skill_visibility SET enabled=false WHERE agent_id=$1`, agentID); err != nil {
 		return err
 	}
 	for _, name := range names {
@@ -1001,13 +1007,21 @@ ON CONFLICT (agent_id,skill_name) DO UPDATE SET enabled=true`, agentID, name); e
 
 // ToggleSkillVisibility sets one (agent, skill_name) visibility on/off.
 func (d *DB) ToggleSkillVisibility(agentID int64, skillName string, on bool) error {
-	if on {
-		_, err := d.Exec(`INSERT INTO agent_skill_visibility(agent_id,skill_name,enabled) VALUES ($1,$2,true)
-ON CONFLICT (agent_id,skill_name) DO UPDATE SET enabled=true`, agentID, skillName)
+	tx, err := d.Begin()
+	if err != nil {
 		return err
 	}
-	_, err := d.Exec(`DELETE FROM agent_skill_visibility WHERE agent_id=$1 AND skill_name=$2`, agentID, skillName)
-	return err
+	defer tx.Rollback()
+	var lockedID int64
+	if err = tx.QueryRow(`SELECT id FROM agents WHERE id=$1 FOR UPDATE`, agentID).Scan(&lockedID); err != nil {
+		return err
+	}
+	_, err = tx.Exec(`INSERT INTO agent_skill_visibility(agent_id,skill_name,enabled) VALUES ($1,$2,$3)
+ON CONFLICT (agent_id,skill_name) DO UPDATE SET enabled=EXCLUDED.enabled`, agentID, skillName, on)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // DeleteSkillVisibility removes all visibility rows for a skill (called on skill delete).

@@ -97,6 +97,13 @@ try:
             assert stats['llm_configured'] is False
             assert stats['traffic_enabled'] is True
     print('PostgreSQL schema, admin setup, authentication and management APIs: OK', flush=True)
+    _, raw = request('/api/skills', token=token)
+    shipped = {s['name']: s for s in json.loads(raw)['skills']}
+    for name in ('nuclei', 'vulnx'):
+        assert name in shipped and shipped[name]['description'], shipped
+        _, raw = request('/api/visibility/skill/' + name, token=token)
+        assert len(json.loads(raw)['agents']) >= 4, raw
+    print('Bundled Nuclei/vulnx native skills and default visibility: OK', flush=True)
     browser = docker('run', '--rm', '--network', network, '--entrypoint', 'node',
                      '-v', str(Path(__file__).resolve().parent) + ':/smoke:ro',
                      '-e', 'BASE_URL=http://' + app_name + ':8787',

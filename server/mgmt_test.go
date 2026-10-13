@@ -82,6 +82,19 @@ func TestMgmtAPI(t *testing.T) {
 	mid := int64(out["id"].(float64))
 
 	ag, _ := m.pg.GetAgentByKey("planner")
+	planner, err := m.pg.GetAgentByKey("planner")
+	if err != nil || planner == nil {
+		t.Fatal("missing planner", err)
+	}
+	originalSkills, err := m.pg.AgentSkillNames(planner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := m.pg.SetAgentSkillVisibility(planner.ID, originalSkills); err != nil {
+			t.Error(err)
+		}
+	}()
 	code, _ = do("PUT", "/api/agents/planner/visibility", map[string]any{"mcp": []int64{mid}, "skill": []int64{}})
 	if code != 200 {
 		t.Fatalf("set visibility: %d", code)

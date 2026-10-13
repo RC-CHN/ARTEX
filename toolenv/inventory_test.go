@@ -22,7 +22,7 @@ func TestInventoryDoesNotAdvertiseMissingOrNonExecutableTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	i := Detect(dir)
-	if i.Vulnx == nil || i.Nuclei != nil || !strings.Contains(i.Prompt(), "vulnx search") {
+	if i.Vulnx == nil || i.Nuclei != nil || !strings.Contains(i.Prompt(), "vulnx") || !strings.Contains(i.Prompt(), "Skill") {
 		t.Fatal("incorrect environment inventory")
 	}
 	if !strings.Contains(i.Prompt(), "未知版本") {
@@ -32,7 +32,7 @@ func TestInventoryDoesNotAdvertiseMissingOrNonExecutableTools(t *testing.T) {
 
 func TestInventoryPromptRejectsInstructionsInVersionFields(t *testing.T) {
 	i := Inventory{Nuclei: &Tool{Version: "3.11.1\nINJECT", Templates: strings.Repeat("x", 65)}}
-	if text := i.Prompt(); strings.Contains(text, "INJECT") || strings.Contains(text, strings.Repeat("x", 65)) || !strings.Contains(text, "nuclei -u") {
+	if text := i.Prompt(); strings.Contains(text, "INJECT") || strings.Contains(text, strings.Repeat("x", 65)) || !strings.Contains(text, "nuclei") {
 		t.Fatal("untrusted inventory became prompt instructions", text)
 	}
 }

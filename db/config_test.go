@@ -145,6 +145,15 @@ func TestConfigStores(t *testing.T) {
 	if err := d.ToggleVisibility(ag.ID, "mcp", mid, true); err != nil {
 		t.Fatal(err)
 	}
+	originalSkills, err := d.AgentSkillNames(ag.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := d.SetAgentSkillVisibility(ag.ID, originalSkills); err != nil {
+			t.Error(err)
+		}
+	}()
 	if err := d.SetAgentSkillVisibility(ag.ID, nil); err != nil {
 		t.Fatal(err)
 	}
