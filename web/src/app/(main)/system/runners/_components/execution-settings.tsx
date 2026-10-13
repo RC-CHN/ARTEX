@@ -152,6 +152,8 @@ export function ExecutionSettings({
       )
         throw new Error("等待上限需为 1–3600 秒的整数");
       for (const [name, env] of Object.entries(next.environments)) {
+        if (!Number.isInteger(env.warm_idle ?? 0) || (env.warm_idle ?? 0) < 0 || (env.warm_idle ?? 0) > 32)
+          throw new Error(`环境 ${name} 的预热数量需为 0–32 的整数`);
         if (!env || !env.resources || (next.enabled && !/^[^\s@]+@sha256:[a-f0-9]{64}$/.test(env.image ?? "")))
           throw new Error(`环境 ${name} 需填写固定摘要的镜像和资源额度`);
         if (
@@ -316,6 +318,22 @@ export function ExecutionSettings({
               </div>
               {editable ? (
                 <>
+                  <div className="space-y-2 rounded-lg bg-muted/40 p-3">
+                    <Label htmlFor="runner-warm-idle">Kubernetes 预热 Pod 上限</Label>
+                    <Input
+                      id="runner-warm-idle"
+                      type="number"
+                      min={0}
+                      max={32}
+                      step={1}
+                      value={env.warm_idle ?? 0}
+                      onChange={(e) => patchEnvironment({ warm_idle: Number(e.target.value) })}
+                    />
+                    <p className="text-muted-foreground text-xs leading-relaxed">
+                      0 关闭。按待执行任务的完整配置提前准备，领取时严格匹配；任务结束后销毁。预热与运行中的 Pod
+                      共用节点数量和 CPU / 内存额度，保存后动态生效。外部 Docker Runner 保持原有方式。
+                    </p>
+                  </div>
                   <div className="space-y-2">
                     <Label htmlFor="runner-image">执行镜像</Label>
                     <Input

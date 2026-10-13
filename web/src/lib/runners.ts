@@ -1,5 +1,6 @@
 export type Mode = "local" | "remote";
 export type RunnerEnvironment = {
+  warm_idle?: number;
   image: string;
   environment_prompt?: string;
   direct_network?: boolean;
@@ -17,6 +18,14 @@ export type RunnerConfig = {
   acquire_timeout_seconds: number;
 };
 export type RunnerNode = {
+  pool_status?: {
+    idle: number;
+    preparing: number;
+    pods: number;
+    cpu_millis: number;
+    memory_mib: number;
+    error?: string;
+  };
   id: string;
   name: string;
   enabled: boolean;

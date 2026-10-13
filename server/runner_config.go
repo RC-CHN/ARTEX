@@ -24,6 +24,7 @@ const runnerConfigKey = "experimental.runners"
 var runnerImageDigest = regexp.MustCompile(`^[^\s@]+@sha256:[a-f0-9]{64}$`)
 
 type runnerEnvironment struct {
+	WarmIdle          int                 `json:"warm_idle,omitempty"`
 	EnvironmentPrompt string              `json:"environment_prompt,omitempty"`
 	Image             string              `json:"image"`
 	Env               map[string]string   `json:"env,omitempty"`
@@ -66,6 +67,9 @@ func (c runnerConfig) validate() error {
 		return errors.New("default_environment is not defined")
 	}
 	for name, e := range c.Environments {
+		if e.WarmIdle < 0 || e.WarmIdle > 32 {
+			return fmt.Errorf("环境 %s 的预热数量必须为 0..32", name)
+		}
 		if err := runner.ValidateEnvironmentPrompt(e.EnvironmentPrompt); err != nil {
 			return fmt.Errorf("环境 %s: %w", name, err)
 		}
@@ -176,6 +180,9 @@ func (s *Server) initRunners() {
 	if cfg.Enabled && s.runnerErr == nil {
 		s.runners, s.runnerErr = runner.New(runner.Options{Store: runnerPGStore{s.m.pg.DB}})
 	}
+	if s.runners != nil {
+		s.runners.SetWarmProfiles(s.runnerWarmProfiles(cfg))
+	}
 	s.wireRunnerExecution()
 }
 func (s *Server) runnerSnapshot() (runnerConfig, *runner.Hub, error) {
@@ -280,6 +287,9 @@ func (s *Server) saveRunnerConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	s.runnerCfg = cfg
 	s.runnerErr = nil
+	if s.runners != nil {
+		s.runners.SetWarmProfiles(s.runnerWarmProfiles(cfg))
+	}
 	writeJSON(w, 200, cfg)
 }
 func (s *Server) runnerRegistration(w http.ResponseWriter, r *http.Request) {

@@ -9,7 +9,7 @@ const config = {
   default_environment: 'default', acquire_timeout_seconds: 120,
   environments: { default: { image, direct_network: true,
     resources: { cpu_millis: 1000, memory_mib: 1024, pids: 256, gpu_count: 0 },
-    labels: { trust: 'private' }, env: { CUSTOM_SETTING: 'preserved' } } },
+    labels: { trust: 'private' }, env: { CUSTOM_SETTING: 'preserved' }, warm_idle: 0 } },
   mcp: { internal: { location: 'controller' } },
 };
 function node(id, name, executor) {
@@ -17,6 +17,7 @@ function node(id, name, executor) {
     active_sessions: 1, concurrency_limit: 0, effective_slots: 4,
     cpu_limit_millis: 0, memory_limit_mib: 0, effective_cpu_millis: 4000, effective_memory_mib: 8192,
     reserved_cpu_millis: 1000, reserved_memory_mib: 1024, environment_prompt: '',
+    ...(executor === 'kubernetes' ? { pool_status: { idle: 1, preparing: 1, pods: 3, cpu_millis: 3000, memory_mib: 3072 } } : {}),
     capabilities: { executor, slots: 4, cpu_millis: 4000, memory_mib: 8192, environments: ['default'],
       labels: { network: executor === 'kubernetes' ? 'cluster' : 'external' },
       gpus: executor === 'docker' ? [{ id: '0', model: 'Example GPU', memory_mib: 24576 }] : [] } };
@@ -162,11 +163,13 @@ async function main() {
     await page.getByRole('tab', { name: '资源概览' }).click();
     await page.getByRole('tab', { name: '执行设置' }).click();
     assert.equal(await page.getByLabel('单次执行 CPU（核）').inputValue(), '1.5', 'tab switch preserved dirty form');
+    await page.getByLabel('Kubernetes 预热 Pod 上限').fill('2');
     await page.getByRole('button', { name: '保存执行配置' }).click();
     await page.getByRole('alert').filter({ hasText: '执行配置保存测试失败' }).waitFor();
     await page.getByRole('button', { name: '保存执行配置' }).click();
     await page.getByRole('status').filter({ hasText: '配置已保存，对后续执行生效' }).waitFor();
     assert.equal(state.config.environments.default.resources.cpu_millis, 1500);
+    assert.equal(state.config.environments.default.warm_idle, 2);
     assert.equal(state.config.environments.default.env.CUSTOM_SETTING, 'preserved');
     assert.equal(state.config.mcp.internal.location, 'controller');
     await page.getByText('高级设置 · GPU、标签、MCP 与完整配置', { exact: true }).click();

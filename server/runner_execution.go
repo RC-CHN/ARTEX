@@ -67,11 +67,24 @@ func (s *Server) wireRunnerExecution() {
 			return ctx, nil, nil, err
 		}
 		// Timeout only queue/open, not the subsequent lifetime of the execution.
-		runCtx, cancel := context.WithCancel(ctx)
-		timer := time.AfterFunc(time.Duration(cfg.AcquireTimeoutSeconds)*time.Second, cancel)
+		runCtx, cancelCause := context.WithCancelCause(ctx)
+		cancel := func() { cancelCause(context.Canceled) }
+		timeoutDone := make(chan struct{})
+		timer := time.AfterFunc(time.Duration(cfg.AcquireTimeoutSeconds)*time.Second, func() {
+			cancelCause(context.DeadlineExceeded)
+			close(timeoutDone)
+		})
 		session, err := hub.Acquire(runCtx, spec)
-		timer.Stop()
+		if !timer.Stop() {
+			<-timeoutDone
+		}
+		if err == nil && runCtx.Err() != nil {
+			err = errors.Join(context.Cause(runCtx), session.Close())
+		}
 		if err != nil {
+			if errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
+				err = fmt.Errorf("等待 Runner 或准备执行环境超过 %d 秒（包括文件同步与 Pod 启动）: %w", cfg.AcquireTimeoutSeconds, context.DeadlineExceeded)
+			}
 			cancel()
 			return ctx, nil, nil, fmt.Errorf("远程执行环境分配失败（不会退回本机）: %w", err)
 		}
@@ -355,6 +368,11 @@ func (s *Server) runnerProtocolHandler() http.Handler {
 			}, h.WithSessionWrite)
 			http.StripPrefix("/runner/v1/files", handler).ServeHTTP(w, r)
 			return
+		}
+		if r.URL.Path == "/runner/v1/poll" {
+			if _, err := h.Authenticate(r); err == nil {
+				s.refreshRunnerPool(cfg, h)
+			}
 		}
 		http.StripPrefix("/runner/v1", h.Handler()).ServeHTTP(w, r)
 	})

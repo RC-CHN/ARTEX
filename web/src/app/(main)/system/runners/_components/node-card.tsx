@@ -99,7 +99,7 @@ export function NodeCard({
               <h3 className="break-all font-semibold">{node.name}</h3>
               <p className="mt-0.5 text-muted-foreground text-xs">
                 {pool
-                  ? "Kubernetes · 每次执行创建独立 Pod"
+                  ? "Kubernetes · 每次执行独占干净 Pod"
                   : `${node.capabilities.executor ?? "未报告执行器"} · 独立主机运行时`}
               </p>
             </div>
@@ -142,6 +142,23 @@ export function NodeCard({
           />
         </div>
         <div className="flex flex-wrap gap-1.5">
+          {pool && node.pool_status && (
+            <div className="w-full rounded-lg border bg-muted/25 p-3 text-xs space-y-1">
+              <p>
+                预热就绪 {node.pool_status.idle} · 准备中 {node.pool_status.preparing} · 总 Pod {node.pool_status.pods}{" "}
+                / {node.effective_slots}
+              </p>
+              <p className="text-muted-foreground">
+                包含预热的实际预留：{node.pool_status.cpu_millis / 1000} 核 ·{" "}
+                {formatMemory(node.pool_status.memory_mib)}
+              </p>
+              {node.pool_status.error && (
+                <p role="alert" className="text-destructive">
+                  预热池：{node.pool_status.error}
+                </p>
+              )}
+            </div>
+          )}
           {(node.capabilities.environments ?? []).map((env) => (
             <Badge key={env} variant="secondary">
               环境 · {env}

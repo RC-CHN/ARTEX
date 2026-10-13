@@ -5,6 +5,7 @@ import (
 	"log"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/RC-CHN/ARTEX/agent"
 	"github.com/RC-CHN/ARTEX/llmpool"
@@ -105,14 +106,16 @@ type Server struct {
 
 	// Cold task archives run through one persistent FIFO worker. The buffered wake
 	// channel coalesces enqueue bursts; the database remains the source of truth.
-	archiveWake chan struct{}
-	archiveWG   sync.WaitGroup
-	side        *sideQuestionState
-	runnerMu    sync.RWMutex
-	runnerCfg   runnerConfig
-	runners     *runner.Hub
-	runnerErr   error
-	runnerFiles *runnerfiles.Store
+	archiveWake  chan struct{}
+	archiveWG    sync.WaitGroup
+	side         *sideQuestionState
+	runnerMu     sync.RWMutex
+	runnerCfg    runnerConfig
+	runners      *runner.Hub
+	runnerErr    error
+	runnerFiles  *runnerfiles.Store
+	runnerPoolMu sync.Mutex
+	runnerPoolAt time.Time
 }
 
 // provEntry is a cached provider + its config for one LLM profile id.

@@ -57,6 +57,8 @@ func TestManagedRunnerEnvironments(t *testing.T) {
 	}
 	c := runnernode.Config{ServerURL: srv.URL, Name: "managed-fixture", DataDir: t.TempDir(), AllowInsecureHTTP: true, SandboxBinary: "/app/runner-bin/artex-runner", AllowedImages: []string{image}, Capabilities: runner.Capabilities{Slots: 2, CPUMillis: 2000, MemoryMiB: 2048, Environments: []string{"fixture"}}}
 	if namespace != "" {
+		// Native prewarming starts the image's runtime before task inputs exist.
+		c.SandboxBinary = "/usr/local/bin/artex-runner"
 		prefix := fmt.Sprintf("case-%d", time.Now().UnixNano())
 		c.Executor = "kubernetes"
 		c.WorkspaceDir = filepath.Join(os.Getenv("ARTEX_RUNNER_KUBE_WORKSPACE"), prefix)
@@ -122,10 +124,20 @@ func TestManagedRunnerEnvironments(t *testing.T) {
 	}
 	eventually(t, ctx, "managed node online", func() bool { return len(hub.ListNodes()) == 1 && hub.ListNodes()[0].Online })
 	inputs, task := t.TempDir(), t.TempDir()
-	copyExecutable(t, binary, filepath.Join(inputs, "artex-runner"))
+	if namespace == "" {
+		copyExecutable(t, binary, filepath.Join(inputs, "artex-runner"))
+	}
 	writeFile(t, filepath.Join(inputs, "mcp.py"), pythonMCP)
 	for i := 1; i <= 3; i++ {
 		writeFile(t, filepath.Join(task, fmt.Sprintf("i%d", i), "seed"), "input")
+	}
+	podNames := func() string {
+		t.Helper()
+		out, err := exec.CommandContext(ctx, "kubectl", "-n", namespace, "get", "pods", "-l", "app.kubernetes.io/name=artex-sandbox", "-o", "jsonpath={range .items[*]}{.metadata.uid}{\"\\n\"}{end}").CombinedOutput()
+		if err != nil {
+			t.Fatalf("list Pod identities: %s %v", out, err)
+		}
+		return string(out)
 	}
 	acquire := func(i int) *runner.Session {
 		t.Helper()
@@ -133,10 +145,26 @@ func TestManagedRunnerEnvironments(t *testing.T) {
 		plan := runnerfiles.Plan{Mounts: []runnerfiles.Mount{{Name: "task", Source: task, Target: "/app/task", Writable: []string{own, "shared"}}, {Name: "inputs", Source: inputs, Target: "/app/runner-bin"}}}
 		raw, _ := json.Marshal(plan)
 		spec := runner.RunSpec{ThreadID: own, Environment: "fixture", Image: image, WorkingDir: "/app/task/" + own, Resources: runner.Resources{CPUMillis: 500, MemoryMiB: 512, PIDs: 256}, Files: raw, Tools: []runner.ToolDefinition{{Name: "Bash", Kind: "builtin"}, {Name: "Read", Kind: "builtin"}, {Name: "Write", Kind: "builtin"}}, MCPs: []runner.MCPConfig{{Name: "fixture", Transport: "stdio", Command: "python3", Args: []string{"/app/runner-bin/mcp.py"}}}}
+		var before string
+		if namespace != "" && i%2 == 0 {
+			hub.SetWarmProfiles([]runner.WarmProfile{{Environment: "fixture", Idle: 1}, runner.WarmProfileFromSpec(spec)})
+			eventually(t, ctx, "clean matching prewarm Pod ready", func() bool {
+				n := hub.ListNodes()[0]
+				return n.PoolStatus != nil && n.PoolStatus.Idle == 1
+			})
+			before = podNames()
+		} else {
+			hub.SetWarmProfiles(nil)
+		}
+		start := time.Now()
 		s, err := hub.Acquire(ctx, spec)
 		if err != nil {
 			t.Fatal(err)
 		}
+		if before != "" && before != podNames() {
+			t.Fatal("warm acquisition replaced the prepared Pod")
+		}
+		t.Logf("acquire %s warm=%t elapsed=%s", own, before != "", time.Since(start))
 		return s
 	}
 	a, b := acquire(1), acquire(2)
@@ -152,6 +180,8 @@ func TestManagedRunnerEnvironments(t *testing.T) {
 	check := `set -eu; test ! -e /var/run/docker.sock; test ! -e /var/run/secrets/kubernetes.io/serviceaccount/token; test ! -e /runner-data/credentials.json; test ! -e "$HOME/dirty"; test ! -e /tmp/dirty; if touch /etc/artex-dirty 2>/dev/null; then exit 1; fi`
 	call(a, check+`; printf first > "$HOME/dirty"; printf first > /tmp/dirty; printf published > result`)
 	call(b, check+`; test ! -e /app/task/i2/result`)
+	call(a, `set -eu; test "$(pwd -P)" = /app/task/i1; test "$PWD" = /app/task/i1; if touch /app/task/i2/forbidden 2>/dev/null; then exit 1; fi`)
+	call(b, `set -eu; test "$(pwd -P)" = /app/task/i2; test "$PWD" = /app/task/i2; if touch /app/task/i1/forbidden 2>/dev/null; then exit 1; fi; test "$(cat /app/task/i1/result)" = published`)
 	if got, err := os.ReadFile(filepath.Join(task, "i1", "result")); err != nil || string(got) != "published" {
 		t.Fatalf("publication %q %v", got, err)
 	}
@@ -161,6 +191,9 @@ func TestManagedRunnerEnvironments(t *testing.T) {
 	}
 	resourceCheck := `set -eu; if test -r /sys/fs/cgroup/cpu.max; then cat /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max; else cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us /sys/fs/cgroup/memory/memory.limit_in_bytes; fi`
 	beforeResources := call(a, resourceCheck)
+	if resources := call(b, resourceCheck); resources != beforeResources {
+		t.Fatalf("cold/warm cgroups differ: %s / %s", beforeResources, resources)
+	}
 	if err = hub.SetNodeLimits(hub.ListNodes()[0].ID, 1, 500, 512); err != nil {
 		t.Fatal(err)
 	}
@@ -183,6 +216,18 @@ func TestManagedRunnerEnvironments(t *testing.T) {
 	call(cSession, check+`; test ! -e /app/task/i3/result`)
 	if err = cSession.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if namespace != "" {
+		// Alternate fresh warm/cold sessions repeatedly, keeping all historical
+		// results in the broker while exercising one-slot scheduling and cleanup.
+		for i := 4; i <= 9; i++ {
+			s := acquire(i)
+			call(s, check+`; printf clean > result; printf dirty > "$HOME/dirty"; printf dirty > /tmp/dirty`)
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		hub.SetWarmProfiles(nil)
 	}
 	eventually(t, ctx, "all execution reservations released", func() bool { return hub.ListNodes()[0].ActiveSessions == 0 })
 	if namespace != "" {
