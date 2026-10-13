@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/pprof"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -176,6 +178,31 @@ func TestManagedRunnerEnvironments(t *testing.T) {
 			t.Fatalf("sandbox command: %v %s", err, r.Flatten())
 		}
 		return r.Flatten()
+	}
+	if os.Getenv("ARTEX_RUNNER_REPLY_STRESS") == "1" {
+		var wg sync.WaitGroup
+		for _, session := range []*runner.Session{a, b} {
+			wg.Go(func() {
+				for i := 0; i < 60; i++ {
+					body := fmt.Sprintf("reply-%d-", i) + strings.Repeat("x", 8192+i*37)
+					input, _ := json.Marshal(map[string]any{"command": fmt.Sprintf("printf '%%s\\000' '%s'", body)})
+					body += "\x00"
+					callCtx, stop := context.WithTimeout(ctx, 8*time.Second)
+					result, err := session.Call(callCtx, "Bash", input, nil)
+					stop()
+					if err != nil || result.IsError || result.Flatten() != body {
+						_ = pprof.Lookup("goroutine").WriteTo(os.Stderr, 2)
+						t.Errorf("reply %d: err=%v error=%t got=%d want=%d", i, err, result.IsError, len(result.Flatten()), len(body))
+						return
+					}
+				}
+			})
+		}
+		wg.Wait()
+		if t.Failed() {
+			return
+		}
+		t.Log("120 binary RPC results with concurrent heartbeats and file checkpoints preserved exactly")
 	}
 	check := `set -eu; test ! -e /var/run/docker.sock; test ! -e /var/run/secrets/kubernetes.io/serviceaccount/token; test ! -e /runner-data/credentials.json; test ! -e "$HOME/dirty"; test ! -e /tmp/dirty; if touch /etc/artex-dirty 2>/dev/null; then exit 1; fi`
 	call(a, check+`; printf first > "$HOME/dirty"; printf first > /tmp/dirty; printf published > result`)
