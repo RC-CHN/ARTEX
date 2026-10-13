@@ -7,11 +7,11 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 files = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard"], cwd=root, text=True).splitlines()
-legacy = re.compile(r"github\.com/(?:Autumn-27/(?:artex|norma)|mhtsec/ARTEX)|(?:autumn27|mianhuatang11)/artex|artex-demo\.mhtsec\.com", re.I)
+legacy = re.compile(r"(?:github\.com/)?(?:Autumn-27/(?:artex|norma)|mhtsec/ARTEX)|(?:autumn27|mianhuatang11)/artex|artex-demo\.mhtsec\.com", re.I)
 errors = []
 for name in files:
     path = root / name
-    if path.suffix not in {".go", ".mod", ".sum", ".sh", ".bat", ".yml", ".yaml", ".json", ".md"} and name not in {"Dockerfile", ".env.example"}:
+    if path.suffix not in {".go", ".mod", ".sum", ".sh", ".bat", ".yml", ".yaml", ".json", ".md", ".ts", ".tsx", ".js", ".cjs", ".mjs"} and name not in {"Dockerfile", ".env.example"}:
         continue
     # Preserve historical measurements and original authorship, not live endpoints.
     if name in {"NOTICE.md"} or name.startswith("benchmarks/"):
