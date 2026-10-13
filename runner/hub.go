@@ -16,16 +16,19 @@ import (
 )
 
 type Hub struct {
-	mu        sync.Mutex
-	opts      Options
-	state     persistedState
-	revision  uint64
-	lastSaved json.RawMessage
-	wake      chan struct{}
-	stop      chan struct{}
-	done      chan struct{}
-	stopOnce  sync.Once
-	closed    bool
+	mu           sync.Mutex
+	opts         Options
+	state        persistedState
+	revision     uint64
+	lastSaved    json.RawMessage
+	wake         chan struct{}
+	stop         chan struct{}
+	done         chan struct{}
+	stopOnce     sync.Once
+	closed       bool
+	redeliver    map[string]time.Time // transport hints only; never authorize execution
+	warmProfiles []WarmProfile
+	poolStatus   map[string]PoolStatus
 }
 
 func New(opts Options) (*Hub, error) {
@@ -62,7 +65,7 @@ func New(opts Options) (*Hub, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Hub{opts: opts, revision: snap.Revision, lastSaved: append(json.RawMessage(nil), snap.Data...), wake: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{})}
+	h := &Hub{opts: opts, revision: snap.Revision, lastSaved: append(json.RawMessage(nil), snap.Data...), wake: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{}), redeliver: map[string]time.Time{}}
 	if len(snap.Data) > 0 {
 		if err := json.Unmarshal(snap.Data, &h.state); err != nil {
 			return nil, fmt.Errorf("decode runner state: %w", err)
@@ -170,6 +173,9 @@ func (h *Hub) expireLocked() bool {
 			changed = true
 		}
 		if !s.FinishedAt.IsZero() && now.Sub(s.FinishedAt) > 24*time.Hour {
+			for id := range s.Commands {
+				delete(h.redeliver, id)
+			}
 			delete(h.state.Sessions, id)
 			changed = true
 		}
@@ -227,6 +233,9 @@ func (h *Hub) ListNodes() []NodeView {
 	out := make([]NodeView, 0, len(h.state.Nodes))
 	for _, n := range h.state.Nodes {
 		v := NodeView{ID: n.ID, Name: n.Name, BootID: n.BootID, Enabled: n.Enabled, Online: !h.closed && n.Enabled && now.Sub(n.LastSeen) < h.opts.LeaseDuration, LastSeen: n.LastSeen, Capabilities: n.Capabilities}
+		if status, ok := h.poolStatus[n.ID]; ok {
+			v.PoolStatus = &status
+		}
 		v.EnvironmentPrompt = n.EnvironmentPrompt
 		v.ConcurrencyLimit, v.EffectiveSlots = n.ConcurrencyLimit, n.effectiveSlots()
 		v.CPULimitMillis, v.MemoryLimitMiB = n.CPULimitMillis, n.MemoryLimitMiB

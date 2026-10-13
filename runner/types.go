@@ -140,6 +140,7 @@ type RegisterResponse struct {
 }
 
 type PollRequest struct {
+	PoolStatus    *PoolStatus            `json:"pool_status,omitempty"`
 	NodeID        string                 `json:"node_id"`
 	BootID        string                 `json:"boot_id"`
 	Protocol      int                    `json:"protocol"`
@@ -162,11 +163,12 @@ type Lease struct {
 }
 
 type PollResponse struct {
-	Epoch                     string    `json:"epoch"`
-	ServerTime                time.Time `json:"server_time"`
-	Leases                    []Lease   `json:"leases"`   // complete live set for this boot; absent/expired sessions must stop
-	Commands                  []Command `json:"commands"` // redelivered until acknowledged; node must deduplicate ID
-	AcknowledgedNotifications []string  `json:"acknowledged_notifications,omitempty"`
+	Pool                      *PoolPolicy `json:"pool,omitempty"`
+	Epoch                     string      `json:"epoch"`
+	ServerTime                time.Time   `json:"server_time"`
+	Leases                    []Lease     `json:"leases"`   // complete live set for this boot; absent/expired sessions must stop
+	Commands                  []Command   `json:"commands"` // redelivered until acknowledged; node must deduplicate ID
+	AcknowledgedNotifications []string    `json:"acknowledged_notifications,omitempty"`
 }
 
 const (
@@ -220,6 +222,7 @@ type ResultResponse struct {
 }
 
 type NodeView struct {
+	PoolStatus         *PoolStatus  `json:"pool_status,omitempty"`
 	EnvironmentPrompt  string       `json:"environment_prompt"`
 	CPULimitMillis     int64        `json:"cpu_limit_millis"`
 	MemoryLimitMiB     int64        `json:"memory_limit_mib"`
@@ -238,4 +241,32 @@ type NodeView struct {
 	Capabilities       Capabilities `json:"capabilities"`
 	ActiveSessions     int          `json:"active_sessions"`
 	ReservedGPUs       []string     `json:"reserved_gpus,omitempty"`
+}
+
+// Pool policy is supplied by the controller; status is observational only and
+// never used to release reservations or grant execution authority.
+type WarmProfile struct {
+	Environment string            `json:"environment"`
+	Idle        int               `json:"idle"`
+	Image       string            `json:"image"`
+	Resources   Resources         `json:"resources"`
+	Env         map[string]string `json:"env,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	WorkingDir  string            `json:"working_dir,omitempty"`
+	Files       json.RawMessage   `json:"files,omitempty"`
+	NodeID      string            `json:"node_id,omitempty"`
+}
+type PoolPolicy struct {
+	Slots     int           `json:"slots"`
+	CPUMillis int64         `json:"cpu_millis"`
+	MemoryMiB int64         `json:"memory_mib"`
+	Profiles  []WarmProfile `json:"profiles"`
+}
+type PoolStatus struct {
+	Idle      int    `json:"idle"`
+	Preparing int    `json:"preparing"`
+	Pods      int    `json:"pods"`
+	CPUMillis int64  `json:"cpu_millis"`
+	MemoryMiB int64  `json:"memory_mib"`
+	Error     string `json:"error,omitempty"`
 }

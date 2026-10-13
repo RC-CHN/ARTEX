@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RC-CHN/ARTEX/runner"
@@ -64,6 +65,15 @@ type KubernetesExecutor struct {
 	MaxPods                             int
 	Log                                 io.Writer
 	createMu                            sync.Mutex // list + create must not race concurrent admissions
+	poolMu                              sync.Mutex
+	policy                              runner.PoolPolicy
+	policyAt                            time.Time
+	warm                                map[string]*warmPod
+	consumed                            map[string]bool
+	claimed                             map[string]int
+	poolStatus                          runner.PoolStatus
+	poolWG                              sync.WaitGroup
+	coldWaiting                         atomic.Int32
 }
 type podState struct {
 	Metadata struct {
@@ -273,10 +283,20 @@ func (k *KubernetesExecutor) CleanupOrphans(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	return k.cleanUnusedWarmCaches()
 }
 
 func (k *KubernetesExecutor) Start(ctx context.Context, id string, spec runner.RunSpec, plan runnerfiles.Plan, roots map[string]string, gpus []string) (Sandbox, error) {
+	k.coldWaiting.Add(1)
+	defer k.coldWaiting.Add(-1)
+	// Idle Pods yield to executions with a different image, quota or layout.
+	if err := k.evictIdle(ctx); err != nil {
+		return nil, err
+	}
+	return k.startPod(ctx, id, spec, plan, roots, gpus)
+}
+
+func (k *KubernetesExecutor) startPod(ctx context.Context, id string, spec runner.RunSpec, plan runnerfiles.Plan, roots map[string]string, gpus []string) (Sandbox, error) {
 	if len(gpus) > 0 {
 		return nil, fmt.Errorf("native Kubernetes executor does not accept physical GPU IDs")
 	}
@@ -307,12 +327,25 @@ func (k *KubernetesExecutor) Start(ctx context.Context, id string, spec runner.R
 	// an unreachable kubelet has killed a process. Wait for actual removal.
 	for {
 		k.createMu.Lock()
+		admission := spec
+		currentLimit := limit
+		k.poolMu.Lock()
+		if !k.policyAt.IsZero() {
+			currentLimit = min(currentLimit, k.policy.Slots)
+			if k.policy.CPUMillis > 0 && (admission.PoolCPUMillis <= 0 || k.policy.CPUMillis < admission.PoolCPUMillis) {
+				admission.PoolCPUMillis = k.policy.CPUMillis
+			}
+			if k.policy.MemoryMiB > 0 && (admission.PoolMemoryMiB <= 0 || k.policy.MemoryMiB < admission.PoolMemoryMiB) {
+				admission.PoolMemoryMiB = k.policy.MemoryMiB
+			}
+		}
+		k.poolMu.Unlock()
 		pods, err := k.pods(ctx)
 		if err != nil {
 			k.createMu.Unlock()
 			return nil, err
 		}
-		if len(pods) < limit && podBudgetAvailable(pods, spec) {
+		if len(pods) < currentLimit && podBudgetAvailable(pods, admission) {
 			data, _ := json.Marshal(pod)
 			_, err = k.output(ctx, 15*time.Second, data, "create", "-f", "-", "-o", "name")
 			k.createMu.Unlock()

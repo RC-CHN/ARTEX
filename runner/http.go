@@ -222,7 +222,7 @@ func (h *Hub) poll(req PollRequest, authenticated string) (PollResponse, <-chan 
 		}
 	}
 	now := h.opts.Clock()
-	h.expireLocked()
+	changed := h.expireLocked()
 	bootChanged := n.BootID != req.BootID
 	if bootChanged {
 		for _, s := range h.state.Sessions {
@@ -239,8 +239,26 @@ func (h *Hub) poll(req PollRequest, authenticated string) (PollResponse, <-chan 
 			n.Capabilities = caps
 		}
 	}
-	n.LastSeen = now
+	// Renew durably before expiry, without rewriting retained command results
+	// on every delivery of an unfinished Open/Call. File reads share this lock.
+	renew := bootChanged || now.Sub(n.LastSeen) >= h.opts.LeaseDuration/3
+	if renew {
+		n.LastSeen = now
+		changed = true
+	}
 	out := PollResponse{Epoch: h.state.Epoch, ServerTime: now, Leases: []Lease{}, Commands: []Command{}}
+	if n.Capabilities.Executor == "kubernetes" {
+		out.Pool = h.poolPolicyLocked(n)
+		if req.PoolStatus != nil {
+			if req.PoolStatus.Idle < 0 || req.PoolStatus.Preparing < 0 || req.PoolStatus.Pods < 0 || len(req.PoolStatus.Error) > 2048 {
+				return PollResponse{}, nil, errors.New("invalid pool status")
+			}
+			if h.poolStatus == nil {
+				h.poolStatus = map[string]PoolStatus{}
+			}
+			h.poolStatus[n.ID] = *req.PoolStatus
+		}
+	}
 	for _, env := range req.Notifications {
 		s := h.state.Sessions[env.SessionID]
 		if s == nil || s.NodeID != n.ID || s.BootID != req.BootID || s.AttemptID != env.AttemptID || s.Epoch != h.state.Epoch || !s.live() {
@@ -252,6 +270,7 @@ func (h *Hub) poll(req PollRequest, authenticated string) (PollResponse, <-chan 
 			}
 			s.NotificationIDs[env.ID] = true
 			s.Notifications = append(s.Notifications, env.Items...)
+			changed = true
 		}
 		out.AcknowledgedNotifications = append(out.AcknowledgedNotifications, env.ID)
 	}
@@ -259,12 +278,17 @@ func (h *Hub) poll(req PollRequest, authenticated string) (PollResponse, <-chan 
 		if s.NodeID != n.ID || s.BootID != req.BootID || s.Epoch != h.state.Epoch {
 			continue
 		}
+		if s.State == "closed" || s.State == "expired" {
+			continue
+		}
 		if n.Enabled && s.live() {
-			s.LeaseUntil = now.Add(h.opts.LeaseDuration)
+			if renew {
+				s.LeaseUntil = now.Add(h.opts.LeaseDuration)
+			}
 			out.Leases = append(out.Leases, Lease{SessionID: s.ID, AttemptID: s.AttemptID, Epoch: s.Epoch, Until: s.LeaseUntil})
 		}
 		for _, c := range s.Commands {
-			if c.Result != nil || s.State == "closed" || s.State == "expired" {
+			if c.Result != nil {
 				continue
 			}
 			if c.Command.Kind == CommandOpen && s.State != "opening" {
@@ -276,6 +300,9 @@ func (h *Hub) poll(req PollRequest, authenticated string) (PollResponse, <-chan 
 			if c.Command.Kind == CommandClose && s.State != "draining" && s.State != "fenced" {
 				continue
 			}
+			if now.Before(h.redeliver[c.Command.ID]) {
+				continue
+			}
 			cmd := c.Command
 			cmd.LeaseUntil = s.LeaseUntil
 			out.Commands = append(out.Commands, cmd)
@@ -284,11 +311,34 @@ func (h *Hub) poll(req PollRequest, authenticated string) (PollResponse, <-chan 
 	var err error
 	if bootChanged {
 		err = h.saveFenceLocked()
-	} else {
+	} else if changed {
 		err = h.saveLocked()
+	} else {
+		// Still fence a superseded controller before returning any lease. A
+		// revision check is cheap and does not rewrite historical tool output.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if guard, ok := h.opts.Store.(StateGuard); ok {
+			err = guard.Guard(ctx, h.revision, func() error { return nil })
+		} else {
+			var snapshot Snapshot
+			snapshot, err = h.opts.Store.Load(ctx)
+			if err == nil && snapshot.Revision != h.revision {
+				err = ErrStoreConflict
+			}
+		}
+		cancel()
+		if errors.Is(err, ErrStoreConflict) {
+			h.closed = true
+			h.signalLocked()
+		}
 	}
 	if err != nil {
 		return PollResponse{}, nil, err
+	}
+	// A lost response is retried; a running command must not make the node
+	// continuously poll and serialize the entire persistent state.
+	for _, cmd := range out.Commands {
+		h.redeliver[cmd.ID] = now.Add(min(time.Second, h.opts.LeaseDuration/6))
 	}
 	sort.Slice(out.Commands, func(i, j int) bool { return out.Commands[i].ID < out.Commands[j].ID })
 	// Detach all nested maps/pointers before unlocking and encoding the response.

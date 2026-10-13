@@ -47,6 +47,7 @@ type nodeSession struct {
 	cleanupAfter       time.Time
 	syncErr            error
 	checkpointRunning  bool
+	opened             bool // Open may initialize MCPs and create recovery-worthy files.
 	ready              chan struct{}
 	dir                string
 	resources          runner.Resources // protected by Node.mu
@@ -254,6 +255,12 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer func() { cancel(); n.stopAll(); n.commandsWG.Wait(); n.stopAll() }()
+	if k, ok := n.Executor.(*KubernetesExecutor); ok {
+		poolCtx, stopPool := context.WithCancel(ctx)
+		poolDone := make(chan struct{})
+		go func() { defer close(poolDone); k.RunPool(poolCtx) }()
+		defer func() { stopPool(); <-poolDone }()
+	}
 	go n.watchdog(ctx)
 	go n.sendResults(ctx)
 	go n.checkpoints(ctx)
@@ -266,8 +273,13 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 		}
 		n.mu.Unlock()
 		var poll runner.PollResponse
+		var poolStatus *runner.PoolStatus
+		if k, ok := n.Executor.(*KubernetesExecutor); ok {
+			value := k.PoolStatus()
+			poolStatus = &value
+		}
 		sent := time.Now()
-		err := n.request(ctx, "poll", runner.PollRequest{NodeID: n.identity.NodeID, BootID: n.bootID, Protocol: runner.ProtocolVersion, Notifications: notes, Capabilities: &n.Config.Capabilities}, &poll)
+		err := n.request(ctx, "poll", runner.PollRequest{NodeID: n.identity.NodeID, BootID: n.bootID, Protocol: runner.ProtocolVersion, Notifications: notes, Capabilities: &n.Config.Capabilities, PoolStatus: poolStatus}, &poll)
 		if err != nil {
 			var status *httpStatusError
 			if errors.As(err, &status) && (status.status == http.StatusUnauthorized || status.status == http.StatusForbidden || status.status == http.StatusGone) {
@@ -287,17 +299,33 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 		}
 		failures = 0
 		n.applyPoll(ctx, poll, sent)
-		// Controllers normally long-poll. Bound a misconfigured empty response loop.
-		if len(poll.Commands) == 0 {
+		// Also bound repeated outstanding commands from older controllers.
+		if remaining := 100*time.Millisecond - time.Since(sent); remaining > 0 {
 			select {
 			case <-ctx.Done():
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(remaining):
 			}
 		}
 	}
 	return ctx.Err()
 }
 func (n *Node) applyPoll(ctx context.Context, poll runner.PollResponse, sent time.Time) {
+	if k, ok := n.Executor.(*KubernetesExecutor); ok && poll.Pool != nil {
+		policy := runner.PoolPolicy{}
+		if poll.Pool != nil {
+			policy = *poll.Pool
+			policy.Profiles = nil
+			for _, p := range poll.Pool.Profiles {
+				prepared, err := prepareWarmProfile(n.Config, p)
+				if err != nil {
+					n.Log.Printf("prewarm profile %s: %v", p.Environment, err)
+					continue
+				}
+				policy.Profiles = append(policy.Profiles, prepared)
+			}
+		}
+		k.UpdatePool(policy)
+	}
 	valid := map[string]runner.Lease{}
 	for _, l := range poll.Leases {
 		ttl := l.Until.Sub(poll.ServerTime)
@@ -427,11 +455,27 @@ func (n *Node) executeCommand(ctx context.Context, cmd runner.Command) runner.Re
 		if err == nil {
 			err = n.reserveResources(s, &spec, cmd.GPUIds)
 		}
+		var warm *warmPod
+		if k, ok := n.Executor.(*KubernetesExecutor); ok && err == nil {
+			warm, err = k.ClaimWarm(sessionCtx, s.id, spec, plan)
+			if warm != nil {
+				s.dir = warm.dir
+				s.mu.Lock()
+				s.sandbox = warm.sandbox
+				s.mu.Unlock()
+			}
+		}
 		if err == nil {
 			err = secureDir(s.dir)
 		}
 		roots := map[string]string{}
-		if err == nil {
+		if err == nil && warm != nil {
+			err = warm.activate()
+			if err == nil {
+				roots, err = warm.roots(plan)
+			}
+		}
+		if err == nil && warm == nil {
 			for _, mount := range plan.Mounts {
 				roots[mount.Name] = filepath.Join(s.dir, "mounts", safeID(mount.Name))
 				if e := os.MkdirAll(roots[mount.Name], 0700); e != nil {
@@ -439,6 +483,13 @@ func (n *Node) executeCommand(ctx context.Context, cmd runner.Command) runner.Re
 					break
 				}
 			}
+		}
+		var preparing Sandbox
+		if k, ok := n.Executor.(*KubernetesExecutor); ok && err == nil && warm == nil && k.prewarmingEnabled(spec.Environment) {
+			preparing = k.PrepareExecution(sessionCtx, s.id, spec, plan, roots)
+			s.mu.Lock()
+			s.sandbox = preparing
+			s.mu.Unlock()
 		}
 		if err == nil {
 			fileHTTP := *n.HTTP
@@ -453,7 +504,13 @@ func (n *Node) executeCommand(ctx context.Context, cmd runner.Command) runner.Re
 		}
 		if err == nil {
 			var sandbox Sandbox
-			sandbox, err = n.Executor.Start(sessionCtx, s.id, spec, plan, roots, cmd.GPUIds)
+			if warm != nil {
+				sandbox = warm.sandbox
+			} else if preparing != nil {
+				sandbox = preparing
+			} else {
+				sandbox, err = n.Executor.Start(sessionCtx, s.id, spec, plan, roots, cmd.GPUIds)
+			}
 			if sandbox != nil {
 				s.mu.Lock()
 				s.sandbox = sandbox
@@ -461,6 +518,9 @@ func (n *Node) executeCommand(ctx context.Context, cmd runner.Command) runner.Re
 			}
 			if err == nil {
 				var reply SandboxReply
+				s.mu.Lock()
+				s.opened = true
+				s.mu.Unlock()
 				reply, err = sandbox.Request(sessionCtx, SandboxRequest{Method: "open", SessionID: s.id, Spec: &spec})
 				if err == nil && reply.Error != "" {
 					err = errors.New(reply.Error)
@@ -599,9 +659,9 @@ func (n *Node) executeCommand(ctx context.Context, cmd runner.Command) runner.Re
 		}
 		n.mu.Unlock()
 		s.mu.Lock()
-		preserve := s.syncErr != nil
+		preserve := s.syncErr != nil || (cmd.Abort && s.opened)
 		s.mu.Unlock()
-		if !cmd.Abort && !preserve && result.Error == "" {
+		if !preserve && !result.UnknownOutcome && result.Error == "" {
 			_ = os.RemoveAll(s.dir)
 		} // retain conflicted files for recovery
 	default:
@@ -797,6 +857,7 @@ func (n *Node) watchdog(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
+			n.collectRetired(now)
 			n.mu.Lock()
 			expired := []*nodeSession{}
 			for id, s := range n.sessions {
