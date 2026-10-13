@@ -6,12 +6,12 @@ resources:
 
 # 复制本目录到 deploy/private 后填写实际镜像；生产环境建议用 digest 固定版本。
 images:
-  - name: registry.example.com/project/artex
+  - name: ghcr.io/rc-chn/artex
     newName: registry.example.com/project/artex
     newTag: latest
   - name: postgres
     newName: postgres
-    newTag: 16-alpine
+    newTag: 16.14-alpine
 
 # 两个卷都必须使用集群共享存储；应用卷要求 RWX。
 patches:

@@ -1,5 +1,6 @@
 "use client";
 
+import { subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
 
 import {
@@ -115,13 +116,6 @@ function PoolSheet({
   onReload: () => Promise<void>;
 }) {
   const [busy, setBusy] = React.useState(false);
-
-  // 冷却倒计时是后端算出的剩余秒数——抽屉开着且有配置不正常时才定时拉，让它走起来。
-  React.useEffect(() => {
-    if (!open || !pool?.enabled || !pool.chain.some((m) => m.state !== "ok")) return;
-    const t = setInterval(() => void onReload(), 10_000);
-    return () => clearInterval(t);
-  }, [open, pool, onReload]);
 
   async function toggle(patch: { llm_pool_enabled?: boolean; llm_pool_bind_fallback?: boolean }) {
     if (busy) return;
@@ -793,22 +787,31 @@ export default function LLMPage() {
   // 「编辑 X」闪成「新建」。editing = null 表示新建。
   const [editOpen, setEditOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<LLMProfile | null>(null);
+  const mounted = React.useRef(false);
+  const profileRequest = React.useRef(0);
+  const poolRequest = React.useRef(0);
   const openEditor = React.useCallback((p: LLMProfile | null) => {
     setEditing(p);
     setEditOpen(true);
   }, []);
 
   const loadPool = React.useCallback(async () => {
+    if (!mounted.current) return;
+    const request = ++poolRequest.current;
     try {
-      setPool(await api.llmPool());
+      const next = await api.llmPool();
+      if (mounted.current && request === poolRequest.current) setPool(next);
     } catch {
       /* ignore */
     }
   }, []);
 
   const load = React.useCallback(async () => {
+    if (!mounted.current) return;
+    const request = ++profileRequest.current;
     try {
-      setProfiles(await api.llmProfiles());
+      const next = await api.llmProfiles();
+      if (mounted.current && request === profileRequest.current) setProfiles(next);
     } catch {
       /* ignore */
     }
@@ -816,7 +819,14 @@ export default function LLMPage() {
   }, [loadPool]);
 
   React.useEffect(() => {
-    void load();
+    mounted.current = true;
+    const stop = subscribeRefresh(load, { keys: ["/llm", "/settings"], intervalMs: 60_000 });
+    return () => {
+      mounted.current = false;
+      profileRequest.current++;
+      poolRequest.current++;
+      stop();
+    };
   }, [load]);
 
   // 卡片上的健康徽章按 profile id 取轮询状态。

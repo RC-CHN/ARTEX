@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/Autumn-27/artex/db"
+import "github.com/RC-CHN/ARTEX/db"
 
 // taskScopeOverview exposes the current task's actual range, even when coverage
 // metrics are disabled. A company ID alone is not enough for planning: its live

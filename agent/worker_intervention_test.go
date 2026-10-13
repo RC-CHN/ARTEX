@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/Autumn-27/norma/llm"
+	"github.com/RC-CHN/ARTEX/norma/llm"
 )
 
 func TestWorkerSessionIDIsStablePerIntent(t *testing.T) {

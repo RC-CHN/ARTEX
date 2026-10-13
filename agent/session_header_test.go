@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/RC-CHN/ARTEX/norma/transcript"
 )
 
 // fakeRT records the request it saw and returns a minimal 200 response.

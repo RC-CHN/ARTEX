@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/norma/noa"
+	"github.com/RC-CHN/ARTEX/norma/noa"
 )
 
 func sampleState() noa.CompressionState {

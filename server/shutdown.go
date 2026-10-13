@@ -1,6 +1,6 @@
 package server
 
-import "github.com/Autumn-27/artex/agent"
+import "github.com/RC-CHN/ARTEX/agent"
 
 // background admits work before shutdown begins. The mutex makes Wait safe
 // even when a finishing task attempts to schedule follow-up work.

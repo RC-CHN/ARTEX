@@ -6,6 +6,7 @@
 import type { ChatMention } from "@/lib/chat-mentions";
 import { MOCK } from "@/lib/mock/enabled";
 import { mockHandle } from "@/lib/mock/handler";
+import { apiCache, clearApiCache, invalidateApiData, syncApiSession } from "@/lib/api-refresh";
 import type {
   ActiveFindingRetest,
   Activity,
@@ -112,39 +113,54 @@ function getToken(): string | null {
 }
 
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  if (MOCK) return mockHandle<T>(init?.method ?? "GET", path, init?.body ?? null);
   const token = getToken();
-  const r = await fetch(`/api${path}`, {
-    ...init,
-    headers: {
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init?.headers as Record<string, string> | undefined),
-    },
-  });
-  if (r.status === 401) {
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("artex_token");
-      document.cookie = "artex_token=; path=/; max-age=0";
-      window.location.href = "/login";
+  syncApiSession(token);
+  const method = (init?.method ?? "GET").toUpperCase();
+  const load = async (): Promise<T> => {
+    if (MOCK) {
+      const data = await mockHandle<T>(method, path, init?.body ?? null);
+      if (method !== "GET" && method !== "HEAD") invalidateApiData();
+      return data;
     }
-    throw new Error("未授权");
-  }
-  if (!r.ok) {
-    const fallback = `${init?.method ?? "GET"} ${path}: ${r.status}`;
-    let message = fallback;
-    try {
-      const payload = (await r.json()) as { error?: unknown };
-      if (typeof payload.error === "string" && payload.error.trim()) {
-        message = payload.error.trim();
+    const r = await fetch(`/api${path}`, {
+      ...init,
+      headers: {
+        ...(init?.body ? { "Content-Type": "application/json" } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init?.headers as Record<string, string> | undefined),
+      },
+    });
+    if (r.status === 401) {
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("artex_token");
+        clearApiCache();
+        document.cookie = "artex_token=; path=/; max-age=0";
+        window.location.href = "/login";
       }
-    } catch {
-      // Keep the status-based fallback for empty or non-JSON error responses.
+      throw new Error("未授权");
     }
-    throw new Error(message);
-  }
-  if (r.status === 204) return undefined as T;
-  return r.json();
+    if (!r.ok) {
+      const fallback = `${init?.method ?? "GET"} ${path}: ${r.status}`;
+      let message = fallback;
+      try {
+        const payload = (await r.json()) as { error?: unknown };
+        if (typeof payload.error === "string" && payload.error.trim()) {
+          message = payload.error.trim();
+        }
+      } catch {
+        // Keep the status-based fallback for empty or non-JSON error responses.
+      }
+      throw new Error(message);
+    }
+    if (method !== "GET" && method !== "HEAD") invalidateApiData();
+    if (r.status === 204) return undefined as T;
+    return r.json();
+  };
+  // Caller-managed cancellation and explicit uncached reads retain native fetch
+  // semantics. All ordinary JSON GETs share an auth-scoped freshness window.
+  if (method !== "GET" || init?.signal || init?.cache === "no-store" || init?.cache === "reload") return load();
+  const headers = [...new Headers(init?.headers).entries()].sort(([a], [b]) => a.localeCompare(b));
+  return apiCache.read(JSON.stringify([token, path, headers]), path, load);
 }
 
 // sseUrl builds a URL for Server-Sent Events streams.
@@ -449,6 +465,7 @@ export const api = {
       body: fd,
     });
     if (!r.ok) throw new Error(`上传失败: ${r.status}`);
+    invalidateApiData(["/workspace"]);
     return r.json() as Promise<{ uploaded: number }>;
   },
   workspaceDownload: async (path: string) => {
@@ -825,8 +842,7 @@ export const api = {
   // 渠道是多实例资源（同一类型可配多个机器人、各有过滤规则），因此独立成组，
   // 不塞进扁平的 settings 键值里。
   notifyMeta: () => get<NotificationMeta>(`/notify/meta`),
-  notifyChannels: () =>
-    get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
+  notifyChannels: () => get<{ channels: NotificationChannel[] }>(`/notify/channels`).then((r) => arr(r.channels)),
   notifyCreateChannel: (payload: {
     name: string;
     kind: string;
@@ -900,6 +916,7 @@ export const api = {
       body: fd,
     });
     if (!r.ok) throw new Error(`上传失败: ${r.status} ${await r.text()}`);
+    invalidateApiData(["/workspace", "/tasks", "/chat"]);
     return r.json() as Promise<{ attachments: ChatAttachment[] }>;
   },
   stopChat: (taskId: string) => post<{ status: string }>(`/tasks/${taskId}/chat/stop`, {}),
@@ -1016,11 +1033,12 @@ export const api = {
   deleteConversation: (id: number) => del<{ deleted: number }>(`/conversations/${id}`),
   deleteConversations: (ids: number[]) =>
     post<{ items: { id: number; ok: boolean; error?: string }[] }>("/conversations/delete/batch", { ids }),
-  // Incremental tail: steps after `since` (id ASC) — live poll + post-send fetch.
+  // The active conversation tail has no SSE and must not reuse a cached empty
+  // cursor page. Its shared refresh subscription serializes these reads.
   conversationMessages: (id: number, since = 0) =>
-    get<{ items: Activity[]; cursor: number; running: boolean }>(`/conversations/${id}/messages?since=${since}`).then(
-      (r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running }),
-    ),
+    http<{ items: Activity[]; cursor: number; running: boolean }>(`/conversations/${id}/messages?since=${since}`, {
+      cache: "no-store",
+    }).then((r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running })),
   // Reverse pagination: the latest `limit` steps (before=0) or the page of older
   // steps ending before id `before`. hasMore = still-older steps exist.
   conversationHistory: (id: number, before = 0, limit = 200) => {
@@ -1161,6 +1179,7 @@ export const api = {
     });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body?.error || `上传失败(${r.status})`);
+    invalidateApiData(["/skills"]);
     return body;
   },
   deleteSkill: (name: string) => del<{ deleted: string }>(`/skills/${name}`),
@@ -1242,25 +1261,11 @@ export const api = {
   // ---- intercept tool-config (全局工具拦截范围) ----
   interceptGetToolConfig: async (): Promise<{ enabled_tools: string[] }> => {
     if (MOCK) return { enabled_tools: ["bash"] };
-    const token = getToken();
-    const r = await fetch("/api/intercept/tool-config", {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
+    return get("/intercept/tool-config");
   },
   interceptSetToolConfig: async (enabledTools: string[]): Promise<void> => {
     if (MOCK) return;
-    const token = getToken();
-    const r = await fetch("/api/intercept/tool-config", {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ enabled_tools: enabledTools }),
-    });
-    if (!r.ok) throw new Error(await r.text());
+    await put("/intercept/tool-config", { enabled_tools: enabledTools });
   },
 
   // ---- intercept LLM judge (模型兜底审批,全局配置) ----

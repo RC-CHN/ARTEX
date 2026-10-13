@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	actool "github.com/Autumn-27/norma/tool"
+	actool "github.com/RC-CHN/ARTEX/norma/tool"
 )
 
 // 本文件把「内置工具」从纯代码变成可枚举、可被 DB 覆盖的目录：

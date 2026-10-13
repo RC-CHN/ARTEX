@@ -1,14 +1,12 @@
-module github.com/Autumn-27/artex
+module github.com/RC-CHN/ARTEX
 
-// Upstream github.com/Autumn-27/norma went closed-source and is no
-// longer publicly accessible; v0.4.3 was restored from the Go module
-// proxy into ./norma.
-replace github.com/Autumn-27/norma => ./norma
+// Norma is maintained in this repository; builds always use the local source.
+replace github.com/RC-CHN/ARTEX/norma => ./norma
 
 go 1.26.3
 
 require (
-	github.com/Autumn-27/norma v0.4.3
+	github.com/RC-CHN/ARTEX/norma v0.0.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.10.0

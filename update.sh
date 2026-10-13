@@ -38,7 +38,7 @@ update_docker(){
     ok "已将 ARTEX_TAG 设为 ${tag}"
   fi
 
-  # 只动 artex：postgres 是固定的 16-alpine，不需要跟着升级（拉它纯属浪费带宽，
+  # 只动 artex：postgres 是固定的 16.14-alpine，不需要跟着升级（拉它纯属浪费带宽，
   # 且大版本变动还会有兼容风险）。artex 声明了 depends_on postgres，所以带服务名
   # up 时若 pg 没起会自动拉起，已在跑的则原样保留、不重建。
   info "拉取新镜像（仅 artex）…"

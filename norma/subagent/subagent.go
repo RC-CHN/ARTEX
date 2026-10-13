@@ -10,11 +10,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/permission"
-	"github.com/Autumn-27/norma/tool"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/RC-CHN/ARTEX/norma/harness"
+	"github.com/RC-CHN/ARTEX/norma/llm"
+	"github.com/RC-CHN/ARTEX/norma/permission"
+	"github.com/RC-CHN/ARTEX/norma/tool"
+	"github.com/RC-CHN/ARTEX/norma/transcript"
 )
 
 // Definition configures a named subagent (FR-09.1).

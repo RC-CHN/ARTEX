@@ -3,8 +3,8 @@ package noaadapter
 import (
 	"context"
 
-	"github.com/Autumn-27/norma/compaction"
-	"github.com/Autumn-27/norma/llm"
+	"github.com/RC-CHN/ARTEX/norma/compaction"
+	"github.com/RC-CHN/ARTEX/norma/llm"
 )
 
 // Compactor adapts a Session to the harness's context-manager interfaces.
@@ -38,7 +38,13 @@ func (c *Compactor) View(_ context.Context, msgs []llm.Message) []llm.Message {
 // compaction already recognises every provider's phrasing, so the detection is
 // borrowed rather than duplicated.
 func (c *Compactor) IsOverflow(err error) bool {
-	return compaction.New(compaction.Config{}, nil).IsOverflow(err)
+	if !compaction.New(compaction.Config{}, nil).IsOverflow(err) {
+		return false
+	}
+	// Reactive receives only the history; this is the point where the provider's
+	// rejected limit is still available. Keep it for this and future recoveries.
+	c.overflow.learn(ParseOverflowWindow(err.Error()))
+	return true
 }
 
 // Reactive recovers from a prompt-too-long error.

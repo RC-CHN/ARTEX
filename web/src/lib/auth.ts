@@ -1,3 +1,5 @@
+import { clearApiCache } from "./api-refresh";
+
 const TOKEN_KEY = "artex_token";
 const COOKIE_MAX_AGE = 7 * 24 * 60 * 60; // 7 天（秒）
 
@@ -18,12 +20,14 @@ export const auth = {
   },
 
   setToken(token: string): void {
+    clearApiCache();
     localStorage.setItem(TOKEN_KEY, token);
     // 同步写 cookie，供 Next.js middleware 服务端读取
     document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
   },
 
   clearToken(): void {
+    clearApiCache();
     localStorage.removeItem(TOKEN_KEY);
     document.cookie = `${TOKEN_KEY}=; path=/; max-age=0`;
   },

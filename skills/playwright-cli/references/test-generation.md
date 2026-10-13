@@ -153,10 +153,11 @@ test -f playwright.config.ts || test -f playwright.config.js
 npx --no-install playwright --version
 ```
 
-If there is no Playwright install, bootstrap one and let the user pick the defaults:
+If Playwright is missing, install the pinned test runner and browser, then add a project configuration before recording tests:
 
 ```bash
-npm init playwright@latest
+npm install --save-dev @playwright/test@1.64.0
+npx playwright install chromium
 ```
 
 ### 1.2 Prerequisite: seed test

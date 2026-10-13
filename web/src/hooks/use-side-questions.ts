@@ -1,5 +1,6 @@
 "use client";
 
+import { notifyApiEvent, subscribeRefresh } from "@/lib/api-refresh";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { toast } from "sonner";
@@ -119,9 +120,8 @@ export function useSideQuestions(parent: string | null) {
 
   useEffect(() => {
     if (!open || !parent) return;
-    void load();
-    const timer = setInterval(() => void load(), 2000);
-    return () => clearInterval(timer);
+    const timer = subscribeRefresh(load, { keys: [parent.replace(/^\/api/, ""), "/side-questions"] });
+    return () => timer();
   }, [open, parent, load]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: Reconnect after a clear attempt invalidates older callbacks.
@@ -136,17 +136,21 @@ export function useSideQuestions(parent: string | null) {
         if (item.id !== runningID) return;
         setItems((old) => merge(old, [item]));
         restoreFailedDraft([item]);
-        if (item.status !== "running") stream.close();
+        if (item.status !== "running") {
+          stream.close();
+          notifyApiEvent([parent?.replace(/^\/api/, "") ?? "/side-questions"]);
+        }
       } catch {
         setError("旁路数据解析失败，请重新打开面板");
       }
     });
     stream.addEventListener("cleared", () => {
       stream.close();
+      notifyApiEvent([parent?.replace(/^\/api/, "") ?? "/side-questions"]);
       if (version === epoch.current) setItems([]);
     });
     return () => stream.close();
-  }, [runningID, streamEpoch, restoreFailedDraft]);
+  }, [runningID, streamEpoch, restoreFailedDraft, parent]);
 
   const ask = async (input: string) => {
     const question = input.trim();

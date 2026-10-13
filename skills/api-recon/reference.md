@@ -301,7 +301,7 @@ grep -rhoaE '/api/[a-zA-Z0-9_./-]+' js | sort -u
 3. **Phase 1b**：path 锚点扩窗 + 绑定层 → `param_candidates.json`（J 节）
 4. 逆向 A1/A2/A3 → 写站点专属 `config.json`
 5. **阅读并调整** `runtime_harvest.js` / `preload.js` 后再执行
-6. `runtimeMode=depth`：`npm install` → 运行调整后的 harvest 脚本
+6. `runtimeMode=depth`：`npm ci` → 运行调整后的 harvest 脚本
 7. `runtimeMode=coverage/both`：document-start 注入调整后的 preload → browser MCP 动态枚举 + **参数触发矩阵**
 8. 模块不渲染 → **I 节权限树还原** → patch stubs → 重跑
 9. 参数多样本 diff + 错误反推 → `params_merged.json`

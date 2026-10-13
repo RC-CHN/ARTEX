@@ -1,5 +1,6 @@
 "use client";
 
+import { subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
 
 import {
@@ -35,7 +36,6 @@ import type { Edge, ExploreKind, FindingAsset, NewAssetType, TaskNode } from "@/
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZES = [20, 50, 100];
-const POLL_MS = 8000;
 
 type KindMeta = { label: string; icon: LucideIcon; dot: string; chip: string };
 
@@ -513,16 +513,16 @@ export function BroadcastTab({ taskId }: { taskId: string }) {
         .catch(() => {
           // 轮询是尽力而为:保留上一次成功的播报内容,下一轮自动重试。
         });
-    void load();
     if (!live) {
+      void load();
       return () => {
         alive = false;
       };
     }
-    const timer = setInterval(load, POLL_MS);
+    const timer = subscribeRefresh(load, { keys: ["/exploration"] });
     return () => {
       alive = false;
-      clearInterval(timer);
+      timer();
     };
   }, [taskId, page, size, kinds, query, order, live, atLive]);
 

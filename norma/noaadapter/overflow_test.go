@@ -1,11 +1,13 @@
 package noaadapter
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
-	"github.com/Autumn-27/norma/llm"
+	"github.com/RC-CHN/ARTEX/norma/llm"
 )
 
 // The three harness-facing methods are the whole public surface between noa and
@@ -81,45 +83,58 @@ func TestIsOverflowRecognisesProviderPhrasings(t *testing.T) {
 	}
 }
 
-// overflowState documents itself as mining the error for the provider's real
-// window — "rather than guessing again next turn, the error is mined for the
-// actual number and the mechanical valve is armed so the next view is built to
-// fit."
-//
-// Nothing does that. ParseOverflowWindow and overflowState.learn have no callers
-// anywhere in the tree: harness.Compactor.Reactive receives only the message
-// array, and IsOverflow — the one method that does see the error — throws it
-// away. So arm() always falls back to the CONFIGURED limit, which is exactly the
-// number the provider just rejected.
-//
-// Either wire learning in (IsOverflow is the natural place: it already has the
-// error) or delete the mechanism and the comment that promises it. Leaving it is
-// the worst option, because the comment describes behaviour the code does not
-// have.
+// Detection must retain the real window from the provider's error so the
+// recovery rebuilds a request that fits that window without changing history.
 func TestOverflowLearningIsWiredIn(t *testing.T) {
-	c := &Compactor{sess: simSession(t, 200000)}
-
-	// The provider says its real window is 128000, not the configured 200000.
-	err := errors.New("This model's maximum context length is 128000 tokens, however you requested 214000")
-	if n := ParseOverflowWindow(err.Error()); n != 128000 {
-		t.Fatalf("ParseOverflowWindow = %d, want 128000 — the parser itself is broken", n)
+	const configured, learned = 200_000, 128_000
+	c := &Compactor{sess: simSession(t, configured)}
+	a := newSimAgent(t, c.sess, 1)
+	for range 15 {
+		a.work(40_000)
+	}
+	original, err := json.Marshal(a.history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := estimateMessages(c.View(t.Context(), a.history))
+	if before <= learned || before >= configured*95/100 {
+		t.Fatalf("fixture must exceed provider's window but fit configured window: %d", before)
 	}
 
-	// The loop's actual sequence: detect, then recover.
-	c.IsOverflow(err)
-	c.Reactive(t.Context(), nil)
-
-	floor := c.overflow.armedFloor()
-	if floor == 0 {
-		t.Skip("Reactive disarmed because it could not shrink an empty view")
+	if !c.IsOverflow(errors.New("This model's maximum context length is 128000 tokens, however you requested 214000")) {
+		t.Fatal("provider overflow was not recognized")
 	}
-	want := int(float64(128000) * 0.95)
-	if floor != want {
-		t.Fatalf("the armed floor is %d (95%% of the CONFIGURED %d), not %d (95%% of the %d "+
-			"the provider reported). ParseOverflowWindow and overflowState.learn have no "+
-			"callers, so the learned window is never learned and the next view is rebuilt to "+
-			"a limit the provider has already rejected.",
-			floor, c.sess.Config().ModelContextLimit, want, 128000)
+	recovered, ok := c.Reactive(t.Context(), a.history)
+	if !ok {
+		t.Fatal("recoverable large tool outputs did not produce a smaller request")
+	}
+	want := learned * 95 / 100
+	if floor := c.overflow.armedFloor(); floor != want {
+		t.Fatalf("armed floor = %d, want %d from the provider's window", floor, want)
+	}
+	after := estimateMessages(c.View(t.Context(), recovered))
+	if after >= before || after > want {
+		t.Fatalf("recovery sent %d tokens (before %d), want fewer and <= %d", after, before, want)
+	}
+	unchanged, err := json.Marshal(recovered)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(original, unchanged) {
+		t.Fatal("overflow recovery rewrote the durable conversation history")
+	}
+
+	// Neither unrelated token errors nor an overflow without a parseable limit
+	// may replace the provider window already learned from an earlier attempt.
+	if c.IsOverflow(errors.New("max_tokens must be less than 8192")) {
+		t.Fatal("an output-token setting error was classified as context overflow")
+	}
+	if !c.IsOverflow(errors.New("anthropic: status 413")) {
+		t.Fatal("unstructured overflow was not recognized")
+	}
+	c.overflow.arm(configured)
+	if floor := c.overflow.armedFloor(); floor != want {
+		t.Fatalf("subsequent error lost the learned window: floor=%d want=%d", floor, want)
 	}
 }
 

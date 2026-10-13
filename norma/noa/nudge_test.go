@@ -27,9 +27,16 @@ func nudgeAt(t *testing.T, tokenCount, t1Tokens int, mutate func(*CompressionSta
 
 func TestResolveAdaptiveGrowth(t *testing.T) {
 	n := DefaultConfig(200000).Nudge
-	// min(50000, max(50000, round(200000*0.05)=10000)) = 50000
-	if got := resolveAdaptiveGrowth(200000, n); got != 50000 {
-		t.Fatalf("adaptive growth for a 200k window = %d, want 50000", got)
+	for _, tc := range []struct{ window, want int }{
+		{1_000, 10_000}, // absolute floor
+		{40_000, 10_000},
+		{200_000, 10_000},
+		{400_000, 20_000},
+		{2_000_000, 50_000}, // absolute cap
+	} {
+		if got := resolveAdaptiveGrowth(tc.window, n); got != tc.want {
+			t.Errorf("adaptive growth for a %d window = %d, want %d", tc.window, got, tc.want)
+		}
 	}
 	if got := resolveAdaptiveGrowth(0, n); got != n.GrowthFloor {
 		t.Fatalf("adaptive growth with no limit = %d, want the floor", got)
@@ -38,20 +45,23 @@ func TestResolveAdaptiveGrowth(t *testing.T) {
 
 func TestGrowthFloor(t *testing.T) {
 	n := DefaultConfig(200000).Nudge
-	// max(20000, 0.45*50000=22500) = 22500
-	if got := growthFloorOf(50000, n); got != 22500 {
-		t.Fatalf("growth floor = %d, want 22500", got)
+	for _, tc := range []struct{ adaptive, want int }{
+		{1_000, 5_000}, {2_000, 5_000}, {10_000, 5_000}, {50_000, 22_500},
+	} {
+		if got := growthFloorOf(tc.adaptive, n); got != tc.want {
+			t.Errorf("growth floor for %d = %d, want %d", tc.adaptive, got, tc.want)
+		}
 	}
 }
 
 // Below the cadence gate the nudge stays quiet, however much is compressible.
 func TestNudgeHoldsBelowCadence(t *testing.T) {
-	d := nudgeAt(t, 100000, 60000, func(st *CompressionState, _ *Config) {
-		st.Nudge.LastNudgeShownTokens = 95000 // grew only 5000
-		st.Nudge.LastPerMessageNudgeTokens = 95000
+	d := nudgeAt(t, 100000, 60000, func(st *CompressionState, cfg *Config) {
+		st.Nudge.LastNudgeShownTokens = 100000 - NudgeGrowthFloor(*cfg) + 1
+		st.Nudge.LastPerMessageNudgeTokens = st.Nudge.LastNudgeShownTokens
 	})
 	if d.ShouldInject {
-		t.Fatalf("injected despite growing only 5000 of 22500: %s", d.Reason)
+		t.Fatalf("injected despite growth being one token below the cadence gate: %s", d.Reason)
 	}
 	if !strings.Contains(d.Reason, "below cadence") {
 		t.Fatalf("reason = %q, want it to name the cadence gate", d.Reason)
@@ -59,9 +69,9 @@ func TestNudgeHoldsBelowCadence(t *testing.T) {
 }
 
 func TestNudgeFiresOnGrowthWithBacklog(t *testing.T) {
-	d := nudgeAt(t, 120000, 60000, func(st *CompressionState, _ *Config) {
-		st.Nudge.LastNudgeShownTokens = 90000 // grew 30000 > 22500
-		st.Nudge.LastPerMessageNudgeTokens = 90000
+	d := nudgeAt(t, 120000, 60000, func(st *CompressionState, cfg *Config) {
+		st.Nudge.LastNudgeShownTokens = 120000 - NudgeGrowthFloor(*cfg)
+		st.Nudge.LastPerMessageNudgeTokens = st.Nudge.LastNudgeShownTokens
 	})
 	if !d.ShouldInject || d.Tier != 1 {
 		t.Fatalf("decision = inject:%v tier:%d, want a tier-1 nudge: %s", d.ShouldInject, d.Tier, d.Reason)
@@ -75,7 +85,7 @@ func TestNudgeHoldsWhenBacklogTooSmall(t *testing.T) {
 		st.Nudge.LastPerMessageNudgeTokens = 90000
 	})
 	if d.ShouldInject {
-		t.Fatalf("injected with only 5000 pending against a 50000 threshold: %s", d.Reason)
+		t.Fatalf("injected with only 5000 pending against a 10000 threshold: %s", d.Reason)
 	}
 }
 

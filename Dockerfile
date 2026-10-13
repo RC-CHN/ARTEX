@@ -1,7 +1,7 @@
 # ARTEX container image.
 #
 # 多阶段构建：前端静态导出 → Go 单二进制（内嵌前端）→ 运行镜像。
-# 原 Docker Hub 镜像源（autumn27/artex）已失效，本仓库自此支持从纯源码自助构建：
+# 由本仓库源码构建并发布到 ghcr.io/rc-chn/artex：
 #   docker compose build        # 或 docker build -t artex:local .
 # TARGETARCH 由 buildx 自动注入（amd64/arm64），Go 交叉编译无需 QEMU；
 # 运行层只装工具，编译全部在构建阶段完成。
@@ -44,9 +44,10 @@ FROM node:22.23.3-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527
 ########## 阶段 4：运行工具（独立于应用源码和发布版本缓存）##########
 FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS runtime-tools
 ARG NPM_REGISTRY=https://registry.npmmirror.com
+ARG PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
 # 工具包固定到 lockfile；镜像源只影响下载地址，不改变依赖版本与 integrity。
 ENV npm_config_registry=$NPM_REGISTRY \
-    PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright \
+    PLAYWRIGHT_DOWNLOAD_HOST=$PLAYWRIGHT_DOWNLOAD_HOST \
     PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers \
     PLAYWRIGHT_MCP_BROWSER=chromium \
     PATH="/opt/artex-tools/node_modules/.bin:${PATH}"
@@ -88,9 +89,13 @@ COPY --from=gobuild /out/artex /app/artex
 COPY start.sh /app/start.sh
 RUN chmod +x /app/artex /app/start.sh
 COPY skills/ /app/skills/
+COPY LICENSE NOTICE.md /app/
+COPY web/LICENSE /app/WEB-LICENSE
 ARG ARTEX_BUILD_VERSION=dev
 ARG VCS_REF
-LABEL org.opencontainers.image.title="ARTEX" \
+LABEL org.opencontainers.image.source="https://github.com/RC-CHN/ARTEX" \
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      org.opencontainers.image.title="ARTEX" \
       org.opencontainers.image.version="$ARTEX_BUILD_VERSION" \
       org.opencontainers.image.revision="$VCS_REF"
 # data/（流量 blob、会话记录及旧索引备份）持久化点

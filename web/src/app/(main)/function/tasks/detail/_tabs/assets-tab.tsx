@@ -1,5 +1,6 @@
 "use client";
 
+import { subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
 
 import {
@@ -414,12 +415,17 @@ export function AssetsTab({ taskId }: { taskId: string }) {
       }
     };
     // Debounce DSL keystrokes; plain (re)loads and polling run immediately.
-    const debounce = setTimeout(() => void load(), dsl ? 400 : 0);
-    const timer = setInterval(() => void load(), 10_000);
+    let stop: (() => void) | undefined;
+    const debounce = setTimeout(
+      () => {
+        stop = subscribeRefresh(load, { keys: [`/tasks/${taskId}/assets`, "/assets"] });
+      },
+      dsl ? 400 : 0,
+    );
     return () => {
       active = false;
       clearTimeout(debounce);
-      clearInterval(timer);
+      stop?.();
     };
   }, [page, query, refreshKey, size, tab, taskId]);
 

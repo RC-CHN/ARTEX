@@ -7,7 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/RC-CHN/ARTEX/db"
 )
 
 func TestReviewInputIgnoresAuditHistoryAndPreservesCurrentCall(t *testing.T) {

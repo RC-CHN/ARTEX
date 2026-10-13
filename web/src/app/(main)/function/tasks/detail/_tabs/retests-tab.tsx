@@ -15,6 +15,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/u
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
+import { invalidateApiData, subscribeRefresh } from "@/lib/api-refresh";
 import type { Finding, FindingsPage } from "@/lib/types";
 
 const PAGE_SIZE = 20;
@@ -28,14 +29,12 @@ export function RetestsTab({ taskId }: { taskId: string }) {
   const [data, setData] = React.useState<FindingsPage | null>(null);
   const [selectedId, setSelectedId] = React.useState("");
   const [error, setError] = React.useState("");
-  const [refreshVersion, setRefreshVersion] = React.useState(0);
-  const refresh = React.useCallback(() => setRefreshVersion((version) => version + 1), []);
+  const refresh = React.useCallback(() => invalidateApiData(["/exploration/findings"]), []);
 
   // Only this task's own findings, including those without graph nodes.
   // Fetch history only for the selection, and wait for each poll to finish.
   React.useEffect(() => {
     let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
     async function load() {
       try {
         const result = await api.findingsPage({ task: taskId, page, pageSize: PAGE_SIZE, sort: "time" });
@@ -52,17 +51,14 @@ export function RetestsTab({ taskId }: { taskId: string }) {
         setError("");
       } catch (e) {
         if (!disposed) setError((e as Error).message);
-      } finally {
-        if (!disposed) timer = setTimeout(() => void load(), 3000);
       }
     }
-    void refreshVersion; // Refresh triage immediately after a retest completes.
-    void load();
+    const stop = subscribeRefresh(load, { keys: ["/exploration/findings"] });
     return () => {
       disposed = true;
-      clearTimeout(timer);
+      stop();
     };
-  }, [taskId, page, refreshVersion]);
+  }, [taskId, page]);
 
   const loaded = data?.page === page;
   const findings = loaded ? data.items : [];

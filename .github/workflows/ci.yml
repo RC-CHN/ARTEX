@@ -1,0 +1,135 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ inputs.ref || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  source:
+    name: Source and workflow checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            norma/go.sum
+      - run: python3 ci/verify-source.py
+      - run: python3 -m unittest discover -s ci -p 'test_*.py'
+      - run: bash -n build.sh install.sh update.sh start.sh deploy/container-tools/npx.sh
+      - run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
+  backend:
+    name: Go and PostgreSQL regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16.14-alpine
+        env:
+          POSTGRES_USER: artex_test
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: artex_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U artex_test -d artex_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      ARTEX_TEST_PG_DSN: postgres://artex_test:ci-only-password@127.0.0.1:5432/artex_test?sslmode=disable
+      ARTEX_TRAFFIC_TEST_DSN: postgres://artex_test:ci-only-password@127.0.0.1:5432/artex_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            norma/go.sum
+      - name: Verify modules and static analysis
+        run: |
+          go mod verify
+          go vet ./...
+          cd norma
+          go mod verify
+          go vet ./...
+      - name: Two full integration runs
+        run: go test ./... -count=2 -timeout=10m
+      - name: Scheduling, cancellation, failover and shutdown races
+        run: go test -race ./server ./llmpool ./traffic ./enrich -count=1 -timeout=10m
+      - name: Local Norma SDK regression
+        working-directory: norma
+        run: go test ./... -count=1 -timeout=10m
+
+  frontend:
+    name: Frontend cache regression and static export
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.23.3
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --ignore-scripts
+        working-directory: web
+      - run: npm run test:unit
+        working-directory: web
+      - run: npm run typecheck
+        working-directory: web
+      - run: npm run build:static
+        working-directory: web
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web-dist
+          path: web/out
+          if-no-files-found: error
+          retention-days: 7
+
+  container:
+    name: Container API and offline browser smoke
+    needs: [source, backend, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          tags: artex:ci
+          build-args: |
+            ARTEX_BUILD_VERSION=ci
+            VCS_REF=${{ inputs.ref || github.sha }}
+            GOPROXY=https://proxy.golang.org,direct
+            NPM_REGISTRY=https://registry.npmjs.org
+            PLAYWRIGHT_DOWNLOAD_HOST=
+          cache-from: type=gha,scope=artex-linux-amd64
+          cache-to: type=gha,mode=max,scope=artex-linux-amd64
+      - run: python3 ci/image-smoke.py artex:ci ci

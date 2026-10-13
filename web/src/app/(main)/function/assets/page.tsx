@@ -58,7 +58,9 @@ import {
 } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useApiRefresh } from "@/hooks/use-api-refresh";
 import { api } from "@/lib/api";
+import { invalidateApiData, subscribeRefresh } from "@/lib/api-refresh";
 import { parseCompanyScopeText } from "@/lib/company-scope";
 import type { Asset, Company, CompanyScopeRule } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -119,7 +121,6 @@ export default function AssetsPage() {
   const [page, setPage] = React.useState(0);
   const [size, setSize] = React.useState(50);
   const [dslError, setDslError] = React.useState("");
-  const [refreshKey, setRefreshKey] = React.useState(0);
   const assetsRequestRef = React.useRef(0);
   const [rowsTab, setRowsTab] = React.useState("");
 
@@ -134,28 +135,22 @@ export default function AssetsPage() {
   const [companyDeleteAssets, setCompanyDeleteAssets] = React.useState(false);
   const [companyDeleting, setCompanyDeleting] = React.useState(false);
 
-  // Companies + per-type counts (tab badges) — loaded on demand, no background polling.
-  const loadMeta = React.useCallback(() => {
-    api
-      .companies()
-      .then(setCompanies)
-      .catch(() => {
-        /* Keep the last successful company snapshot on a transient failure. */
-      });
-    api
-      .assetCounts()
-      .then(setCounts)
-      .catch(() => {
-        /* Keep the last successful counters on a transient failure. */
-      });
-  }, []);
+  // Keep badges and company attribution current after mutations and live events.
+  useApiRefresh(
+    () => Promise.allSettled([api.companies(), api.assetCounts()]),
+    ([companyResult, countResult]) => {
+      if (companyResult.status === "fulfilled") setCompanies(companyResult.value);
+      if (countResult.status === "fulfilled") setCounts(countResult.value);
+    },
+    [],
+    { keys: ["/companies", "/assets"], intervalMs: 60_000 },
+  );
 
   // Manual refresh: reload counts/companies and re-fetch the current page.
   const refresh = React.useCallback(() => {
-    loadMeta();
-    setRefreshKey((k) => k + 1);
+    invalidateApiData(["/assets", "/companies"]);
     setSelected(new Set());
-  }, [loadMeta]);
+  }, []);
 
   const toggleSelect = (id: number) => {
     setSelected((prev) => {
@@ -223,10 +218,6 @@ export default function AssetsPage() {
     }
   };
 
-  React.useEffect(() => {
-    loadMeta();
-  }, [loadMeta]);
-
   // Reset query + page + selection when switching tabs
   // biome-ignore lint/correctness/useExhaustiveDependencies: tab changes intentionally reset tab-local controls.
   React.useEffect(() => {
@@ -237,6 +228,7 @@ export default function AssetsPage() {
     setRowsTab("");
     setTotal(0);
     setLoaded(false);
+    setLoading(false);
   }, [tab]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: these controls intentionally reset server pagination.
@@ -245,7 +237,6 @@ export default function AssetsPage() {
   const dslMode = query.trim() !== "";
 
   // Server-side paginated page loader for the active data tab (company tab excluded).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshKey is an explicit manual-reload trigger.
   React.useEffect(() => {
     if (tab === "company") return;
     const request = ++assetsRequestRef.current;
@@ -253,6 +244,7 @@ export default function AssetsPage() {
     setLoading(true);
     const offset = page * size;
     const run = async () => {
+      setLoading(true);
       try {
         const r = dsl ? await api.searchAssets(dsl, tab, size, offset) : await api.assets(tab, size, offset);
         if (assetsRequestRef.current !== request) return;
@@ -273,12 +265,19 @@ export default function AssetsPage() {
         }
       }
     };
-    const tid = setTimeout(run, dsl ? 400 : 0);
+    let stop: (() => void) | undefined;
+    const tid = setTimeout(
+      () => {
+        stop = subscribeRefresh(run, { keys: ["/assets", "/companies"] });
+      },
+      dsl ? 400 : 0,
+    );
     return () => {
       clearTimeout(tid);
+      stop?.();
       if (assetsRequestRef.current === request) assetsRequestRef.current++;
     };
-  }, [tab, page, size, query, refreshKey]);
+  }, [tab, page, size, query]);
 
   React.useEffect(() => {
     if (tab === "company") return;

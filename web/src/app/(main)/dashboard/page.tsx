@@ -1,5 +1,6 @@
 "use client";
 
+import { subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
 
 import Link from "next/link";
@@ -148,7 +149,7 @@ export default function DashboardPage() {
   const [tools, setTools] = React.useState<Tool[]>([]);
   const [llmProfiles, setLLMProfiles] = React.useState<LLMProfile[]>([]);
 
-  // The task list is the most expensive dashboard source. Poll it independently
+  // The task list is the most expensive dashboard source. Refresh it independently
   // so a large history cannot hold back every other dashboard panel.
   React.useEffect(() => {
     let alive = true;
@@ -171,15 +172,14 @@ export default function DashboardPage() {
         loading = false;
       }
     };
-    void load();
-    const t = setInterval(load, 5000);
+    const t = subscribeRefresh(load, { keys: ["/tasks"] });
     return () => {
       alive = false;
-      clearInterval(t);
+      t();
     };
   }, []);
 
-  // The remaining fast sources stay batched so one poll causes a single render.
+  // Related activity sources share an event refresh and a low-frequency fallback.
   React.useEffect(() => {
     let alive = true;
     let loading = false;
@@ -210,15 +210,24 @@ export default function DashboardPage() {
         loading = false;
       }
     };
-    void load();
-    const timer = setInterval(load, 5000);
+    const timer = subscribeRefresh(load, {
+      keys: [
+        "/exploration/findings",
+        "/stats",
+        "/settings",
+        "/intercept",
+        "/exploration/activity",
+        "/exploration/tokens",
+        "/tokens",
+      ],
+    });
     return () => {
       alive = false;
-      clearInterval(timer);
+      timer();
     };
   }, []);
 
-  // slow poll: traffic, assets, system-static (every 15s)
+  // Less volatile inventory sources also refresh after configuration mutations.
   React.useEffect(() => {
     let alive = true;
     const load = async () => {
@@ -246,11 +255,13 @@ export default function DashboardPage() {
         /* transient errors */
       }
     };
-    void load();
-    const t = setInterval(load, 15000);
+    const t = subscribeRefresh(load, {
+      keys: ["/traffic", "/assets", "/agents", "/mcp", "/skills", "/tools", "/llm", "/tokens/usage"],
+      intervalMs: 60_000,
+    });
     return () => {
       alive = false;
-      clearInterval(t);
+      t();
     };
   }, []);
 

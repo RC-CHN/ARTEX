@@ -1,135 +1,222 @@
-name: release
+name: Release
 on:
   push:
-    tags: ["v*"]
-
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag on main, for example v0.4.0
+        type: string
+        required: true
 permissions:
-  contents: write # 创建 Release 需要
-
+  contents: read
+concurrency:
+  group: release-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  cancel-in-progress: false
 jobs:
-  # ① 前端静态导出（一次），产物给交叉编译各平台复用
-  frontend:
-    runs-on: ubuntu-latest
+  metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+      image: ${{ steps.release.outputs.image }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
-        working-directory: web
-      - run: npm run build:static
-        working-directory: web
-      - uses: actions/upload-artifact@v4
-        with:
-          name: web-dist
-          path: web/out
+          ref: ${{ github.event_name == 'push' && github.ref || inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: release
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 ci/release-metadata.py
 
-  # ② 五平台交叉编译（内嵌前端）+ 打 zip
+  checks:
+    needs: metadata
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.metadata.outputs.commit }}
+
   binaries:
-    needs: frontend
-    runs-on: ubuntu-latest
+    needs: [metadata, checks]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - { goos: linux, goarch: amd64 }
-          - { goos: linux, goarch: arm64 }
-          - { goos: darwin, goarch: amd64 }
-          - { goos: darwin, goarch: arm64 }
-          - { goos: windows, goarch: amd64 }
+          - {goos: linux, goarch: amd64}
+          - {goos: linux, goarch: arm64}
+          - {goos: darwin, goarch: amd64}
+          - {goos: darwin, goarch: arm64}
+          - {goos: windows, goarch: amd64}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          go-version: "1.26"
-          cache: true
-      - uses: actions/download-artifact@v4
+          ref: ${{ needs.metadata.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            norma/go.sum
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: web-dist
           path: server/webui/dist
-      - name: Build and package with build.sh
+      - name: Build and package
         env:
           ARTEX_TARGET_OS: ${{ matrix.goos }}
           ARTEX_TARGET_ARCH: ${{ matrix.goarch }}
-          ARTEX_BUILD_VERSION: ${{ github.ref_name }}
-          ARTEX_SKIP_FRONTEND: "1"
-          ARTEX_SKIP_NPM_CI: "1"
-          # UPX 自解压 ELF 在部分 Linux 内核、虚拟化和安全策略下会崩溃。
-          # Release 使用 Go linker 裁剪和 zip 压缩，优先保证可移植性。
-          ARTEX_COMPRESS: "0"
-          ARTEX_PACKAGE: "1"
-          ARTEX_PACKAGE_DIR: dist
-        run: |
-          ./build.sh --target "${ARTEX_TARGET_OS}/${ARTEX_TARGET_ARCH}"
-      - name: Smoke test Linux amd64 binary
-        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+          ARTEX_BUILD_VERSION: ${{ needs.metadata.outputs.version }}
+          ARTEX_SKIP_FRONTEND: '1'
+          ARTEX_SKIP_NPM_CI: '1'
+          ARTEX_COMPRESS: '0'
+          ARTEX_PACKAGE: '1'
+        run: ./build.sh --target "$ARTEX_TARGET_OS/$ARTEX_TARGET_ARCH"
+      - if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: dist/artex-linux-amd64/artex -h
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pkg-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: "dist/*.zip"
-      # Linux 生二进制单独上传，供 docker job 复用（免在镜像里重编前端+Go）
-      - if: matrix.goos == 'linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: bin-linux-${{ matrix.goarch }}
-          path: dist/artex-linux-${{ matrix.goarch }}/artex
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
 
-  # ③ 汇总所有 zip → 创建 GitHub Release
-  release:
-    needs: binaries
-    runs-on: ubuntu-latest
+  containers:
+    needs: [metadata, checks]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: amd64, runner: ubuntu-24.04}
+          - {arch: arm64, runner: ubuntu-24.04-arm}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          tags: artex:release
+          build-args: |
+            ARTEX_BUILD_VERSION=${{ needs.metadata.outputs.version }}
+            VCS_REF=${{ needs.metadata.outputs.commit }}
+            GOPROXY=https://proxy.golang.org,direct
+            NPM_REGISTRY=https://registry.npmjs.org
+            PLAYWRIGHT_DOWNLOAD_HOST=
+          cache-from: type=gha,scope=artex-linux-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=artex-linux-${{ matrix.arch }}
+      - name: Native architecture smoke before publishing
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: python3 ci/image-smoke.py artex:release "$VERSION"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push verified architecture
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ${{ needs.metadata.outputs.image }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          # A specific-job rerun can reuse metadata from before publication.
+          python3 ci/release_guard.py "$TAG"
+          docker tag artex:release "$IMAGE:$TAG-$ARCH"
+          docker push "$IMAGE:$TAG-$ARCH"
+
+  publish:
+    needs: [metadata, binaries, containers]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.metadata.outputs.tag }}
+      VERSION: ${{ needs.metadata.outputs.version }}
+      IMAGE: ${{ needs.metadata.outputs.image }}
+      PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: pkg-*
           merge-multiple: true
           path: dist
-      - name: Generate checksums
+      - name: Verify package set and generate checksums
         working-directory: dist
-        run: sha256sum *.zip > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
+        run: |
+          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 5
+          for platform in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64; do
+            test -s "artex-$VERSION-$platform.zip"
+          done
+          sha256sum -- *.zip > SHA256SUMS
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          files: |
-            dist/*.zip
-            dist/SHA256SUMS
-          generate_release_notes: true
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reject an already published version before changing manifests
+        run: python3 ci/release_guard.py "$TAG"
+      - name: Assemble verified multi-architecture version
+        run: |
+          docker buildx imagetools create --tag "$IMAGE:$TAG" --tag "$IMAGE:$VERSION" \
+            "$IMAGE:$TAG-amd64" "$IMAGE:$TAG-arm64"
+      - name: Publish complete release
+        run: |
+          python3 ci/release_guard.py "$TAG"
+          if gh release view "$TAG" --json isDraft > /tmp/release.json 2>/dev/null; then
+            jq -e '.isDraft == true' /tmp/release.json >/dev/null || {
+              echo 'Published versions are immutable; use a new version tag.' >&2
+              exit 1
+            }
+          else
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" dist/*.zip dist/SHA256SUMS --clobber
+          if [ "$PRERELEASE" = true ]; then
+            gh release edit "$TAG" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$TAG" --draft=false --latest=false
+          fi
+      - name: Release summary
+        run: |
+          {
+            echo "Published $TAG: five platform archives, SHA256SUMS, and $IMAGE:$TAG."
+            echo 'Both image architectures passed API and offline browser smoke tests.'
+            echo 'Cluster upgrades use a separately verified digest; this workflow has no cluster credentials.'
+            echo 'On the first GHCR publication, set the package visibility to public for anonymous installation.'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-  # ④ 多架构镜像 → 推 Docker Hub（复用 binaries 编好的 Linux 二进制，
-  #    镜像里只装工具 + 放二进制；arm64 仅需模拟 apt 层，构建快很多）
-  docker:
-    needs: binaries
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4 # 取 Dockerfile 与 skills/
-      - uses: actions/download-artifact@v4
-        with:
-          name: bin-linux-amd64
-          path: dist/amd64
-      - uses: actions/download-artifact@v4
-        with:
-          name: bin-linux-arm64
-          path: dist/arm64
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: autumn27/artex
-          tags: |
-            type=ref,event=tag
-            type=raw,value=latest
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+  promote:
+    needs: [metadata, publish]
+    if: needs.metadata.outputs.prerelease == 'false'
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/promote.yml
+    with:
+      tag: ${{ needs.metadata.outputs.tag }}

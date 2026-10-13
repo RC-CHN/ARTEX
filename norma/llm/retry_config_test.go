@@ -71,6 +71,7 @@ func TestDoStreamHonorsConfiguredRetries(t *testing.T) {
 	defer srv.Close()
 	cfg := Config{
 		Format: FormatOpenAI, BaseURL: srv.URL, APIKey: "k", Model: "m",
+		HTTPClient: srv.Client(),
 		MaxRetries: 1, RetryInterval: time.Millisecond,
 	}
 	if _, err := doStream(context.Background(), cfg, srv.URL, []byte(`{}`), func(*http.Request) {}, "openai"); err == nil {

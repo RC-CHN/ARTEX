@@ -1,5 +1,6 @@
 "use client";
 
+import { subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
 
 import Link from "next/link";
@@ -166,11 +167,10 @@ export default function FindingsPage() {
   const activeFilterFingerprint = React.useRef(filterFingerprint);
   activeFilterFingerprint.current = filterFingerprint;
 
-  // 一个轻量请求覆盖所有行/视图，避免逐行拉取完整复测历史；等待上一轮完成再轮询。
+  // 一个轻量订阅覆盖所有行/视图，避免逐行拉取完整复测历史。
   React.useEffect(() => {
     let disposed = false;
     let failed = false;
-    let timer: ReturnType<typeof setTimeout>;
     async function refreshRetests() {
       const version = retestRefreshVersion.current;
       try {
@@ -181,14 +181,12 @@ export default function FindingsPage() {
       } catch (error) {
         if (!disposed && !failed) toast.error(`加载复测状态失败：${(error as Error).message}`);
         failed = true;
-      } finally {
-        if (!disposed) timer = setTimeout(() => void refreshRetests(), 3000);
       }
     }
-    void refreshRetests();
+    const stop = subscribeRefresh(refreshRetests, { keys: ["/exploration/findings"], intervalMs: 15_000 });
     return () => {
       disposed = true;
-      clearTimeout(timer);
+      stop();
     };
   }, []);
 
@@ -302,11 +300,16 @@ export default function FindingsPage() {
   const assetTreeRequest = React.useRef(0);
   const groupRequests = React.useRef<Record<string, number>>({});
   const groupsRequest = React.useRef(0);
-  const flatStateRef = React.useRef(flat);
+  const mounted = React.useRef(false);
+  React.useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const expandedGroupsRef = React.useRef(expandedGroups);
   const groupFindingsRef = React.useRef(groupFindings);
   const visibleGroupKeysRef = React.useRef<Set<string>>(new Set());
-  flatStateRef.current = flat;
   expandedGroupsRef.current = expandedGroups;
   groupFindingsRef.current = groupFindings;
   visibleGroupKeysRef.current = new Set(groups.map(findingGroupKey));
@@ -317,7 +320,7 @@ export default function FindingsPage() {
   // loadFlat 拉取平铺视图的当前页;task 筛选交给后端,与分组视图共用同一批筛选条件。
   const loadFlat = React.useCallback(async () => {
     const requestFilter = filterFingerprint;
-    if (activeFilterFingerprint.current !== requestFilter) return;
+    if (!mounted.current || activeFilterFingerprint.current !== requestFilter) return;
     const request = ++flatRequest.current;
     setFlat((current) => ({ ...current, loading: true }));
     try {
@@ -332,10 +335,12 @@ export default function FindingsPage() {
         sort,
         assetScope: activeAssetScope ?? undefined,
       });
-      if (request !== flatRequest.current || activeFilterFingerprint.current !== requestFilter) return;
+      if (!mounted.current || request !== flatRequest.current || activeFilterFingerprint.current !== requestFilter)
+        return;
       setFlat({ items: result.items, total: result.total, loaded: true, loading: false });
     } catch {
-      if (request !== flatRequest.current || activeFilterFingerprint.current !== requestFilter) return;
+      if (!mounted.current || request !== flatRequest.current || activeFilterFingerprint.current !== requestFilter)
+        return;
       // Polling keeps the last successful snapshot visible.
       setFlat((current) => ({ ...current, loading: false }));
     }
@@ -345,12 +350,13 @@ export default function FindingsPage() {
   // 所以这里不带 assetScope。
   const loadAssetTree = React.useCallback(async () => {
     const requestFilter = filterFingerprint;
-    if (activeFilterFingerprint.current !== requestFilter) return;
+    if (!mounted.current || activeFilterFingerprint.current !== requestFilter) return;
     const request = ++assetTreeRequest.current;
     setAssetTree((current) => ({ ...current, loading: true }));
     try {
       const result = await api.findingAssetTree({ severity, status, vulnclass, task, query, sort });
-      if (request !== assetTreeRequest.current || activeFilterFingerprint.current !== requestFilter) return;
+      if (!mounted.current || request !== assetTreeRequest.current || activeFilterFingerprint.current !== requestFilter)
+        return;
       setAssetTree({
         nodes: result.nodes ?? [],
         findingTotal: result.finding_total ?? 0,
@@ -360,7 +366,8 @@ export default function FindingsPage() {
         loading: false,
       });
     } catch (e) {
-      if (request !== assetTreeRequest.current || activeFilterFingerprint.current !== requestFilter) return;
+      if (!mounted.current || request !== assetTreeRequest.current || activeFilterFingerprint.current !== requestFilter)
+        return;
       setAssetTree((current) => ({ ...current, loading: false }));
       toast.error(`资产树加载失败：${(e as Error).message}`);
     }
@@ -368,7 +375,7 @@ export default function FindingsPage() {
 
   const refreshGroups = React.useCallback(async () => {
     const requestFilter = filterFingerprint;
-    if (activeFilterFingerprint.current !== requestFilter) return;
+    if (!mounted.current || activeFilterFingerprint.current !== requestFilter) return;
     const request = ++groupsRequest.current;
     try {
       const result = await api.findingGroups({
@@ -381,7 +388,8 @@ export default function FindingsPage() {
         query,
         sort,
       });
-      if (request !== groupsRequest.current || activeFilterFingerprint.current !== requestFilter) return;
+      if (!mounted.current || request !== groupsRequest.current || activeFilterFingerprint.current !== requestFilter)
+        return;
       setGroups(result.items);
       setGroupTotal(result.total);
       setTotal(result.finding_total);
@@ -394,7 +402,7 @@ export default function FindingsPage() {
     async (key: string, groupPage: number, groupPageSize: number) => {
       const request = (groupRequests.current[key] ?? 0) + 1;
       const requestFilter = filterFingerprint;
-      if (activeFilterFingerprint.current !== requestFilter) return;
+      if (!mounted.current || activeFilterFingerprint.current !== requestFilter) return;
       groupRequests.current[key] = request;
       setGroupFindings((current) => ({
         ...current,
@@ -418,7 +426,12 @@ export default function FindingsPage() {
           query,
           sort,
         });
-        if (groupRequests.current[key] !== request || activeFilterFingerprint.current !== requestFilter) return;
+        if (
+          !mounted.current ||
+          groupRequests.current[key] !== request ||
+          activeFilterFingerprint.current !== requestFilter
+        )
+          return;
         setGroupFindings((current) => ({
           ...current,
           [key]: {
@@ -431,7 +444,12 @@ export default function FindingsPage() {
           },
         }));
       } catch {
-        if (groupRequests.current[key] !== request || activeFilterFingerprint.current !== requestFilter) return;
+        if (
+          !mounted.current ||
+          groupRequests.current[key] !== request ||
+          activeFilterFingerprint.current !== requestFilter
+        )
+          return;
         setGroupFindings((current) => ({
           ...current,
           [key]: {
@@ -519,36 +537,43 @@ export default function FindingsPage() {
     setFlatPage(1);
   }, [assetScope]);
 
-  // 资产树只在进入视图 / 筛选变化时查一次(以及本页改动发现后由
-  // refreshAfterMutation 主动重拉),不做轮询。
+  // 资产树订阅资产/发现变化，并以较低频率补齐其它客户端的更新。
   React.useEffect(() => {
     if (!preferencesHydrated || view !== "asset") return;
     void activeRetestFingerprint; // 复测结束可能改变状态筛选下的资产计数。
-    void loadAssetTree();
+    const stop = subscribeRefresh(loadAssetTree, {
+      keys: ["/assets", "/companies", "/exploration/findings"],
+      intervalMs: 60_000,
+    });
+    return () => {
+      assetTreeRequest.current++;
+      stop();
+    };
   }, [activeRetestFingerprint, loadAssetTree, preferencesHydrated, view]);
 
-  // 只轮询当前视图:平铺视图刷当前页,分组视图刷组头与每个已展开的组(其分页彼此独立)。
-  // 资产视图只查一次(见下面的 return),它的左树是导航结构,没必要每 5 秒重算。
+  // 只刷新当前视图:平铺/资产视图刷当前页，分组视图刷组头与已展开的组。
   // 等偏好水合后再发首个请求,否则会先按默认视图/筛选白拉一次。
   React.useEffect(() => {
     if (!preferencesHydrated) return;
-    void activeRetestFingerprint; // 包括不定时轮询的资产视图，也在复测结束后刷新处置状态。
-    const refresh = () => {
+    void activeRetestFingerprint; // 复测结束后立即刷新处置状态。
+    const refresh = async () => {
       if (view === "flat" || view === "asset") {
-        if (!flatStateRef.current.loading) void loadFlat();
-        return;
+        return loadFlat();
       }
-      void refreshGroups();
+      const requests = [refreshGroups()];
       for (const key of expandedGroupsRef.current) {
         if (!visibleGroupKeysRef.current.has(key)) continue;
         const state = groupFindingsRef.current[key];
-        if (state?.loaded && !state.loading) void loadGroup(key, state.page, state.pageSize);
+        if (state?.loaded && !state.loading) requests.push(loadGroup(key, state.page, state.pageSize));
       }
+      await Promise.all(requests);
     };
-    refresh();
-    if (view === "asset") return;
-    const timer = setInterval(refresh, 5000);
-    return () => clearInterval(timer);
+    const stop = subscribeRefresh(refresh, { keys: ["/exploration/findings", "/tasks"] });
+    return () => {
+      flatRequest.current++;
+      groupsRequest.current++;
+      stop();
+    };
   }, [activeRetestFingerprint, loadFlat, loadGroup, preferencesHydrated, refreshGroups, view]);
 
   React.useEffect(() => {
@@ -567,7 +592,7 @@ export default function FindingsPage() {
   React.useEffect(() => {
     let alive = true;
     const load = () => {
-      api
+      return api
         .findingStats()
         .then((s) => {
           if (alive) {
@@ -579,11 +604,10 @@ export default function FindingsPage() {
           // Keep the previous aggregate snapshot until the next poll.
         });
     };
-    load();
-    const t = setInterval(load, 5000);
+    const t = subscribeRefresh(load, { keys: ["/exploration/findings"] });
     return () => {
       alive = false;
-      clearInterval(t);
+      t();
     };
   }, []);
 

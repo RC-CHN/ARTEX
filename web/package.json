@@ -6,6 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "build:static": "NEXT_EXPORT=1 next build",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "node --experimental-strip-types --test src/lib/api-cache.test.mjs",
     "start": "next start",
     "lint": "biome lint",
     "format": "biome format --write",

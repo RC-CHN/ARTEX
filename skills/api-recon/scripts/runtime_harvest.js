@@ -11,7 +11,7 @@
  *   2. interceptor gate-> rewrite the "unauthorized" code field to success
  *   3. content gate   -> stub the menu/permission endpoint with a full-feature payload
  *
- * Requires puppeteer-core + a system Chromium.  ( cd scripts && npm install )
+ * Requires puppeteer-core + a system Chromium.  ( cd scripts && npm ci )
  *
  * config.json schema (all fields optional except baseUrl):
  * {
@@ -38,7 +38,7 @@ const path = require('path');
 
 let puppeteer;
 try { puppeteer = require('puppeteer-core'); }
-catch (e) { console.error("[!] run `npm install` in the scripts/ dir first (needs puppeteer-core)"); process.exit(1); }
+catch (e) { console.error("[!] run `npm ci` in the scripts/ dir first (needs puppeteer-core)"); process.exit(1); }
 
 function loadCfg(p) {
   const c = JSON.parse(fs.readFileSync(p, 'utf8'));

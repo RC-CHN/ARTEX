@@ -41,7 +41,7 @@ spec:
         - name: registry-pull
       initContainers:
         - name: wait-for-postgres
-          image: postgres:16-alpine
+          image: postgres:16.14-alpine
           command: [sh, -ec]
           args:
             - until pg_isready -h postgres -U artex -d artex; do sleep 2; done
@@ -53,7 +53,7 @@ spec:
               cpu: 100m
               memory: 64Mi
         - name: seed-skills
-          image: registry.example.com/project/artex:latest
+          image: ghcr.io/rc-chn/artex:latest
           command: [sh, -ec]
           args:
             - mkdir -p /data/skills; cp -an /app/skills/. /data/skills/
@@ -69,7 +69,7 @@ spec:
               mountPath: /data
       containers:
         - name: artex
-          image: registry.example.com/project/artex:latest
+          image: ghcr.io/rc-chn/artex:latest
           imagePullPolicy: IfNotPresent
           args: [-addr, ":8787", -proxy, ":8788"]
           env:

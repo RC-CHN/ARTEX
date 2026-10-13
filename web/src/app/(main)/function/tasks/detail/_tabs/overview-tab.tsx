@@ -1,5 +1,6 @@
 "use client";
 
+import { subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
 
 import {
@@ -145,10 +146,20 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const [editConText, setEditConText] = React.useState("");
   const [editConKind, setEditConKind] = React.useState<TaskConstraint["kind"]>("deny");
 
+  const currentTask = React.useRef(taskId);
+  const mounted = React.useRef(true);
+  currentTask.current = taskId;
+  React.useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   const loadTokens = React.useCallback(async () => {
     try {
       const resp = await api.tokensByModel(taskId);
-      setModelTokens(resp.models);
+      if (mounted.current && currentTask.current === taskId) setModelTokens(resp.models);
     } catch {
       // 忽略：无 PG 时接口报错，卡片自然为空
     }
@@ -157,7 +168,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const loadScope = React.useCallback(async () => {
     try {
       const resp = await api.taskScope(taskId);
-      setScope(resp.scope);
+      if (mounted.current && currentTask.current === taskId) setScope(resp.scope);
     } catch {
       // 忽略：无 asset store 时接口 503，范围卡片自然为空
     }
@@ -166,7 +177,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const loadGoals = React.useCallback(async () => {
     try {
       const resp = await api.taskGoals(taskId);
-      setGoals(resp.goals);
+      if (mounted.current && currentTask.current === taskId) setGoals(resp.goals);
     } catch {
       // 忽略：瞬时错误，下次轮询重试
     }
@@ -229,7 +240,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const loadConstraints = React.useCallback(async () => {
     try {
       const resp = await api.taskConstraints(taskId);
-      setConstraints(resp.constraints);
+      if (mounted.current && currentTask.current === taskId) setConstraints(resp.constraints);
     } catch {
       // 忽略：瞬时错误，下次轮询重试
     }
@@ -321,7 +332,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       return next;
     });
 
-  // 重跑单条：置回 open（乐观更新本地 state，3s 轮询兜底），worker 会重新认领、从头再跑。
+  // 重跑单条：置回 open（乐观更新本地 state，事件刷新与低频兜底），worker 会重新认领、从头再跑。
   const rerunOne = async (id: string) => {
     markRerun(id, true);
     try {
@@ -380,7 +391,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
         setFindings(findingsResp);
         // coverage is independent + may 503 when no asset store — fetch separately so
         // its failure never blocks the others.
-        api
+        await api
           .taskCoverage(taskId)
           .then((c) => {
             if (!cancelled) setCoverage(c);
@@ -395,20 +406,13 @@ export function OverviewTab({ taskId }: { taskId: string }) {
       }
     };
 
-    void load();
-    void loadScope();
-    void loadTokens();
-    void loadGoals();
-    void loadConstraints();
-    const timer = setInterval(() => {
-      void load();
-      void loadTokens();
-      void loadGoals();
-      void loadConstraints();
-    }, 3000);
+    const stop = subscribeRefresh(
+      () => Promise.all([load(), loadScope(), loadTokens(), loadGoals(), loadConstraints()]),
+      { keys: [`/tasks/${taskId}`, "/stats", "/exploration", "/tokens"] },
+    );
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      stop();
     };
   }, [taskId, loadScope, loadTokens, loadGoals, loadConstraints]);
 

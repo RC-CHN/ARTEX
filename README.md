@@ -5,9 +5,7 @@
 AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
 
-🌐 **在线 Demo（模拟数据）**： [https://artex-demo.mhtsec.com](https://artex-demo.mhtsec.com)
-
-📦 **该仓库为ARTEX最后一个版本纯源码备份。原 Docker 镜像源 `autumn27/artex` 已失效，现由本仓库自维护镜像 `mianhuatang11/artex`（Docker Hub）；拉取失败时可 `docker compose build` 从纯源码本地构建，无任何外部预编译依赖。**
+📦 **由 [RC-CHN/ARTEX](https://github.com/RC-CHN/ARTEX) 独立维护。安装包、自动升级和容器均由本仓库的 GitHub Actions 验证与发布：GitHub Releases + `ghcr.io/rc-chn/artex`。完整源码与本地维护的 Norma SDK 均在仓库内。**
 
 </div>
 
@@ -15,7 +13,7 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
 ## 截图预览
 
-> 完整交互见[在线 Demo](https://artex-demo.mhtsec.com)（纯前端 + Mock 数据，无需后端）。
+> 截图展示本项目的任务、资产和探索界面。
 
 | 仪表盘（总览 / Token 消耗 / 活动流） | 任务列表 |
 | :---: | :---: |
@@ -56,7 +54,7 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
 ## 资产同步（ScopeSentry）
 
-支持从 [ScopeSentry](https://github.com/Autumn-27/ScopeSentry) 直接同步资产数据，免去重复收集：
+可选接入用户自行部署的 ScopeSentry 兼容 API，同步资产数据：
 
 - 在「**资产同步**」页填 ScopeSentry 的地址与 API Key，接入数据源；
 - 按**项目**或**任务**维度选择要同步的目标与资产类型（域名 / 子域 / IP / 端口 / 站点 / 端点…）；
@@ -71,7 +69,7 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 ### 方式一：一键安装脚本（推荐）
 
 ```bash
-git clone https://github.com/mhtsec/ARTEX.git
+git clone https://github.com/RC-CHN/ARTEX.git
 cd ARTEX
 ./install.sh
 ```
@@ -86,14 +84,14 @@ cd ARTEX
 ### 方式二：Docker Compose（手动）
 
 ```bash
-git clone https://github.com/mhtsec/ARTEX.git
+git clone https://github.com/RC-CHN/ARTEX.git
 cd ARTEX
 cp .env.example .env          # 填 POSTGRES_PASSWORD、可选 ANTHROPIC_API_KEY
-docker compose up -d          # 拉取 mianhuatang11/artex 镜像 + postgres
+docker compose up -d          # 拉取 ghcr.io/rc-chn/artex 镜像 + postgres
 # → http://localhost:8787
 ```
 
-> 原镜像源 `autumn27/artex` 已从 Docker Hub 删除，镜像现由本仓库自维护为 **`mianhuatang11/artex`**。
+> 镜像由本仓库发布到 **`ghcr.io/rc-chn/artex`**；生产部署建议指定版本或摘要。
 > 镜像源不可用（或想自行改代码）时，本地从纯源码构建即可：`docker compose build && docker compose up -d`。
 > Dockerfile 为多阶段构建（前端静态导出 → Go 静态编译 → 运行镜像），默认走国内友好依赖源，可加 `--build-arg GOPROXY=... / --build-arg NPM_REGISTRY=...` 覆盖。
 
@@ -116,7 +114,7 @@ ARTEX_TAG=latest
 
 ### 方式三：下载预编译二进制（Releases）
 
-到原仓库 [Releases](https://github.com/Autumn-27/ARTEX/releases) 下载对应平台的 zip（**本备份仓库不托管二进制**，若原 Releases 也失效请用方式二或方式四）：解压后得到 `artex` + `start.sh`（Windows 为 `start.bat`）+ `skills/` + `config.example.json`：
+到本仓库 [Releases](https://github.com/RC-CHN/ARTEX/releases) 下载对应平台的 zip 和 `SHA256SUMS` 并核对校验和：解压后得到 `artex` + `start.sh`（Windows 为 `start.bat`）+ `skills/` + `config.example.json`：
 
 ```bash
 cp config.example.json config.json   # 填好 database 连接
@@ -158,7 +156,7 @@ ARTEX_TARGETS=linux/amd64,windows/amd64 ./build.sh --release
 
 `deploy/k8s` 提供 ARTEX 单实例、PostgreSQL 16 和 LoadBalancer 的通用部署清单。应用数据与数据库各申请 10Gi 的集群共享存储；应用卷要求 RWX。自定义技能保存在应用卷，JWT 签名密钥保存在 Secret，Pod 重建后会继续使用。
 
-镜像地址 `registry.example.com/project/artex` 与存储类 `shared-storage` 是占位符，部署前必须配置。复制 `deploy/overlay.example` 到 `deploy/private`，在覆盖文件中填写自己的镜像路径、版本或摘要，以及支持 RWX 的集群共享存储类。数据库也使用共享存储，不要选用 `local-path` 等节点本地存储。`deploy/private` 已被 Git 和 Docker 构建上下文忽略，不应强制提交。
+基础清单使用本仓库的 `ghcr.io/rc-chn/artex` 镜像；存储类 `shared-storage` 是占位符，部署前必须配置。复制 `deploy/overlay.example` 到 `deploy/private`，在覆盖文件中填写自己的镜像路径、版本或摘要，以及支持 RWX 的集群共享存储类。数据库也使用共享存储，不要选用 `local-path` 等节点本地存储。`deploy/private` 已被 Git 和 Docker 构建上下文忽略，不应强制提交。
 
 先创建 `artex` 命名空间，并在该命名空间准备以下 Secret：
 
@@ -209,12 +207,31 @@ go test ./traffic -run '^$' -bench '^BenchmarkTrafficIndex$' -benchmem -benchtim
 export ARTEX_TEST_PG_DSN='postgres://test_user:test_password@127.0.0.1:5432/artex_test?sslmode=disable'
 export ARTEX_TRAFFIC_TEST_DSN="$ARTEX_TEST_PG_DSN"
 go test ./... -count=2
-go test -race ./server ./traffic ./enrich
+go test -race ./server ./llmpool ./traffic ./enrich
+(cd norma && go test ./...)
+(cd web && npm run test:unit && npm run typecheck)
 ```
 
 关闭服务时会停止接收后台工作、取消并等待任务及日志写入，再关闭数据库。关联公司的任务范围会进入 Planner / 主 Agent 概览，即使覆盖率统计关闭或尚未发现资产也保留范围规则。
 
 容器基础镜像固定摘要，浏览器工具通过公开 npm lockfile 固定直接及传递依赖。发布版本参数只影响编译和镜像标签，工具安装层可复用。构建阶段验证各工具实际使用的 Chromium 与 MCP 调用；详见 [构建与缓存验证](deploy/container-tools/BUILDING.md)。
+
+### GitHub CI/CD
+
+本仓库的 [CI](.github/workflows/ci.yml) 在 `main` 推送和 Pull Request 时运行：模块来源与固定版本检查、工作流校验、PostgreSQL 两轮全量回归、调度/取消/故障转移与关闭的 race 检查、Norma SDK 全套测试、前端缓存单测和静态构建，以及临时数据库上的容器 API 与真实浏览器验证。
+
+正式发布使用主分支上的版本标签，例如：
+
+```bash
+git tag v0.4.0
+git push origin v0.4.0
+```
+
+[Release 工作流](.github/workflows/release.yml) 会重新验证标签对应的提交，生成五个平台的 zip 和 `SHA256SUMS`，原生测试 Linux amd64 / arm64 镜像后发布到本仓库的 [Releases](https://github.com/RC-CHN/ARTEX/releases) 和 `ghcr.io/rc-chn/artex`。镜像提供 `v0.4.0`、`0.4.0` 这样的版本标签；只有最高的完整正式版本可更新 `latest`，预发布不更新。已公开的版本不可覆盖，请用新版本标签发布修改。
+
+Actions 使用仓库自带的 `GITHUB_TOKEN`，无需保存个人访问令牌。首次发布 GHCR 包后，仓库维护者须在该包的 GitHub 设置中将可见性设为 **Public**，匿名用户才能拉取。工作流不保存集群、私有镜像站或数据库凭据。
+
+若制品已发布但 `latest` 提升失败，可在 Actions 手动运行 [Promote latest](.github/workflows/promote.yml)，填入该正式版本标签；它会检查完整制品和版本顺序，不重建或覆盖版本镜像。集群升级独立进行：验证版本和摘要、备份数据库与共享卷，再修改私有覆盖文件部署，检查健康和数据后完成升级。
 
 ---
 
@@ -260,7 +277,7 @@ docker image prune -f          # 清理旧镜像（可选）
 
 ### 方式四：预编译二进制（Releases）
 
-到 [Releases](https://github.com/Autumn-27/ARTEX/releases) 下载新版本 zip，停掉旧进程后覆盖 `artex` 与 `skills/`（保留你的 `config.json` 与 `data/`），重启即可：
+到 [Releases](https://github.com/RC-CHN/ARTEX/releases) 下载新版本 zip，停掉旧进程后覆盖 `artex` 与 `skills/`（保留你的 `config.json` 与 `data/`），重启即可：
 
 ```bash
 cp -r <解压目录>/skills ./ && cp <解压目录>/artex ./
@@ -355,17 +372,12 @@ server {
 - 前端：`cd web && npm run dev`（`/api` 反代到后端，带热更新）
 - 测试：`go test ./...`
 - Mock 预览（无后端）：`cd web && NEXT_PUBLIC_MOCK=1 npm run dev`
-- 在线 Demo 重新部署（Cloudflare Pages，静态导出 + Mock 数据）：
-  ```bash
-  cd web && NEXT_PUBLIC_MOCK=1 npm run build:static
-  CLOUDFLARE_API_TOKEN=<token> npx wrangler pages deploy out --project-name=artex-demo --branch=main
-  ```
 
 ---
 
 ## 系统技术架构
 
-ARTEX 是一套 **LLM 多 agent 驱动的自主渗透系统**：Go 单体后端（内嵌 Next.js 前端）+ PostgreSQL，agent 能力由 [`norma`](https://github.com/Autumn-27/norma) SDK 提供（`agentcore` / `tool` / `permission` / `harness` / `memory` / `transcript`）。核心是**双图架构**，以及围绕它的两条自主性机制：**worker 间过程级信息交换**与 **planner 多轮共享 todolist 稳定攻击链路**。
+ARTEX 是一套 **LLM 多 agent 驱动的自主渗透系统**：Go 单体后端（内嵌 Next.js 前端）+ PostgreSQL，agent 能力由 [本地维护的 `norma`](norma/README.md) SDK 提供（`agentcore` / `tool` / `permission` / `harness` / `memory` / `transcript`）。核心是**双图架构**，以及围绕它的两条自主性机制：**worker 间过程级信息交换**与 **planner 多轮共享 todolist 稳定攻击链路**。
 
 ### 总体分层
 

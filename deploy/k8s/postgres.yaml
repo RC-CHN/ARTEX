@@ -35,7 +35,7 @@ spec:
         - name: registry-pull
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          image: postgres:16.14-alpine
           imagePullPolicy: IfNotPresent
           env:
             - name: POSTGRES_USER

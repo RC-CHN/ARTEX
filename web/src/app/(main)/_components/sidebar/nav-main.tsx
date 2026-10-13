@@ -1,5 +1,6 @@
 "use client";
 
+import { subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -161,8 +162,8 @@ function NavItem({ item, isItemActive, isSubItemActive, isSubmenuOpen }: NavItem
   );
 }
 
-// InterceptPendingBadge polls /api/intercept/pending every 5 s and shows a red
-// count badge when there are unresolved approval requests.
+// Approval events refresh the badge immediately; a visible-page fallback also
+// catches requests created by other clients.
 function InterceptPendingBadge() {
   const [count, setCount] = React.useState(0);
   React.useEffect(() => {
@@ -171,11 +172,15 @@ function InterceptPendingBadge() {
       try {
         const list = await api.interceptPending();
         if (live) setCount(list.length);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
-    poll();
-    const t = setInterval(poll, 5000);
-    return () => { live = false; clearInterval(t); };
+    const t = subscribeRefresh(poll, { keys: ["/intercept/pending"], intervalMs: 15_000 });
+    return () => {
+      live = false;
+      t();
+    };
   }, []);
   if (count === 0) return null;
   return (

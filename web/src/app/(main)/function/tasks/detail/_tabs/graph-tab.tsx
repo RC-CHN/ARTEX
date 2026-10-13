@@ -1,5 +1,6 @@
 "use client";
 
+import { subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
 
 import { Card, CardContent } from "@/components/ui/card";
@@ -18,7 +19,7 @@ export function GraphTab({ taskId }: { taskId: string }) {
     let cancelled = false;
     sigRef.current = ""; // 换任务:强制下一次刷新
     const load = () => {
-      api
+      return api
         .explorationGraph(taskId)
         .then((g) => {
           if (cancelled) return;
@@ -37,11 +38,10 @@ export function GraphTab({ taskId }: { taskId: string }) {
           /* keep last good data */
         });
     };
-    load();
-    const timer = setInterval(load, 20000);
+    const timer = subscribeRefresh(load, { keys: ["/exploration/graph"] });
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      timer();
     };
   }, [taskId]);
 

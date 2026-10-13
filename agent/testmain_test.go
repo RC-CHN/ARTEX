@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/Autumn-27/artex/internal/testpg"
+	"github.com/RC-CHN/ARTEX/internal/testpg"
 )
 
 func TestMain(m *testing.M) {

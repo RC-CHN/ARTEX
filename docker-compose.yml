@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16.14-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-artex}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 .env 设置 POSTGRES_PASSWORD}
@@ -15,10 +15,10 @@ services:
     restart: unless-stopped
 
   artex:
-    # 镜像源由本仓库自维护（原 autumn27/artex 已从 Docker Hub 删除）。
+    # 本仓库的 GitHub Actions 发布到 GHCR。
     # 正常部署直接拉取本镜像；拉取失败（或想改代码）时本地构建：
     #   docker compose build
-    image: ${ARTEX_IMAGE:-mianhuatang11/artex}:${ARTEX_TAG:-latest}
+    image: ${ARTEX_IMAGE:-ghcr.io/rc-chn/artex}:${ARTEX_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -39,7 +39,7 @@ services:
       - "8787:8787"
       - "127.0.0.1:8788:8788"
     volumes:
-      # 把数据目录（含 jwt.key、SQLite 等）绑定到项目根目录的 data/，
+      # 把数据目录（含 jwt.key、流量 blob 和历史索引备份）绑定到项目根目录的 data/，
       # 方便在宿主机直接查看/备份，容器重建也不丢。
       - ./data:/app/data
       # 把项目根目录的 skills 挂进容器（覆盖镜像内置的 /app/skills）；

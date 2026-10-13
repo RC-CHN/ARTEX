@@ -1,5 +1,6 @@
 "use client";
 
+import { subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
 
 import {
@@ -301,30 +302,34 @@ export function ApprovalDetail({
   const [error, setError] = React.useState("");
   const [retry, setRetry] = React.useState(0);
   const [more, setMore] = React.useState(defaultExpanded);
+  const onResolvedRef = React.useRef(onResolved);
+  onResolvedRef.current = onResolved;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: Status, refresh and retry invalidate details without closing the panel.
   React.useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stop: (() => void) | undefined;
     async function load() {
       try {
         const next = await api.interceptDetail(row.id);
         if (cancelled) return;
         setDetail(next);
         setError("");
-        if (next.status !== "pending") onResolved?.(next.status);
-        if (next.status === "pending" || next.audit?.execution_status === "awaiting_result")
-          timer = setTimeout(() => void load(), 5000);
+        if (next.status !== "pending") onResolvedRef.current?.(next.status);
+        if (next.status !== "pending" && next.audit?.execution_status !== "awaiting_result") {
+          stop?.();
+          stop = undefined;
+        }
       } catch (e) {
         if (!cancelled) setError((e as Error).message || "详情加载失败");
       }
     }
-    void load();
+    stop = subscribeRefresh(load, { keys: ["/intercept"], intervalMs: 15_000 });
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      stop?.();
     };
-  }, [row.id, row.status, revision, retry, onResolved]);
+  }, [row.id, row.status, revision, retry]);
 
   // Row updates are authoritative until the lazy detail has caught up.
   const current = detail?.status === row.status ? detail : row;
@@ -661,6 +666,10 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
   const [deciding, setDeciding] = React.useState(false);
   const [revision, setRevision] = React.useState(0);
   const request = React.useRef(0);
+  const mounted = React.useRef(false);
+  const queryIdentity = JSON.stringify([taskId, page, pageSize, filter]);
+  const activeQueryIdentity = React.useRef(queryIdentity);
+  activeQueryIdentity.current = queryIdentity;
   const decisionLock = React.useRef(false);
   const filterID = React.useId();
   const filtered = Boolean(filter.status || filter.decision_source);
@@ -674,6 +683,7 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
 
   const load = React.useCallback(
     async (manual = false) => {
+      if (!mounted.current || activeQueryIdentity.current !== queryIdentity) return;
       const id = ++request.current;
       if (manual) setRefreshing(true);
       try {
@@ -681,10 +691,12 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
         // filter. Older requests must remain actionable even when newer decisions
         // fill the page or a filter would hide them.
         const [history, pending] = await Promise.allSettled([
-          taskId ? api.interceptTaskPage(taskId, page, pageSize, filter) : api.interceptHistoryPage(page, pageSize, filter),
+          taskId
+            ? api.interceptTaskPage(taskId, page, pageSize, filter)
+            : api.interceptHistoryPage(page, pageSize, filter),
           api.interceptPending(),
         ]);
-        if (id !== request.current) return;
+        if (id !== request.current || activeQueryIdentity.current !== queryIdentity) return;
         if (history.status === "fulfilled") {
           setRows(history.value.items);
           setTotal(history.value.total);
@@ -700,25 +712,27 @@ export function ApprovalRecords({ taskId }: { taskId?: string }) {
         }
         if (manual) setRevision((v) => v + 1);
       } catch (e) {
-        if (id === request.current) setError((e as Error).message || "加载失败");
+        if (id === request.current && activeQueryIdentity.current === queryIdentity)
+          setError((e as Error).message || "加载失败");
       } finally {
-        if (id === request.current) {
+        if (id === request.current && activeQueryIdentity.current === queryIdentity) {
           setLoading(false);
           setRefreshing(false);
         }
       }
     },
-    [taskId, page, pageSize, filter],
+    [taskId, page, pageSize, filter, queryIdentity],
   );
   const latestLoad = React.useRef(load);
   latestLoad.current = load;
 
   React.useEffect(() => {
-    void load();
-    const timer = setInterval(() => void load(), 5000);
+    mounted.current = true;
+    const timer = subscribeRefresh(load, { keys: ["/intercept"], intervalMs: 15_000 });
     return () => {
+      mounted.current = false;
       request.current++;
-      clearInterval(timer);
+      timer();
     };
   }, [load]);
 

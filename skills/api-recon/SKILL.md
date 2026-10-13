@@ -295,8 +295,10 @@ coverage 每轮导出：`__API_RECON_LOG__`、`__API_RECON_DETAIL__`、`__API_RE
 
 验证：`window.__API_RECON_PRELOAD__` 存在；业务 path 不回 `/login`。
 
+将 `scripts/package.json` 与 `scripts/package-lock.json` 一起复制到 `recon/`，保留固定依赖版本。
+
 ```bash
-cd recon && npm install
+cd recon && npm ci
 node runtime_harvest.js config.json
 ```
 

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/norma/permission"
+	"github.com/RC-CHN/ARTEX/norma/permission"
 	"golang.org/x/net/html"
 )
 

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Autumn-27/artex/db"
+	"github.com/RC-CHN/ARTEX/db"
 )
 
 // Scheduler drives P3 triggers: on each tick it fires due interval triggers and
@@ -119,9 +119,8 @@ func (sc *Scheduler) step() {
 	if err != nil {
 		return
 	}
-	if len(triggers) == 0 {
-		return
-	}
+	// Event watermarks must advance even while every trigger is disabled, so
+	// enabling a trigger later does not replay events from the disabled period.
 	sc.fireIntervals(triggers)
 	sc.fireFindings(triggers)
 	sc.fireGoals(triggers)

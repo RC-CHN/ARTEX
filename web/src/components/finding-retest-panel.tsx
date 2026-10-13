@@ -16,6 +16,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/u
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { api } from "@/lib/api";
+import { subscribeRefresh } from "@/lib/api-refresh";
 import type { FindingRetest } from "@/lib/types";
 
 const statusLabels = {
@@ -66,17 +67,14 @@ export function FindingRetestPanel({
   }, [findingId, onCompleted]);
 
   React.useEffect(() => {
-    void load();
+    previousItems.current = [];
+    setItems(null);
+    const stop = subscribeRefresh(load, { keys: [`/exploration/findings/${encodeURIComponent(findingId)}/retests`] });
     return () => {
       requestSeq.current++;
+      stop();
     };
-  }, [load]);
-
-  React.useEffect(() => {
-    if (error || !items?.some(active)) return;
-    const timer = setTimeout(() => void load(), 3000);
-    return () => clearTimeout(timer);
-  }, [error, items, load]);
+  }, [findingId, load]);
 
   const running = items?.find(active);
 

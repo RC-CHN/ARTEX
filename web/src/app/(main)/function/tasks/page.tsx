@@ -1,5 +1,6 @@
 "use client";
 
+import { subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
 
 import Link from "next/link";
@@ -159,9 +160,6 @@ function appendUploads(desc: string, atts: ChatAttachment[]): string {
   return `${head}${UPLOAD_MARKER} worker 可用 Read/Bash 按路径打开：\n${bullets}\n`;
 }
 
-// POLL_MS is the task-list refresh interval. Task state moves on the server (planner /
-// worker), so the list has to be pulled; 10s is plenty for status / 进度 / token 变化.
-const POLL_MS = 10_000;
 const MAX_SOURCE_TASKS = 8;
 
 // fmtTokens renders a compact token count (1234 → 1.2k, 2_000_000 → 2M).
@@ -448,15 +446,19 @@ export default function TasksPage() {
     [pageIds],
   );
 
-  // lastRef holds the previous poll's serialized payload: the list is re-fetched every
-  // POLL_MS but usually comes back unchanged, and setTasks on an identical payload would
-  // re-render the whole page for nothing. Bail out when it matches.
+  // Avoid rendering unchanged snapshots after event or fallback refreshes.
   const lastRef = React.useRef<string>("");
+  const listMounted = React.useRef(false);
+  const listRequest = React.useRef(0);
+  const categoryRequest = React.useRef(0);
 
   const load = React.useCallback(() => {
-    api
+    if (!listMounted.current) return Promise.resolve();
+    const request = ++listRequest.current;
+    return api
       .tasks()
       .then((r) => {
+        if (request !== listRequest.current) return;
         const next = r.tasks.map((t) => (t.id === r.active ? { ...t, active: true } : t));
         const sig = JSON.stringify(next);
         if (sig === lastRef.current) return;
@@ -469,9 +471,12 @@ export default function TasksPage() {
   }, []);
 
   const loadCategories = React.useCallback(() => {
-    api
+    if (!listMounted.current) return Promise.resolve();
+    const request = ++categoryRequest.current;
+    return api
       .taskCategories()
       .then((next) => {
+        if (request !== categoryRequest.current) return;
         setCategories(next);
         setCategoriesLoaded(true);
       })
@@ -481,16 +486,22 @@ export default function TasksPage() {
   }, []);
 
   React.useEffect(() => {
-    load();
-    loadCategories();
-    const i = setInterval(load, POLL_MS);
-    return () => clearInterval(i);
+    listMounted.current = true;
+    const stopTasks = subscribeRefresh(load, { keys: ["/tasks"] });
+    const stopCategories = subscribeRefresh(loadCategories, { keys: ["/task-categories"], intervalMs: 60_000 });
+    return () => {
+      listMounted.current = false;
+      listRequest.current++;
+      categoryRequest.current++;
+      stopTasks();
+      stopCategories();
+    };
   }, [load, loadCategories]);
 
   const refreshCategoriesAndTasks = React.useCallback(() => {
     lastRef.current = "";
-    loadCategories();
-    load();
+    void loadCategories();
+    void load();
   }, [load, loadCategories]);
 
   const applyTaskCategoryMove = React.useCallback(
@@ -502,7 +513,7 @@ export default function TasksPage() {
         lastRef.current = JSON.stringify(next);
         return next;
       });
-      loadCategories();
+      void loadCategories();
     },
     [loadCategories],
   );
@@ -534,7 +545,7 @@ export default function TasksPage() {
         } else {
           toast.success(deleteSummary(result));
         }
-        load();
+        void load();
       } catch (e) {
         toast.error("删除失败：" + (e as Error).message);
         throw e;
@@ -558,7 +569,7 @@ export default function TasksPage() {
       } finally {
         // 无论成败都刷新:失败多半是状态已变化,重新拉取才能让按钮回到正确形态。
         lastRef.current = "";
-        load();
+        void load();
       }
     },
     [load],
@@ -570,7 +581,7 @@ export default function TasksPage() {
         await api.renameTask(task.id, name);
         toast.success(`任务 #${task.id} 已重命名`);
         lastRef.current = "";
-        load();
+        void load();
       } catch (error) {
         toast.error(`重命名失败：${(error as Error).message}`);
         throw error;
@@ -586,7 +597,7 @@ export default function TasksPage() {
         await api.pinTask(task.id, !pinned);
         toast.success(pinned ? `任务 #${task.id} 已取消置顶` : `任务 #${task.id} 已置顶`);
         lastRef.current = "";
-        load();
+        void load();
       } catch (error) {
         toast.error(`${pinned ? "取消置顶" : "置顶"}失败：${(error as Error).message}`);
         throw error;
@@ -602,7 +613,7 @@ export default function TasksPage() {
         toast.success(`任务 #${task.id} 已进入归档队列`);
         setActiveTab("archived");
         lastRef.current = "";
-        load();
+        void load();
       } catch (error) {
         toast.error(`归档失败：${(error as Error).message}`);
         throw error;
@@ -665,7 +676,7 @@ export default function TasksPage() {
           .join("；");
         toast.error(`${failed.length} 个任务删除失败：${head}${failed.length > 3 ? " 等" : ""}`);
       }
-      load();
+      void load();
     },
     [load],
   );
@@ -701,7 +712,7 @@ export default function TasksPage() {
     setSelectedIds(new Set());
     setActiveTab("archived");
     lastRef.current = "";
-    load();
+    void load();
   }, [archivableTaskIDs, load]);
 
   const controlSelectedTasks = React.useCallback(
@@ -731,7 +742,7 @@ export default function TasksPage() {
           toast.error(`${failed.length} 个任务操作失败：${details}${failed.length > 3 ? " 等" : ""}`);
         }
         lastRef.current = "";
-        load();
+        void load();
       } catch (error) {
         toast.error(`${action === "pause" ? "批量暂停" : "批量继续"}失败：${(error as Error).message}`);
       } finally {
@@ -1153,7 +1164,7 @@ function ConcurrencySettingsDialog() {
 }
 
 // TaskRow renders one row of the task table. Memoized so the per-second 运行时长 tick and
-// the POLL_MS list refresh only re-render the rows whose data actually moved — a table page
+// list refreshes only re-render the rows whose data actually moved — a table page
 // is 20 rows × (StatusBadge + Link + a Radix AlertDialog tree), far too heavy to rebuild
 // wholesale on every parent render.
 const TaskRow = React.memo(function TaskRow({
@@ -1223,9 +1234,7 @@ const TaskRow = React.memo(function TaskRow({
           const f = task.findings;
           const total = f ? f.critical + f.high + f.medium + f.low : 0;
           if (!f || total === 0) return <span className="text-muted-foreground">0</span>;
-          const seg = (n: number, cls: string) => (
-            <span className={n > 0 ? cls : "text-muted-foreground"}>{n}</span>
-          );
+          const seg = (n: number, cls: string) => <span className={n > 0 ? cls : "text-muted-foreground"}>{n}</span>;
           return (
             <span className="font-medium whitespace-nowrap" title="严重 / 高 / 中 / 低">
               {seg(f.critical, "text-rose-600 dark:text-rose-400")}
@@ -1656,8 +1665,15 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
   const [selected, setSelected] = React.useState<Set<number>>(() => new Set());
   const [loading, setLoading] = React.useState(true);
   const pendingRestoreIDs = React.useRef(new Set<number>());
+  const archiveRequest = React.useRef(0);
+  const archiveMounted = React.useRef(false);
+  const archiveQuery = JSON.stringify([page, pageSize, query, stateFilter]);
+  const activeArchiveQuery = React.useRef(archiveQuery);
+  activeArchiveQuery.current = archiveQuery;
 
   const load = React.useCallback(async () => {
+    if (!archiveMounted.current || activeArchiveQuery.current !== archiveQuery) return;
+    const request = ++archiveRequest.current;
     try {
       const result = await api.taskArchives({
         page,
@@ -1665,6 +1681,7 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
         q: query.trim(),
         state: stateFilter === "all" ? undefined : stateFilter,
       });
+      if (request !== archiveRequest.current || activeArchiveQuery.current !== archiveQuery) return;
       setArchives(result.items);
       setTotal(result.total);
       setSelected((current) => {
@@ -1674,6 +1691,7 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
       const pending = [...pendingRestoreIDs.current];
       if (pending.length > 0) {
         const states = await Promise.allSettled(pending.map((id) => api.taskArchive(id)));
+        if (request !== archiveRequest.current || activeArchiveQuery.current !== archiveQuery) return;
         let restored = false;
         states.forEach((state, index) => {
           if (state.status !== "rejected" || !(state.reason instanceof Error)) return;
@@ -1684,16 +1702,21 @@ function TaskArchivesPanel({ onChanged }: { onChanged: () => void }) {
         if (restored) onChanged();
       }
     } catch (error) {
-      toast.error(`读取归档列表失败：${(error as Error).message}`);
+      if (request === archiveRequest.current && activeArchiveQuery.current === archiveQuery)
+        toast.error(`读取归档列表失败：${(error as Error).message}`);
     } finally {
-      setLoading(false);
+      if (request === archiveRequest.current && activeArchiveQuery.current === archiveQuery) setLoading(false);
     }
-  }, [onChanged, page, pageSize, query, stateFilter]);
+  }, [archiveQuery, onChanged, page, pageSize, query, stateFilter]);
 
   React.useEffect(() => {
-    void load();
-    const timer = setInterval(() => void load(), 2_000);
-    return () => clearInterval(timer);
+    archiveMounted.current = true;
+    const stop = subscribeRefresh(load, { keys: ["/task-archives", "/tasks"] });
+    return () => {
+      archiveMounted.current = false;
+      archiveRequest.current++;
+      stop();
+    };
   }, [load]);
 
   const selectable = React.useMemo(

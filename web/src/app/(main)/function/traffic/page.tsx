@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { subscribeRefresh } from "@/lib/api-refresh";
 
 import {
   ArrowDownWideNarrowIcon,
@@ -200,40 +201,40 @@ export default function TrafficPage() {
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloadTick is an explicit manual-refetch trigger.
   React.useEffect(() => {
     let alive = true;
-    const load = () => {
-      api
-        .traffic(page, size, hostQ, method, queryQ, {
-          body: bodyQ,
-          path: pathQ,
-          status: statusFilter,
-          respMin: respMinQ,
-          respMax: respMaxQ,
-          sort: sort.field,
-          order: sort.direction,
-        })
-        .then((r) => {
-          if (alive) setTraffic(r);
-        })
-        .catch(() => {
-          // Keep the last successful snapshot during transient refresh failures.
-        });
-      api
-        .trafficHosts()
-        .then((r) => {
-          if (alive) setHosts(r.hosts ?? []);
-        })
-        .catch(() => {
-          // Keep the last successful host list during transient refresh failures.
-        });
-    };
-    load();
-    const t = setInterval(() => {
-      if (page !== 0) return; // only auto-refresh the newest page
-      load();
-    }, 5000);
+    const load = () =>
+      Promise.all([
+        api
+          .traffic(page, size, hostQ, method, queryQ, {
+            body: bodyQ,
+            path: pathQ,
+            status: statusFilter,
+            respMin: respMinQ,
+            respMax: respMaxQ,
+            sort: sort.field,
+            order: sort.direction,
+          })
+          .then((r) => {
+            if (alive) setTraffic(r);
+          })
+          .catch(() => {
+            // Keep the last successful snapshot during transient refresh failures.
+          }),
+        api
+          .trafficHosts()
+          .then((r) => {
+            if (alive) setHosts(r.hosts ?? []);
+          })
+          .catch(() => {
+            // Keep the last successful host list during transient refresh failures.
+          }),
+      ]);
+    // Historical pages keep their snapshot until the user changes the query or
+    // refreshes manually, so incoming traffic cannot shift rows under selection.
+    const stop = page === 0 ? subscribeRefresh(load, { keys: ["/traffic"] }) : undefined;
+    if (page !== 0) void load();
     return () => {
       alive = false;
-      clearInterval(t);
+      stop?.();
     };
   }, [page, size, hostQ, method, queryQ, bodyQ, pathQ, statusFilter, respMinQ, respMaxQ, sort, reloadTick]);
 

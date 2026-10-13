@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-13
+
+- 独立维护：Go 模块、内置 Norma SDK、安装文档、自动升级和容器发布统一到 `RC-CHN/ARTEX`，保留许可证和历史来源说明。
+- GitHub Actions 覆盖 PostgreSQL 集成回归、关键并发测试、Norma、前端缓存及真实浏览器验证；发布五个平台安装包、校验和与 amd64/arm64 镜像，保护已发布版本和 `latest` 顺序。
+- 后端 HTTP 服务按任务、模型、资产、流量等领域拆分；新增调度恢复、取消和模型故障转移回归，修复全部触发器禁用后的历史事件重放。
+- 前端统一请求缓存、去重、事件失效和可见性刷新；取消主要页面每 5 秒的重复轮询。聊天运行中的增量读取保留统一调度的短周期刷新。
+- 移除登录时的用户协议确认门禁。
+- 流量索引迁至 PostgreSQL，支持幂等回填、大小写归一化搜索和共享存储；改进后台退出与测试数据库隔离。
+- 固定容器工具与工作流依赖版本，修复 Norma 的自适应压缩阈值和实际上下文溢出学习。
+
 ## [0.3.15] - 2026-10-07
 
 ### 拦截
@@ -886,13 +896,14 @@
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/Autumn-27/ARTEX/compare/v0.3.10...HEAD
-[0.3.10]: https://github.com/Autumn-27/ARTEX/compare/v0.3.9...v0.3.10
-[0.3.9]: https://github.com/Autumn-27/ARTEX/compare/v0.3.8...v0.3.9
-[0.3.8]: https://github.com/Autumn-27/ARTEX/compare/v0.3.7...v0.3.8
-[0.3.7]: https://github.com/Autumn-27/ARTEX/compare/v0.3.6...v0.3.7
-[0.3.6]: https://github.com/Autumn-27/ARTEX/compare/v0.3.5...v0.3.6
-[0.3.5]: https://github.com/Autumn-27/ARTEX/compare/v0.3.4...v0.3.5
-[0.3.4]: https://github.com/Autumn-27/ARTEX/compare/v0.3.3...v0.3.4
-[0.3.3]: https://github.com/Autumn-27/ARTEX/compare/v0.3.2...v0.3.3
-[0.3.2]: https://github.com/Autumn-27/ARTEX/compare/v0.3.1...v0.3.2
+[Unreleased]: https://github.com/RC-CHN/ARTEX/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/RC-CHN/ARTEX/releases/tag/v0.4.0
+[0.3.10]: https://github.com/RC-CHN/ARTEX/compare/v0.3.9...v0.3.10
+[0.3.9]: https://github.com/RC-CHN/ARTEX/compare/v0.3.8...v0.3.9
+[0.3.8]: https://github.com/RC-CHN/ARTEX/compare/v0.3.7...v0.3.8
+[0.3.7]: https://github.com/RC-CHN/ARTEX/compare/v0.3.6...v0.3.7
+[0.3.6]: https://github.com/RC-CHN/ARTEX/compare/v0.3.5...v0.3.6
+[0.3.5]: https://github.com/RC-CHN/ARTEX/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/RC-CHN/ARTEX/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/RC-CHN/ARTEX/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/RC-CHN/ARTEX/compare/v0.3.1...v0.3.2

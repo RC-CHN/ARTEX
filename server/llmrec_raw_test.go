@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/llmrec"
-	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/norma/transcript"
+	"github.com/RC-CHN/ARTEX/agent"
+	"github.com/RC-CHN/ARTEX/llmrec"
+	"github.com/RC-CHN/ARTEX/norma/llm"
+	"github.com/RC-CHN/ARTEX/norma/transcript"
 )
 
 // Full chain against a real PG: Recorder → norma provider → capturing transport

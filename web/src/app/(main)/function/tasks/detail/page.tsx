@@ -1,5 +1,7 @@
 "use client";
 
+import { invalidateApiData, subscribeRefresh } from "@/lib/api-refresh";
+import { useApiRefresh } from "@/hooks/use-api-refresh";
 import * as React from "react";
 
 import Link from "next/link";
@@ -214,12 +216,7 @@ function TaskDetailInner() {
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [archiving, setArchiving] = React.useState(false);
 
-  React.useEffect(() => {
-    api
-      .llmProfiles()
-      .then(setProfiles)
-      .catch(() => setProfiles([]));
-  }, []);
+  useApiRefresh(api.llmProfiles, setProfiles, [], { keys: ["/llm/profiles"], intervalMs: 60_000 });
 
   React.useEffect(() => {
     let alive = true;
@@ -232,48 +229,49 @@ function TaskDetailInner() {
         .catch(() => {
           // Polling is best-effort; the next interval retries automatically.
         });
-    void load();
-    const t = setInterval(load, 5000);
+    const t = subscribeRefresh(load, { keys: ["/intercept"], intervalMs: 15_000 });
     return () => {
       alive = false;
-      clearInterval(t);
+      t();
     };
   }, [id]);
 
-  const taskLoadInFlight = React.useRef<string | null>(null);
-  const load = React.useCallback(() => {
-    if (taskLoadInFlight.current === id) return;
-    taskLoadInFlight.current = id;
-    Promise.all([api.task(id), api.stats(id).catch(() => null)])
-      .then(([task, s]) => {
-        if (taskLoadInFlight.current !== id) return;
-        const base = { ...task };
-        const at = s?.active_task;
-        if (at) {
-          base.in_flight = at.in_flight;
-          base.goals_total = at.goals_total;
-          base.goals_met = at.goals_met;
-          base.engine_mode = s?.engine_mode ?? at.engine_mode;
-          base.paused = at.paused;
-        }
-        setTask(base);
-        setPaused(at?.paused ?? base.paused ?? false);
-      })
-      .catch(() => {
-        // Keep the last rendered task state during a transient poll failure.
-      })
-      .finally(() => {
-        if (taskLoadInFlight.current === id) {
-          taskLoadInFlight.current = null;
-          setLoaded(true);
-        }
-      });
-  }, [id]);
+  const load = React.useCallback(() => invalidateApiData([`/tasks/${id}`, "/stats"]), [id]);
   React.useEffect(() => {
-    load();
-    const timer = setInterval(load, 5000);
-    return () => clearInterval(timer);
-  }, [load]);
+    let current = true;
+    setLoaded(false);
+    setTask(null);
+    const stop = subscribeRefresh(
+      async () => {
+        try {
+          const [next, stats] = await Promise.all([api.task(id), api.stats(id).catch(() => null)]);
+          if (!current) return;
+          const active = stats?.active_task;
+          const task = active
+            ? {
+                ...next,
+                in_flight: active.in_flight,
+                goals_total: active.goals_total,
+                goals_met: active.goals_met,
+                engine_mode: stats?.engine_mode ?? active.engine_mode,
+                paused: active.paused,
+              }
+            : next;
+          setTask(task);
+          setPaused(task.paused ?? false);
+        } catch {
+          // Keep the last successful snapshot until an event or fallback retries.
+        } finally {
+          if (current) setLoaded(true);
+        }
+      },
+      { keys: [`/tasks/${id}`, "/stats"] },
+    );
+    return () => {
+      current = false;
+      stop();
+    };
+  }, [id]);
 
   async function togglePause() {
     if (task && ["done", "failed", "timeout"].includes(task.status)) return;

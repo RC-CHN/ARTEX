@@ -1,5 +1,6 @@
 "use client";
 
+import { notifyApiEvent, subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
 
 import {
@@ -793,11 +794,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         .catch(() => {
           // Polling is best-effort; the next interval retries automatically.
         });
-    void load();
-    const t = setInterval(load, 5000);
+    const t = subscribeRefresh(load, { keys: ["/exploration/tokens"] });
     return () => {
       alive = false;
-      clearInterval(t);
+      t();
     };
   }, [taskId]);
 
@@ -816,11 +816,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
           // activity remains a conservative fallback.
         });
     };
-    void load();
-    const timer = setInterval(load, 2000);
+    const timer = subscribeRefresh(load, { keys: [`/tasks/${taskId}/chat`] });
     return () => {
       alive = false;
-      clearInterval(timer);
+      timer();
     };
   }, [taskId]);
 
@@ -835,11 +834,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         .catch(() => {
           // Polling is best-effort; the next interval retries automatically.
         });
-    void load();
-    const timer = setInterval(load, 10_000);
+    const timer = subscribeRefresh(load, { keys: [`/tasks/${taskId}/llm`, "/llm"] });
     return () => {
       alive = false;
-      clearInterval(timer);
+      timer();
     };
   }, [taskId]);
 
@@ -854,11 +852,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         .catch(() => {
           // Polling is best-effort; the next interval retries automatically.
         });
-    void load();
-    const t = setInterval(load, 5000);
+    const t = subscribeRefresh(load, { keys: ["/intercept"] });
     return () => {
       alive = false;
-      clearInterval(t);
+      t();
     };
   }, [taskId]);
 
@@ -973,7 +970,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
           sseUrl(`/api/exploration/activity/stream?task=${encodeURIComponent(taskId)}&since=${snapshotRef.current}`),
         );
         esRef.current = es;
-        es.onopen = () => setSseLive(true);
+        es.onopen = () => {
+          setSseLive(true);
+          notifyApiEvent(["/tasks", "/stats", "/exploration", "/intercept"]);
+        };
         es.onerror = () => setSseLive(false); // EventSource auto-reconnects; DB compensates the gap
         es.onmessage = (e) => {
           let a: Activity;
@@ -982,6 +982,13 @@ export function SessionsTab({ taskId }: { taskId: string }) {
           } catch {
             return; // ignore malformed frame
           }
+          // Transcript text is already applied below. Refresh other resources only
+          // for state-bearing events, coalesced centrally across streaming bursts.
+          if (a.kind === "usage") notifyApiEvent(["/exploration/tokens", "/tokens"]);
+          else if (a.kind === "llm_switch" || a.kind === "llm_failover") notifyApiEvent(["/llm", "/tasks", "/stats"]);
+          else if (a.kind === "intercept_request") notifyApiEvent(["/intercept", "/stats"]);
+          else if (["result", "tool_result", "round", "intent", "user"].includes(a.kind) || a.is_error)
+            notifyApiEvent(["/tasks", "/stats", "/exploration", "/assets", "/companies", "/intercept"]);
           if ((a.kind === "llm_switch" || a.kind === "llm_failover") && !llmToastSeqRef.current.has(a.seq)) {
             llmToastSeqRef.current.add(a.seq);
             const transition = a.metadata?.llm_transition;
@@ -992,14 +999,6 @@ export function SessionsTab({ taskId }: { taskId: string }) {
             } else {
               toast.info(a.summary, { id: `task-${taskId}-llm-${a.seq}` });
             }
-            void api
-              .taskLLMResolution(taskId)
-              .then((value) => {
-                if (alive) setLLMResolutions(value);
-              })
-              .catch(() => {
-                // The periodic resolver poll will retry if this event-triggered refresh fails.
-              });
           }
           const k = sessionKeyOf(a);
           setStore((prev) => {
@@ -1058,11 +1057,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         .catch(() => {
           // The next poll retries; Worker controls and transcripts remain available.
         });
-    void load();
-    const timer = setInterval(load, 5000);
+    const timer = subscribeRefresh(load, { keys: [`/tasks/${taskId}/intent-assets`, "/assets"] });
     return () => {
       active = false;
-      clearInterval(timer);
+      timer();
     };
   }, [taskId]);
 
@@ -1098,11 +1096,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         .catch(() => {
           // Polling is best-effort; the next interval retries automatically.
         });
-    void load();
-    const t = setInterval(load, 5000);
+    const t = subscribeRefresh(load, { keys: ["/exploration/intents"] });
     return () => {
       active = false;
-      clearInterval(t);
+      t();
     };
   }, [taskId]);
 
