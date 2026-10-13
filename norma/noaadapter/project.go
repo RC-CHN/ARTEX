@@ -147,6 +147,7 @@ func Reassemble(cores []noa.CoreMessage, originals []llm.Message, sc *Sidecar, o
 	if i := llm.LastBoundaryIndex(originals); i >= 0 {
 		originals = originals[i+1:]
 	}
+	cores = deferSynthetic(cores, sc)
 
 	var out []llm.Message
 	i := 0
@@ -199,6 +200,57 @@ func Reassemble(cores []noa.CoreMessage, originals []llm.Message, sc *Sidecar, o
 	// counterpart; strict providers reject that outright.
 	out = llm.PairToolBlocks(out)
 	return dropEmpty(out)
+}
+
+// A summary may replace one branch of a parallel tool batch. Inserting that
+// user message at the compressed branch's position can split the surviving
+// assistant message, or separate a call from its still-present result. Keep
+// original messages and surviving exchanges contiguous by moving only synthetic
+// messages past their enclosing span. No tool is executed or result invented.
+func deferSynthetic(cores []noa.CoreMessage, sc *Sidecar) []noa.CoreMessage {
+	ends := make([]int, len(cores))
+	first := map[int]int{}
+	calls := map[string]int{}
+	for i, c := range cores {
+		ends[i] = i
+		if isSynthetic(c) {
+			continue
+		}
+		if o, ok := sc.Origins[c.ID]; ok {
+			if start, found := first[o.msgIdx]; found {
+				ends[start] = i
+			} else {
+				first[o.msgIdx] = i
+			}
+		}
+		switch c.ContentType {
+		case noa.CTToolCall:
+			if c.ToolCallID != "" {
+				calls[c.ToolCallID] = i
+			}
+		case noa.CTToolResult:
+			if start, ok := calls[c.ToolCallID]; ok {
+				ends[start] = max(ends[start], i)
+				delete(calls, c.ToolCallID)
+			}
+		}
+	}
+	out := make([]noa.CoreMessage, 0, len(cores))
+	var deferred []noa.CoreMessage
+	until := -1
+	for i, c := range cores {
+		until = max(until, ends[i])
+		if isSynthetic(c) && i < until {
+			deferred = append(deferred, c)
+		} else {
+			out = append(out, c)
+		}
+		if i == until {
+			out = append(out, deferred...)
+			deferred = nil
+		}
+	}
+	return out
 }
 
 // rebuildMessage reconstructs one host message from the cores that survived.

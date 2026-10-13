@@ -496,6 +496,7 @@ func TestLongSessionViewStaysValid(t *testing.T) {
 // assertValidRequest checks the invariants a provider would reject.
 func assertValidRequest(t *testing.T, view []llm.Message, turn int) {
 	t.Helper()
+	assertAdjacentExchanges(t, view)
 	useIDs := map[string]bool{}
 	resIDs := map[string]bool{}
 	for _, m := range view {

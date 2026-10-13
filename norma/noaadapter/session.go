@@ -214,6 +214,7 @@ func (s *Session) View(msgs []llm.Message) []llm.Message {
 	}
 	// lastView is what the model's refs will be resolved against, so it must be
 	// the array the model actually sees — nudge included.
+	view = deferSynthetic(view, sc)
 	s.lastView = view
 
 	out := Reassemble(view, msgs, sc, ReassembleOptions{State: &s.state, Tag: true})
