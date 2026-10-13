@@ -1389,5 +1389,19 @@ CREATE INDEX IF NOT EXISTS idx_notification_deliveries_channel
 CREATE TABLE IF NOT EXISTS runner_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     revision BIGINT NOT NULL CHECK (revision > 0),
-    payload JSONB NOT NULL
+    payload JSON NOT NULL
 );
+-- This is an opaque broker checkpoint, never queried with JSON operators.
+-- Tool results can contain escaped NUL bytes, which JSONB rejects. JSON keeps
+-- the original document (including tool-call inputs and deduplication data)
+-- losslessly; stripping characters would change persisted execution results.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid='runner_state'::regclass AND attname='payload'
+          AND atttypid='jsonb'::regtype AND NOT attisdropped
+    ) THEN
+        ALTER TABLE runner_state ALTER COLUMN payload TYPE JSON USING payload::json;
+    END IF;
+END $$;
