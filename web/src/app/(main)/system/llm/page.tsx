@@ -29,6 +29,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
 import type { LLMPoolMember, LLMPoolStatus, LLMProfile, LLMRetryOverride } from "@/lib/types";
+import { RoleModels } from "./_components/role-models";
 import { cn } from "@/lib/utils";
 
 import { ProfileRetryFields, RetryPolicyPanel, ZERO_OVERRIDE } from "./_components/retry";
@@ -868,7 +869,7 @@ export default function LLMPage() {
         <div>
           <h1 className="font-semibold text-xl tracking-tight">LLM</h1>
           <p className="text-muted-foreground text-sm">
-            全 Agent 共享的格式 / 模型 / 限速配置。点击卡片编辑，星标为当前激活配置。
+            管理模型连接，并为主 Agent、Planner 和 Worker 分别选型。星标为全局激活配置。
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -893,6 +894,7 @@ export default function LLMPage() {
         </TabsList>
 
         <TabsContent value="profiles" className="mt-4">
+          <RoleModels profiles={profiles} />
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {profiles.map((p) => {
               const h = healthOf(p, health.get(p.id));

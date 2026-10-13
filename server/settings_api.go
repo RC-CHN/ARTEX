@@ -11,7 +11,10 @@ import (
 
 	"github.com/RC-CHN/ARTEX/db"
 	actool "github.com/RC-CHN/ARTEX/norma/tool"
+	"github.com/RC-CHN/ARTEX/runner"
 )
+
+const settingEnvironmentPrompt = "agent.environment_prompt"
 
 // getSettings returns the runtime app settings the UI toggles. The Brave API key
 // is returned as a boolean presence flag (brave_key_set), never the value itself,
@@ -23,11 +26,13 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) settingsPayload() map[string]any {
 	on, backend, braveKey, tavilyKey, proxy := s.m.WebSearch()
 	pyStored, _, _ := s.m.pg.GetSetting(settingPythonInterp)
+	environmentPrompt, _, _ := s.m.pg.GetSetting(settingEnvironmentPrompt)
 	concOn, concLimit := s.m.ConcurrencyLimit()
 	if concLimit == 0 {
 		concLimit = defaultConcurrencyLimit // 关闭时也回显一个合理默认值给 UI
 	}
 	return map[string]any{
+		"environment_prompt":       environmentPrompt,
 		"traffic_capture":          s.m.TrafficEnabled(),
 		"agent_traffic_binding":    s.m.pg.GetBool(settingAgentTrafficBinding, false),
 		"llm_record":               s.m.LLMRecordEnabled(),
@@ -98,9 +103,10 @@ func (s *Server) pgDetectPython(w http.ResponseWriter, r *http.Request) {
 // off, agents get no proxy config, no traffic tools, and no proxy prompt content.
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		TrafficCapture      *bool `json:"traffic_capture"`
-		AgentTrafficBinding *bool `json:"agent_traffic_binding"`
-		LLMRecord           *bool `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
+		EnvironmentPrompt   *string `json:"environment_prompt"`
+		TrafficCapture      *bool   `json:"traffic_capture"`
+		AgentTrafficBinding *bool   `json:"agent_traffic_binding"`
+		LLMRecord           *bool   `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
 		// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 		// are optional — omit (null) to leave a stored key untouched, send "" to clear.
 		WebSearchEnabled *bool   `json:"web_search_enabled"`
@@ -132,6 +138,16 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
+	}
+	if req.EnvironmentPrompt != nil {
+		if err := runner.ValidateEnvironmentPrompt(*req.EnvironmentPrompt); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		if err := s.m.pg.SetSetting(settingEnvironmentPrompt, *req.EnvironmentPrompt); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
 	}
 	if req.ConstraintsInjectPlanner != nil {
 		if err := s.m.pg.SetBool(settingConstraintsInjectPlanner, *req.ConstraintsInjectPlanner); err != nil {

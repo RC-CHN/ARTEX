@@ -13,6 +13,7 @@ import (
 	"github.com/RC-CHN/ARTEX/norma/skill"
 	actool "github.com/RC-CHN/ARTEX/norma/tool"
 	"github.com/RC-CHN/ARTEX/runnerfiles"
+	"github.com/RC-CHN/ARTEX/toolenv"
 	"github.com/RC-CHN/ARTEX/traffic"
 )
 
@@ -176,8 +177,12 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			Unlock:      unlock,
 			UnlockSkill: unlockSkill,
 		}
+		def.ExecutionGuidance = toolenv.Detect("").Prompt()
 		if rt, ok := ctx.Value(remoteExecutionKey{}).(*remoteExecution); ok {
-			def.ExecutionGuidance = "\n\n本线程的执行工具在独立远程沙箱中运行。文件路径保持一致；自己的工作目录可写，同任务其他线程的产物只读并在工具调用间刷新，共享目录写入有版本冲突检测。不要用文件锁协调跨机器任务，使用平台事实/图谱通信。需要GPU等能力时先list_runners并在add_intent声明runner需求。代理以本次执行环境自动注入的环境变量为准，提示中控制端localhost地址不可直接使用。当前环境：" + rt.spec.Environment + "；节点：" + rt.NodeID()
+			def.ExecutionGuidance = "\n\n本线程的执行工具在独立远程沙箱中运行。文件路径保持一致；自己的工作目录可写，同任务其他线程的产物只读并在工具调用间刷新，共享目录写入有版本冲突检测。不要用文件锁协调跨机器任务，使用平台事实/图谱通信。需要GPU等能力时先list_runners并在add_intent声明runner需求。按需代理见环境说明；提示中的控制端 localhost 地址不可直接使用。当前环境：" + rt.spec.Environment + "；节点：" + rt.NodeID()
+			def.ExecutionGuidance += agent.EnvironmentPromptBlock("执行环境说明", rt.environmentPrompt)
+			def.ExecutionGuidance += agent.EnvironmentPromptBlock("当前 Runner 专属说明", rt.EnvironmentPrompt())
+			def.ExecutionGuidance += rt.EnvironmentTools().Prompt()
 			var plan runnerfiles.Plan
 			if json.Unmarshal(rt.spec.Files, &plan) == nil {
 				for _, mount := range plan.Mounts {

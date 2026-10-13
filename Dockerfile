@@ -80,6 +80,14 @@ RUN node install-browsers.cjs \
     && npm_config_offline=true npx --version \
     && rm -rf /var/lib/apt/lists/*
 
+########## 固定版本的漏洞查询和检测工具 ##########
+FROM runtime-tools AS security-tools
+ARG TARGETARCH
+COPY deploy/container-tools/security-tools.lock.json deploy/container-tools/install-security-tools.py /tmp/security-tools/
+RUN python3 /tmp/security-tools/install-security-tools.py "$TARGETARCH" \
+    && rm -rf /tmp/security-tools
+COPY --chmod=755 deploy/container-tools/nuclei.py /usr/local/bin/nuclei
+
 ########## Runner 管理客户端：仅管理进程持有 socket/API 凭据 ##########
 FROM docker:29.1.3-cli@sha256:4fa0ee1f3a7e4354c4ea34558b6d4ee32859baf4973d4c8ccc8e7fe3dd730c04 AS runner-clients
 ARG TARGETARCH
@@ -99,7 +107,7 @@ ENTRYPOINT ["/usr/local/bin/artex-runner"]
 CMD ["-config", "/etc/artex-runner/runner.json"]
 
 ########## 阶段 5：应用（仅这一阶段和 Go 编译随版本变化）##########
-FROM runtime-tools AS runtime
+FROM security-tools AS runtime
 WORKDIR /app
 # 构建阶段产出的单二进制（内嵌前端）
 COPY --from=gobuild /out/artex /app/artex

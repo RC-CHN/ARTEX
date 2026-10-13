@@ -27,8 +27,9 @@ import (
 type remoteExecutionKey struct{}
 type remoteExecution struct {
 	*runner.Session
-	spec          runner.RunSpec
-	controllerMCP map[string]bool
+	spec              runner.RunSpec
+	controllerMCP     map[string]bool
+	environmentPrompt string
 }
 
 // Environment is a versioned run snapshot. In particular, never forward the
@@ -74,7 +75,7 @@ func (s *Server) wireRunnerExecution() {
 			cancel()
 			return ctx, nil, nil, fmt.Errorf("远程执行环境分配失败（不会退回本机）: %w", err)
 		}
-		rt := &remoteExecution{Session: session, spec: spec, controllerMCP: localMCP}
+		rt := &remoteExecution{Session: session, spec: spec, controllerMCP: localMCP, environmentPrompt: cfg.Environments[spec.Environment].EnvironmentPrompt}
 		return context.WithValue(ctx, remoteExecutionKey{}, rt), rt, cancel, nil
 	}
 }

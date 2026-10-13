@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type Hub struct {
@@ -224,6 +225,7 @@ func (h *Hub) ListNodes() []NodeView {
 	out := make([]NodeView, 0, len(h.state.Nodes))
 	for _, n := range h.state.Nodes {
 		v := NodeView{ID: n.ID, Name: n.Name, BootID: n.BootID, Enabled: n.Enabled, Online: !h.closed && n.Enabled && now.Sub(n.LastSeen) < h.opts.LeaseDuration, LastSeen: n.LastSeen, Capabilities: n.Capabilities}
+		v.EnvironmentPrompt = n.EnvironmentPrompt
 		v.ConcurrencyLimit, v.EffectiveSlots = n.ConcurrencyLimit, n.effectiveSlots()
 		v.CPULimitMillis, v.MemoryLimitMiB = n.CPULimitMillis, n.MemoryLimitMiB
 		v.EffectiveCPUMillis, v.EffectiveMemoryMiB = n.effectiveCPU(), n.effectiveMemory()
@@ -264,6 +266,32 @@ func (h *Hub) SetNodeEnabled(id string, enabled bool) error {
 		}
 		return h.saveFenceLocked()
 	}
+	return h.saveLocked()
+}
+
+// Environment notes are set by the administrator, never by registration or
+// heartbeat payloads. Existing sessions retain their original prompt snapshot.
+func ValidateEnvironmentPrompt(prompt string) error {
+	if !utf8.ValidString(prompt) || strings.ContainsRune(prompt, 0) || utf8.RuneCountInString(prompt) > 16000 {
+		return errors.New("环境提示词最多 16000 个字符，且不能包含无效字符")
+	}
+	return nil
+}
+
+func (h *Hub) SetNodeEnvironmentPrompt(id, prompt string) error {
+	if err := ValidateEnvironmentPrompt(prompt); err != nil {
+		return err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return ErrClosed
+	}
+	n := h.state.Nodes[id]
+	if n == nil {
+		return errors.New("runner node not found")
+	}
+	n.EnvironmentPrompt = prompt
 	return h.saveLocked()
 }
 

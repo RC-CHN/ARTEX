@@ -24,13 +24,14 @@ const runnerConfigKey = "experimental.runners"
 var runnerImageDigest = regexp.MustCompile(`^[^\s@]+@sha256:[a-f0-9]{64}$`)
 
 type runnerEnvironment struct {
-	Image         string              `json:"image"`
-	Env           map[string]string   `json:"env,omitempty"`
-	Resources     runner.Resources    `json:"resources"`
-	Labels        map[string]string   `json:"labels,omitempty"`
-	ProxyURL      string              `json:"proxy_url,omitempty"`
-	DirectNetwork bool                `json:"direct_network,omitempty"`
-	Inputs        []runnerfiles.Mount `json:"inputs,omitempty"`
+	EnvironmentPrompt string              `json:"environment_prompt,omitempty"`
+	Image             string              `json:"image"`
+	Env               map[string]string   `json:"env,omitempty"`
+	Resources         runner.Resources    `json:"resources"`
+	Labels            map[string]string   `json:"labels,omitempty"`
+	ProxyURL          string              `json:"proxy_url,omitempty"`
+	DirectNetwork     bool                `json:"direct_network,omitempty"`
+	Inputs            []runnerfiles.Mount `json:"inputs,omitempty"`
 }
 type runnerMCPPolicy struct {
 	Location string            `json:"location"` // runner (default) or controller (explicit)
@@ -65,6 +66,9 @@ func (c runnerConfig) validate() error {
 		return errors.New("default_environment is not defined")
 	}
 	for name, e := range c.Environments {
+		if err := runner.ValidateEnvironmentPrompt(e.EnvironmentPrompt); err != nil {
+			return fmt.Errorf("环境 %s: %w", name, err)
+		}
 		if name == "" {
 			return errors.New("empty environment name")
 		}
@@ -335,6 +339,28 @@ func (s *Server) setRunnerLimits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func (s *Server) setRunnerEnvironmentPrompt(w http.ResponseWriter, r *http.Request) {
+	_, hub, err := s.runnerSnapshot()
+	if hub == nil || err != nil {
+		writeErr(w, 409, "Runner 未启用或初始化失败")
+		return
+	}
+	var body struct {
+		Prompt *string `json:"environment_prompt"`
+	}
+	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10))
+	d.DisallowUnknownFields()
+	if d.Decode(&body) != nil || body.Prompt == nil || d.Decode(new(any)) != io.EOF {
+		writeErr(w, 400, "需要 environment_prompt 字符串；空字符串表示清除")
+		return
+	}
+	if err := hub.SetNodeEnvironmentPrompt(r.PathValue("id"), *body.Prompt); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]string{"environment_prompt": *body.Prompt})
 }
 
 func (s *Server) setRunnerEnabled(w http.ResponseWriter, r *http.Request) {

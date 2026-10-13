@@ -4,6 +4,7 @@ import * as React from "react";
 
 import { CpuIcon, FlaskConicalIcon, KeyboardIcon, RadioTowerIcon, SearchIcon, ShieldAlertIcon } from "lucide-react";
 import { toast } from "sonner";
+import { EnvironmentPromptCard } from "@/components/environment-prompt-card";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -266,6 +267,7 @@ export default function SystemSettingsPage() {
           多列则自动按内容高度平衡填充。卡片间距靠 mb 而非 gap——多列布局下
           column-gap 只管列间距，行间距要由子元素自己给。 */}
       <div className="columns-1 gap-4 md:gap-6 lg:columns-2">
+        <EnvironmentPromptCard />
         <UpdateCard />
 
         <Card className="mb-4 break-inside-avoid md:mb-6">

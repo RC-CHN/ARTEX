@@ -59,17 +59,18 @@ type persistedState struct {
 }
 
 type nodeRecord struct {
-	CPULimitMillis   int64           `json:"cpu_limit_millis,omitempty"`
-	MemoryLimitMiB   int64           `json:"memory_limit_mib,omitempty"`
-	ConcurrencyLimit int             `json:"concurrency_limit,omitempty"`
-	ID               string          `json:"id"`
-	Name             string          `json:"name"`
-	BootID           string          `json:"boot_id"`
-	BootIDs          map[string]bool `json:"boot_ids"`
-	CredentialHash   string          `json:"credential_hash"`
-	Enabled          bool            `json:"enabled"`
-	Capabilities     Capabilities    `json:"capabilities"`
-	LastSeen         time.Time       `json:"last_seen"`
+	EnvironmentPrompt string          `json:"environment_prompt,omitempty"`
+	CPULimitMillis    int64           `json:"cpu_limit_millis,omitempty"`
+	MemoryLimitMiB    int64           `json:"memory_limit_mib,omitempty"`
+	ConcurrencyLimit  int             `json:"concurrency_limit,omitempty"`
+	ID                string          `json:"id"`
+	Name              string          `json:"name"`
+	BootID            string          `json:"boot_id"`
+	BootIDs           map[string]bool `json:"boot_ids"`
+	CredentialHash    string          `json:"credential_hash"`
+	Enabled           bool            `json:"enabled"`
+	Capabilities      Capabilities    `json:"capabilities"`
+	LastSeen          time.Time       `json:"last_seen"`
 }
 
 type sessionRecord struct {

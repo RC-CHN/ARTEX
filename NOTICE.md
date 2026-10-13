@@ -5,3 +5,5 @@ ARTEX 由 RC-CHN/ARTEX 独立维护。项目历史源自 Autumn-27/ARTEX，后�
 `norma/` 最初从 `github.com/Autumn-27/norma` 的 v0.4.3 模块源码恢复，现在以 `github.com/RC-CHN/ARTEX/norma` 在本仓库维护。构建和测试始终使用本地源码，不下载或调用原仓库。
 
 前端模板的许可证保留在 `web/LICENSE`。其他第三方依赖继续遵循各自许可证。本说明记录来源，不改变现有许可证或作者署名。
+
+容器镜像预装 ProjectDiscovery 的 vulnx、Nuclei 和 nuclei-templates，均按各自 MIT 许可证分发。CLI 许可证随镜像保存在 `/usr/local/share/licenses/vulnx/`、`/usr/local/share/licenses/nuclei/`，模板许可证在 `/opt/nuclei-templates/LICENSE.md`；固定版本与校验和见 `deploy/container-tools/security-tools.lock.json`。

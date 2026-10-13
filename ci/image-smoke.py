@@ -106,6 +106,20 @@ try:
         print((browser.stdout + browser.stderr).replace(token, '[redacted]'), file=sys.stderr)
         raise RuntimeError('frontend browser smoke failed')
     print(browser.stdout.strip(), flush=True)
+    artifact_dir = __import__('os').environ.get('ARTEX_SMOKE_ARTIFACT_DIR')
+    artifact_args = []
+    if artifact_dir:
+        artifact = Path(artifact_dir).resolve()
+        artifact.mkdir(parents=True, exist_ok=True)
+        artifact_args = ['-v', str(artifact) + ':/artifacts', '-e', 'SCREENSHOT_DIR=/artifacts']
+    runners = docker('run', '--rm', '--network', network, '--entrypoint', 'node', *artifact_args,
+                     '-v', str(Path(__file__).resolve().parent) + ':/smoke:ro',
+                     '-e', 'BASE_URL=http://' + app_name + ':8787', '-e', 'AUTH_TOKEN=' + token,
+                     image, '/smoke/runner-ui-smoke.cjs', check=False)
+    if runners.returncode:
+        print((runners.stdout + runners.stderr).replace(token, '[redacted]'), file=sys.stderr)
+        raise RuntimeError('runner UI smoke failed')
+    print(runners.stdout.strip(), flush=True)
     # Record a local request through the capture proxy, then read and search it.
     docker('exec', app_name, 'curl', '-fsS', '--noproxy', '', '--proxy', 'http://127.0.0.1:8788', 'http://127.0.0.1:8787/api/health?smoke=postgres-capture')
     for _ in range(40):
@@ -127,6 +141,14 @@ try:
         print(r.stdout.strip(), flush=True)
     docker('run', '--rm', '--network', 'none', '--entrypoint', 'playwright-cli', image, '--help')
     print('Bundled Playwright CLI: OK', flush=True)
+    security = docker('run', '--rm', '--network', 'none', '--read-only', '--user', '10001:10001',
+                      '--tmpfs', '/tmp:rw,mode=1777', '-e', 'HOME=/tmp/artex-security-smoke',
+                      '-v', str(Path(__file__).resolve().parent) + ':/smoke:ro',
+                      '--entrypoint', 'python3', image, '/smoke/security-tools-smoke.py', check=False)
+    if security.returncode:
+        print(security.stdout + security.stderr, file=sys.stderr)
+        raise RuntimeError('security tools smoke failed')
+    print(security.stdout.strip(), flush=True)
     print('IMAGE SMOKE PASSED', flush=True)
 except Exception:
     if app_name in created:

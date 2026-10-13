@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RC-CHN/ARTEX/norma/tool"
+	"github.com/RC-CHN/ARTEX/toolenv"
 )
 
 const ProtocolVersion = 1
@@ -200,17 +201,18 @@ type ToolCall struct {
 }
 
 type ResultRequest struct {
-	NodeID         string              `json:"node_id"`
-	BootID         string              `json:"boot_id"`
-	CommandID      string              `json:"command_id"`
-	SessionID      string              `json:"session_id"`
-	AttemptID      string              `json:"attempt_id"`
-	Epoch          string              `json:"epoch"`
-	Result         tool.Result         `json:"result"`
-	MCPTools       []ToolDefinition    `json:"mcp_tools,omitempty"` // Open acknowledgment only
-	Notifications  []tool.Notification `json:"notifications,omitempty"`
-	Error          string              `json:"error,omitempty"` // execution infrastructure failure, not ordinary tool.IsError
-	UnknownOutcome bool                `json:"unknown_outcome,omitempty"`
+	EnvironmentTools toolenv.Inventory   `json:"environment_tools,omitempty"`
+	NodeID           string              `json:"node_id"`
+	BootID           string              `json:"boot_id"`
+	CommandID        string              `json:"command_id"`
+	SessionID        string              `json:"session_id"`
+	AttemptID        string              `json:"attempt_id"`
+	Epoch            string              `json:"epoch"`
+	Result           tool.Result         `json:"result"`
+	MCPTools         []ToolDefinition    `json:"mcp_tools,omitempty"` // Open acknowledgment only
+	Notifications    []tool.Notification `json:"notifications,omitempty"`
+	Error            string              `json:"error,omitempty"` // execution infrastructure failure, not ordinary tool.IsError
+	UnknownOutcome   bool                `json:"unknown_outcome,omitempty"`
 }
 
 type ResultResponse struct {
@@ -218,6 +220,7 @@ type ResultResponse struct {
 }
 
 type NodeView struct {
+	EnvironmentPrompt  string       `json:"environment_prompt"`
 	CPULimitMillis     int64        `json:"cpu_limit_millis"`
 	MemoryLimitMiB     int64        `json:"memory_limit_mib"`
 	EffectiveCPUMillis int64        `json:"effective_cpu_millis"`

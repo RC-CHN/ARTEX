@@ -29,6 +29,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/runners/{id}/enabled", s.setRunnerEnabled)
 	mux.HandleFunc("PUT /api/runners/{id}/concurrency", s.setRunnerConcurrency)
 	mux.HandleFunc("PUT /api/runners/{id}/limits", s.setRunnerLimits)
+	mux.HandleFunc("PUT /api/runners/{id}/environment-prompt", s.setRunnerEnvironmentPrompt)
 
 	api := cors(s.requireAuth(mux))
 	root := http.NewServeMux()

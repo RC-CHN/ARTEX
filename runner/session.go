@@ -10,16 +10,19 @@ import (
 	"time"
 
 	"github.com/RC-CHN/ARTEX/norma/tool"
+	"github.com/RC-CHN/ARTEX/toolenv"
 )
 
 type Session struct {
 	hub                   *Hub
 	id, attemptID, nodeID string
+	environmentPrompt     string
 }
 
-func (s *Session) ID() string        { return s.id }
-func (s *Session) AttemptID() string { return s.attemptID }
-func (s *Session) NodeID() string    { return s.nodeID }
+func (s *Session) ID() string                { return s.id }
+func (s *Session) AttemptID() string         { return s.attemptID }
+func (s *Session) NodeID() string            { return s.nodeID }
+func (s *Session) EnvironmentPrompt() string { return s.environmentPrompt }
 
 // OutcomeError deliberately remains distinguishable from a normal tool error.
 // The caller must reconcile this attempt, not automatically replay the command.
@@ -132,7 +135,7 @@ func (h *Hub) Acquire(ctx context.Context, spec RunSpec) (*Session, error) {
 			h.mu.Unlock()
 			return nil, err
 		}
-		s := &Session{hub: h, id: id, attemptID: attempt, nodeID: n.ID}
+		s := &Session{hub: h, id: id, attemptID: attempt, nodeID: n.ID, environmentPrompt: n.EnvironmentPrompt}
 		h.mu.Unlock()
 		if err := s.waitOpen(ctx); err != nil {
 			return nil, err
@@ -365,6 +368,24 @@ func (s *Session) MCPTools(ctx context.Context) ([]ToolDefinition, error) {
 	var out []ToolDefinition
 	_ = json.Unmarshal(b, &out)
 	return out, nil
+}
+
+func (s *Session) EnvironmentTools() toolenv.Inventory {
+	s.hub.mu.Lock()
+	defer s.hub.mu.Unlock()
+	r := s.hub.state.Sessions[s.id]
+	if r == nil {
+		return toolenv.Inventory{}
+	}
+	for _, command := range r.Commands {
+		if command.Command.Kind == CommandOpen && command.Result != nil {
+			b, _ := json.Marshal(command.Result.EnvironmentTools)
+			var out toolenv.Inventory
+			_ = json.Unmarshal(b, &out)
+			return out
+		}
+	}
+	return toolenv.Inventory{}
 }
 
 // Close drains final filesystem updates before acknowledging closure. Cancellation

@@ -40,6 +40,23 @@ for module in ["go.mod", "norma/go.mod"]:
     expected = "github.com/RC-CHN/ARTEX" + ("/norma" if module.startswith("norma/") else "")
     if not (root / module).read_text().startswith("module " + expected + "\n"):
         errors.append(f"{module}: module must be owned by this repository")
+security = json.loads((root / "deploy/container-tools/security-tools.lock.json").read_text())
+for tool in ["vulnx", "nuclei", "nuclei-templates"]:
+    item = security[tool]
+    version = item["version"]
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        errors.append(f"{tool}: exact version required")
+    if tool == "nuclei-templates":
+        archives = [item]
+    else:
+        if set(item["archives"]) != {"amd64", "arm64"}:
+            errors.append(f"{tool}: both release architectures required")
+        archives = item["archives"].values()
+    for archive in archives:
+        if not archive["url"].startswith(f"https://github.com/projectdiscovery/{tool}/") or f"/v{version}" not in archive["url"]:
+            errors.append(f"{tool}: expected a fixed official release URL")
+        if not re.fullmatch(r"[a-f0-9]{64}", archive["sha256"]):
+            errors.append(f"{tool}: SHA-256 required")
 if errors:
     raise SystemExit("\n".join(errors))
 print("Source ownership, pinned tools and workflow actions verified")

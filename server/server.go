@@ -176,6 +176,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// override row, agents keep their built-in defaults — behavior is unchanged.
 	if m.pg != nil {
 		s.initRunners()
+		agent.EnvironmentPrompt = func() string {
+			value, _, _ := m.pg.GetSetting(settingEnvironmentPrompt)
+			return value
+		}
 		agent.PromptOverride = func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)
 			if err != nil || a == nil {

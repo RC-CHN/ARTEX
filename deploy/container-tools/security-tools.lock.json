@@ -1,0 +1,33 @@
+{
+  "vulnx": {
+    "version": "2.0.2",
+    "archives": {
+      "amd64": {
+        "url": "https://github.com/projectdiscovery/vulnx/releases/download/v2.0.2/vulnx_2.0.2_linux_amd64.zip",
+        "sha256": "387abd1c42b0357e1d4257b54528fc38e1d0357b12f05ab12117a4c628a5aaf8"
+      },
+      "arm64": {
+        "url": "https://github.com/projectdiscovery/vulnx/releases/download/v2.0.2/vulnx_2.0.2_linux_arm64.zip",
+        "sha256": "13c5888dde027b84bd3b6cf69c36c87e1e7aad7e7159bdeeb576f4962dcc1d06"
+      }
+    }
+  },
+  "nuclei": {
+    "version": "3.11.1",
+    "archives": {
+      "amd64": {
+        "url": "https://github.com/projectdiscovery/nuclei/releases/download/v3.11.1/nuclei_3.11.1_linux_amd64.zip",
+        "sha256": "ea63d4ae232808cd7c6bc00d0142428e231fab59dae01042246097d195835ab6"
+      },
+      "arm64": {
+        "url": "https://github.com/projectdiscovery/nuclei/releases/download/v3.11.1/nuclei_3.11.1_linux_arm64.zip",
+        "sha256": "8044e3d9768ba0a744b2872c1a87e813006f013da97ca9f50f7661a4203bec07"
+      }
+    }
+  },
+  "nuclei-templates": {
+    "version": "10.5.0",
+    "url": "https://github.com/projectdiscovery/nuclei-templates/archive/refs/tags/v10.5.0.tar.gz",
+    "sha256": "80fbabceca095fac40afecc7f023748df22b9576b9ff10a4422bd2fbf81f9a41"
+  }
+}

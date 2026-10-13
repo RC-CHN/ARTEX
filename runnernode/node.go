@@ -459,6 +459,7 @@ func (n *Node) executeCommand(ctx context.Context, cmd runner.Command) runner.Re
 					err = errors.New(reply.Error)
 				}
 				result.MCPTools = reply.MCPTools
+				result.EnvironmentTools = reply.EnvironmentTools
 			}
 		}
 		if err != nil {

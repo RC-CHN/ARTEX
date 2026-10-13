@@ -16,6 +16,7 @@ import (
 	"github.com/RC-CHN/ARTEX/norma/mcp"
 	"github.com/RC-CHN/ARTEX/norma/tool"
 	"github.com/RC-CHN/ARTEX/runner"
+	"github.com/RC-CHN/ARTEX/toolenv"
 )
 
 type callRecord struct {
@@ -255,12 +256,13 @@ type SandboxRequest struct {
 	CancelID  string           `json:"cancel_id,omitempty"`
 }
 type SandboxReply struct {
-	ID            string                  `json:"id"`
-	Result        tool.Result             `json:"result"`
-	MCPTools      []runner.ToolDefinition `json:"mcp_tools,omitempty"`
-	Notifications []tool.Notification     `json:"notifications,omitempty"`
-	Error         string                  `json:"error,omitempty"`
-	Executed      bool                    `json:"executed,omitempty"`
+	EnvironmentTools toolenv.Inventory       `json:"environment_tools,omitempty"`
+	ID               string                  `json:"id"`
+	Result           tool.Result             `json:"result"`
+	MCPTools         []runner.ToolDefinition `json:"mcp_tools,omitempty"`
+	Notifications    []tool.Notification     `json:"notifications,omitempty"`
+	Error            string                  `json:"error,omitempty"`
+	Executed         bool                    `json:"executed,omitempty"`
 }
 
 // ServeSandbox runs a single session until EOF or close. stdout must be reserved
@@ -351,7 +353,7 @@ func ServeSandboxWithHeartbeat(ctx context.Context, in io.Reader, out io.Writer,
 				send(SandboxReply{ID: req.ID, Error: err.Error()})
 				return nil
 			}
-			send(SandboxReply{ID: req.ID, MCPTools: session.schemas})
+			send(SandboxReply{ID: req.ID, MCPTools: session.schemas, EnvironmentTools: toolenv.Detect(req.Spec.Env["PATH"])})
 		case "call":
 			if session == nil || req.Call == nil {
 				send(SandboxReply{ID: req.ID, Error: "session is not open"})
