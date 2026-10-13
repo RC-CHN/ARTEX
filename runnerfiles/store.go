@@ -135,7 +135,7 @@ func snapshotFile(ctx context.Context, r *os.Root, p string, dst io.Writer, max 
 		return Entry{}, err
 	}
 	if !unchanged(r, p, f, fi, n) {
-		return Entry{}, ErrConflict
+		return Entry{}, fmt.Errorf("%w: %s", ErrSourceBusy, p)
 	}
 	if err := ctx.Err(); err != nil {
 		return Entry{}, err
@@ -143,6 +143,10 @@ func snapshotFile(ctx context.Context, r *os.Root, p string, dst io.Writer, max 
 	return Entry{p, hex.EncodeToString(h.Sum(nil)), n, uint32(fi.Mode().Perm())}, nil
 }
 func (s *Store) Manifest(ctx context.Context, m Mount) ([]Entry, error) {
+	return s.manifest(ctx, m, false)
+}
+
+func (s *Store) manifest(ctx context.Context, m Mount, checkpoint bool) ([]Entry, error) {
 	r, err := os.OpenRoot(m.Source)
 	if err != nil {
 		return nil, err
@@ -190,8 +194,11 @@ func (s *Store) Manifest(ctx context.Context, m Mount) ([]Entry, error) {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
+			if checkpoint && errors.Is(err, ErrSourceBusy) {
+				continue // a later checkpoint or the mandatory final push captures it
+			}
 			if err != nil {
-				return err
+				return fmt.Errorf("snapshot %s: %w", p, err)
 			}
 			entry.Path = p
 			out = append(out, entry)
@@ -233,7 +240,7 @@ func (s *Store) ReadContext(ctx context.Context, m Mount, p, expected string, w 
 	}
 	entry.Path = p
 	if expected != "" && entry.Digest != expected {
-		return Entry{}, ErrConflict
+		return Entry{}, fmt.Errorf("%w: %s changed after manifest", ErrSourceBusy, p)
 	}
 	if _, err = snapshot.Seek(0, io.SeekStart); err != nil {
 		return Entry{}, err

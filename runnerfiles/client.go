@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Client struct {
@@ -59,6 +60,11 @@ func (c *Client) do(r *http.Request) (*http.Response, error) {
 	switch res.StatusCode {
 	case 409:
 		cause = ErrConflict
+		// A GET has no publication side effect; its manifest/blob version can
+		// safely be fetched again, including against older controllers.
+		if r.Method == "GET" || res.Header.Get("X-ARTEX-File-Error") == "source-busy" {
+			cause = ErrSourceBusy
+		}
 	case 423:
 		cause = ErrLocked
 	case 403:
@@ -214,10 +220,15 @@ func (c *Client) Upload(ctx context.Context, session, mount, rootPath string, en
 	defer func() { snapshot.Close(); os.Remove(snapshot.Name()) }()
 	copied, err := snapshotFile(ctx, root, name, snapshot, entry.Size)
 	if err != nil {
+		if errors.Is(err, ErrLimit) {
+			// entry.Size was already accepted in the manifest; exceeding that
+			// snapshot size means the source grew, not a configured size limit.
+			return fmt.Errorf("%w: %s grew before upload", ErrSourceBusy, entry.Path)
+		}
 		return err
 	}
 	if copied.Digest != entry.Digest || copied.Size != entry.Size {
-		return ErrConflict
+		return fmt.Errorf("%w: %s changed before upload", ErrSourceBusy, entry.Path)
 	}
 	if _, err = snapshot.Seek(0, io.SeekStart); err != nil {
 		return err
@@ -256,11 +267,31 @@ type Syncer struct {
 	versions map[string]map[string]string
 }
 
-func (s *Syncer) Pull(ctx context.Context) error { return s.pull(ctx, false) }
+func (s *Syncer) Pull(ctx context.Context) error {
+	return retrySourceBusy(ctx, func() error { return s.pull(ctx, false) })
+}
 
 // PullReadOnly refreshes peer artifacts without replacing this execution's
 // writable files. Use after the initial Pull, while commands may be running.
-func (s *Syncer) PullReadOnly(ctx context.Context) error { return s.pull(ctx, true) }
+func (s *Syncer) PullReadOnly(ctx context.Context) error {
+	return retrySourceBusy(ctx, func() error { return s.pull(ctx, true) })
+}
+
+func retrySourceBusy(ctx context.Context, sync func() error) error {
+	for attempt := 0; ; attempt++ {
+		err := sync()
+		if !errors.Is(err, ErrSourceBusy) || attempt == 4 {
+			return err
+		}
+		timer := time.NewTimer(time.Duration(1<<attempt) * 100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
 
 func (s *Syncer) pull(ctx context.Context, readOnly bool) error {
 	s.mu.Lock()
@@ -324,6 +355,14 @@ func (s *Syncer) pull(ctx context.Context, readOnly bool) error {
 	return nil
 }
 func (s *Syncer) Push(ctx context.Context) error {
+	return retrySourceBusy(ctx, func() error { return s.push(ctx, false) })
+}
+
+// Checkpoint publishes stable files while commands may still be writing others.
+// A real remote version conflict is still fatal. Close always uses strict Push.
+func (s *Syncer) Checkpoint(ctx context.Context) error { return s.push(ctx, true) }
+
+func (s *Syncer) push(ctx context.Context, checkpoint bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.versions == nil {
@@ -337,7 +376,7 @@ func (s *Syncer) Push(ctx context.Context) error {
 		if root == "" {
 			return ErrPath
 		}
-		entries, e := NewStore().Manifest(ctx, Mount{Source: root})
+		entries, e := NewStore().manifest(ctx, Mount{Source: root}, checkpoint)
 		if e != nil {
 			return e
 		}
@@ -356,6 +395,9 @@ func (s *Syncer) Push(ctx context.Context) error {
 				old = Missing
 			}
 			if e = s.Client.Upload(ctx, s.Session, m.Name, root, entry, old); e != nil {
+				if checkpoint && (errors.Is(e, ErrSourceBusy) || errors.Is(e, fs.ErrNotExist)) {
+					continue // changed/deleted before upload; do not advance its version
+				}
 				return fmt.Errorf("publish %s: %w", entry.Path, e)
 			}
 			s.versions[m.Name][entry.Path] = entry.Digest

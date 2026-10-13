@@ -18,10 +18,12 @@ type runTrace struct {
 	input     string
 	at        time.Time
 	pending   bool
+	failed    bool
 }
 
 func (t *runTrace) start(id, name, input string) {
 	t.id, t.name, t.input, t.at, t.pending = id, name, input, time.Now(), true
+	t.failed = false
 }
 
 func (t *runTrace) done(id string) {
@@ -113,6 +115,8 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 	} else if tr.pending {
 		fmt.Fprintf(&b, "- **中断时正在执行的工具**: `%s`（已运行 %s，**未返回结果**）\n\n  ```json\n  %s\n  ```\n",
 			tr.name, roundDur(time.Since(tr.at)), firstLine(tr.input, 300))
+	} else if tr.failed {
+		fmt.Fprintf(&b, "- **中断前最后一个工具**: `%s`（返回错误；执行是否完成需核对记录）\n", tr.name)
 	} else {
 		fmt.Fprintf(&b, "- **中断前最后一个工具**: `%s`（已正常返回）\n", tr.name)
 	}

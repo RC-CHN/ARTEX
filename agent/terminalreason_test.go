@@ -26,6 +26,21 @@ func TestReasonHintCoversEveryTerminalReason(t *testing.T) {
 	}
 }
 
+func TestFailedToolResultIsNotReportedAsNormalReturn(t *testing.T) {
+	trace := &runTrace{}
+	trace.start("bash", "Bash", "test command")
+	trace.done("bash")
+	trace.failed = true
+	_, detail := terminalText(t.Context(), &harness.Terminal{Reason: harness.ReasonExecutionError}, trace)
+	if strings.Contains(detail, "已正常返回") || !strings.Contains(detail, "返回错误") {
+		t.Fatal("failed tool was reported as successful", detail)
+	}
+	trace.start("next", "Read", "next command")
+	if trace.failed {
+		t.Fatal("error leaked to the next tool")
+	}
+}
+
 func TestAbortCausePropagatesThroughRunContextChain(t *testing.T) {
 	type key struct{}
 	execCtx, cancelExec := context.WithCancelCause(context.Background())

@@ -521,9 +521,14 @@ func (n *Node) executeCommand(ctx context.Context, cmd runner.Command) runner.Re
 		if err != nil {
 			result.Error = err.Error()
 			result.UnknownOutcome = true
+			s.mu.Lock()
+			if s.syncErr != nil {
+				result.Error = "session file checkpoint failed: " + s.syncErr.Error()
+			}
+			s.mu.Unlock()
 			return result
 		}
-		if err = s.syncer.Push(s.ctx); err != nil {
+		if err = s.syncer.Checkpoint(s.ctx); err != nil && !errors.Is(err, runnerfiles.ErrSourceBusy) {
 			result.Error = "publish session files: " + err.Error()
 			result.UnknownOutcome = true
 			s.mu.Lock()
@@ -823,9 +828,14 @@ func (n *Node) checkpoints(ctx context.Context) {
 				noteCtx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
 				reply, e := sb.Request(noteCtx, SandboxRequest{Method: "notifications"})
 				cancel()
-				err := s.syncer.Push(s.ctx)
+				err := s.syncer.Checkpoint(s.ctx)
+				if errors.Is(err, runnerfiles.ErrSourceBusy) {
+					// A command is still writing; the next checkpoint/final Push
+					// retries synchronization without replaying any commands.
+					err = nil
+				}
 				if err != nil {
-					n.Log.Print("background file checkpoint failed; preserving local snapshot for recovery")
+					n.Log.Printf("session %s background file checkpoint failed: %v; preserving local snapshot for recovery", s.id, err)
 					s.mu.Lock()
 					first := s.syncErr == nil
 					s.syncErr = err

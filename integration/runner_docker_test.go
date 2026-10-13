@@ -136,6 +136,44 @@ func TestRunnerDockerExecutionAndIsolation(t *testing.T) {
 	a := newDockerSDK(t, ctx, sessions[0], "/app/data/task/i1")
 	b := newDockerSDK(t, ctx, sessions[1], "/app/data/task/i2")
 	t.Cleanup(func() { _ = a.session.Close(); _ = b.session.Close() })
+	// Reproduce live output files spanning several checkpoints. A changing
+	// source is deferred, not a reason to cancel the entire execution environment.
+	writer := `import pathlib,time
+p=pathlib.Path('changing.bin')
+end=time.monotonic()+7
+i=0
+while time.monotonic()<end:
+ p.write_bytes(bytes([i%256])*(256*1024))
+ i+=1
+ time.sleep(0.002)
+p.write_bytes(b'FINAL-STABLE-OUTPUT')
+pathlib.Path('writer-complete').write_text('done')`
+	writerStart := mustDockerCall(t, ctx, a, "Bash", map[string]any{"command": "python3 -c " + shellQuote(writer), "run_in_background": true})
+	writerTask := regexp.MustCompile(`task_[0-9]+`).FindString(writerStart.Flatten())
+	if writerTask == "" {
+		t.Fatalf("writer did not start: %s", writerStart.Flatten())
+	}
+	lastWriterOutput := ""
+	eventually(t, ctx, "live-file writer survives checkpoints", func() bool {
+		result, err := a.call(ctx, "Bash", map[string]any{"command": "if test -f writer-complete; then cat changing.bin; else printf pending; fi"})
+		if err != nil {
+			t.Fatalf("live-file checkpoint cancelled the environment: %v", err)
+		}
+		output := mustDockerCall(t, ctx, a, "TaskOutput", map[string]any{"task_id": writerTask}).Flatten()
+		if output != lastWriterOutput {
+			t.Logf("live writer: %s; observer: %s", output, result.Flatten())
+			lastWriterOutput = output
+		}
+		if strings.Contains(output, "| failed") {
+			memory := mustDockerCall(t, ctx, a, "Bash", map[string]any{"command": "cat /sys/fs/cgroup/memory.events"})
+			t.Fatalf("writer failed: %s; cgroup: %s", output, memory.Flatten())
+		}
+		return strings.Contains(result.Flatten(), "FINAL-STABLE-OUTPUT")
+	})
+	eventually(t, ctx, "stable final file is published", func() bool {
+		content, _ := os.ReadFile(filepath.Join(taskDir, "i1", "changing.bin"))
+		return string(content) == "FINAL-STABLE-OUTPUT"
+	})
 	containers := []string{containerFor(t, ctx, sessions[0].ID()), containerFor(t, ctx, sessions[1].ID())}
 	if containers[0] == containers[1] {
 		t.Fatal("two intent sessions share one container")

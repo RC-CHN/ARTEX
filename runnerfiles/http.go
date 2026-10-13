@@ -109,6 +109,9 @@ func Handler(store *Store, authorize Authorize, commit CommitGuard) http.Handler
 	return mux
 }
 func fileError(w http.ResponseWriter, e error) {
+	if errors.Is(e, ErrSourceBusy) {
+		w.Header().Set("X-ARTEX-File-Error", "source-busy")
+	}
 	status := http.StatusInternalServerError
 	switch {
 	case errors.Is(e, ErrConflict):

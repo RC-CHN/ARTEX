@@ -4,6 +4,7 @@ package runnerfiles
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"path"
 	"strings"
@@ -13,10 +14,13 @@ const Missing = "missing"
 
 var (
 	ErrConflict = errors.New("file changed since the downloaded version")
-	ErrLocked   = errors.New("file is leased by another execution")
-	ErrPath     = errors.New("invalid or unauthorized file path")
-	ErrDigest   = errors.New("file digest does not match")
-	ErrLimit    = errors.New("file exceeds configured transfer limit")
+	// SourceBusy means no conflicting publication happened: a source changed
+	// while being snapshotted. Retry file synchronization, never the tool command.
+	ErrSourceBusy = fmt.Errorf("source file is changing; retry synchronization: %w", ErrConflict)
+	ErrLocked     = errors.New("file is leased by another execution")
+	ErrPath       = errors.New("invalid or unauthorized file path")
+	ErrDigest     = errors.New("file digest does not match")
+	ErrLimit      = errors.New("file exceeds configured transfer limit")
 )
 
 // Source belongs to the controller; a runner must never interpret it as a host

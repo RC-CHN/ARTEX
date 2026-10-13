@@ -77,7 +77,7 @@ func openRegular(r *os.Root, p string) (*os.File, os.FileInfo, error) {
 	after, afterErr := r.Lstat(p)
 	if err != nil || afterErr != nil || !after.Mode().IsRegular() || !os.SameFile(before, opened) || !os.SameFile(opened, after) {
 		f.Close()
-		return nil, nil, ErrConflict
+		return nil, nil, ErrSourceBusy
 	}
 	// A regular file can still alias data outside this mount through a hard link.
 	// Root-based path traversal does not detect that boundary crossing.
