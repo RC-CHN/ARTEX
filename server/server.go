@@ -3,11 +3,14 @@ package server
 import (
 	"context"
 	"log"
+	"path/filepath"
 	"sync"
 
 	"github.com/RC-CHN/ARTEX/agent"
 	"github.com/RC-CHN/ARTEX/llmpool"
 	"github.com/RC-CHN/ARTEX/norma/llm"
+	"github.com/RC-CHN/ARTEX/runner"
+	"github.com/RC-CHN/ARTEX/runnerfiles"
 )
 
 // BuildVersion is the backend application version, injected from cmd/artex at
@@ -105,6 +108,11 @@ type Server struct {
 	archiveWake chan struct{}
 	archiveWG   sync.WaitGroup
 	side        *sideQuestionState
+	runnerMu    sync.RWMutex
+	runnerCfg   runnerConfig
+	runners     *runner.Hub
+	runnerErr   error
+	runnerFiles *runnerfiles.Store
 }
 
 // provEntry is a cached provider + its config for one LLM profile id.
@@ -128,6 +136,9 @@ type triggeredRun struct {
 
 func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDir string) *Server {
 	ctx, cancel := context.WithCancelCause(ctx)
+	if absolute, err := filepath.Abs(skillDir); err == nil {
+		skillDir = absolute
+	}
 	key, err := loadOrCreateJWTKey(keyDir, dataDir)
 	if err != nil {
 		log.Fatalf("[auth] JWT key: %v", err)
@@ -164,6 +175,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
 	// override row, agents keep their built-in defaults — behavior is unchanged.
 	if m.pg != nil {
+		s.initRunners()
 		agent.PromptOverride = func(key string) (string, bool) {
 			a, err := m.pg.GetAgentByKey(key)
 			if err != nil || a == nil {

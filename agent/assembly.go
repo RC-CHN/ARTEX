@@ -16,11 +16,12 @@ import (
 // UnlockSkill unlocks a named skill's MCPs — hosts call it to rebuild the unlock set
 // from history on a resumed session (design doc C2).
 type DeferredInfo struct {
-	FindingGuidance string            // derived from the final permitted tools, including DB overrides
-	Deferred        []string          // all MCP tool names (schema withheld)
-	GlobalNames     []string          // MCP names to list in the system-prompt block
-	Unlock          *actool.UnlockSet // shared call-gate; nil when no MCP tools
-	UnlockSkill     func(skillName string)
+	ExecutionGuidance string            // execution placement/file consistency, when remote
+	FindingGuidance   string            // derived from the final permitted tools, including DB overrides
+	Deferred          []string          // all MCP tool names (schema withheld)
+	GlobalNames       []string          // MCP names to list in the system-prompt block
+	Unlock            *actool.UnlockSet // shared call-gate; nil when no MCP tools
+	UnlockSkill       func(skillName string)
 }
 
 // ToolAugment, if set, returns the EXTRA tools an agent should see beyond its
@@ -75,6 +76,10 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 func guardPanic(t actool.CoreTool) actool.CoreTool { return &guardedTool{CoreTool: t} }
 
 type guardedTool struct{ actool.CoreTool }
+
+func (g *guardedTool) WithExecutionRuntime(runtime actool.ExecutionRuntime) actool.CoreTool {
+	return &guardedTool{CoreTool: actool.BindExecutionRuntime([]actool.CoreTool{g.CoreTool}, runtime)[0]}
+}
 
 func (g *guardedTool) Call(ctx context.Context, in json.RawMessage, tc *actool.ToolContext) (res actool.Result, err error) {
 	defer func() {

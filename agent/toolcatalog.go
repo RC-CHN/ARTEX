@@ -132,6 +132,12 @@ type overriddenTool struct {
 func (o *overriddenTool) Description() string         { return o.desc }
 func (o *overriddenTool) InputSchema() map[string]any { return o.schema }
 
+func (o *overriddenTool) WithExecutionRuntime(runtime actool.ExecutionRuntime) actool.CoreTool {
+	copy := *o
+	copy.CoreTool = actool.BindExecutionRuntime([]actool.CoreTool{o.CoreTool}, runtime)[0]
+	return &copy
+}
+
 func (o *overriddenTool) Call(ctx context.Context, in json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
 	return o.CoreTool.Call(ctx, injectDefaults(in, o.schema), tc)
 }

@@ -32,6 +32,11 @@ func (s *Server) Close() {
 		if s.engine != nil {
 			s.engine.Close()
 		}
+		s.runnerMu.Lock()
+		if s.runners != nil {
+			_ = s.runners.Close()
+		}
+		s.runnerMu.Unlock()
 		s.backgroundWG.Wait()
 		s.archiveWG.Wait()
 		if s.logDone != nil {

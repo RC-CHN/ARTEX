@@ -266,6 +266,11 @@ func (s *Server) buildCustomTool(t *db.Tool) actool.CoreTool {
 	schema := ensureSchema(t.Schema)
 	key, kind, execRaw := t.Key, t.Kind, t.Exec
 	run := func(ctx context.Context, in json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
+		// A tool added after this execution's allowlist was frozen must never
+		// escape to the controller through a freshly assembled local closure.
+		if rt, ok := ctx.Value(remoteExecutionKey{}).(*remoteExecution); ok {
+			return rt.Call(ctx, key, in, tc)
+		}
 		var params map[string]any
 		if len(in) > 0 {
 			_ = json.Unmarshal(in, &params)

@@ -23,10 +23,17 @@ func (s *Server) Handler() http.Handler {
 	s.registerResourceRoutes(mux)
 	s.registerWorkspaceRoutes(mux)
 	s.registerInterceptRoutes(mux)
+	mux.HandleFunc("GET /api/runners", s.getRunners)
+	mux.HandleFunc("PUT /api/runners/config", s.saveRunnerConfig)
+	mux.HandleFunc("POST /api/runners/registration-token", s.runnerRegistration)
+	mux.HandleFunc("PUT /api/runners/{id}/enabled", s.setRunnerEnabled)
+	mux.HandleFunc("PUT /api/runners/{id}/concurrency", s.setRunnerConcurrency)
+	mux.HandleFunc("PUT /api/runners/{id}/limits", s.setRunnerLimits)
 
 	api := cors(s.requireAuth(mux))
 	root := http.NewServeMux()
 	root.Handle("/api/", api)
+	root.Handle("/runner/v1/", s.runnerProtocolHandler())
 	root.Handle("/", s.webuiHandler())
 	return root
 }

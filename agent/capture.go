@@ -2,16 +2,18 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/RC-CHN/ARTEX/db"
 	"github.com/RC-CHN/ARTEX/intercept"
-	"github.com/RC-CHN/ARTEX/sidequestion"
 	"github.com/RC-CHN/ARTEX/norma/agentcore"
 	"github.com/RC-CHN/ARTEX/norma/harness"
 	"github.com/RC-CHN/ARTEX/norma/llm"
+	"github.com/RC-CHN/ARTEX/sidequestion"
 )
 
 // captureRun drives one agent turn-to-completion over Session.Prompt and emits a
@@ -28,7 +30,24 @@ import (
 func captureRun(ctx context.Context, opts agentcore.Options, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
 	s := agentcore.NewSession(opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)
-	return captureRunSession(ctx, s, input, emit)
+	return captureFinalSession(ctx, s, input, emit)
+}
+
+// captureFinalSession includes publishing the runtime's final artifacts in the
+// run outcome. A successful model response is not enough if closing the runtime
+// cannot confirm that those artifacts were saved. Keep the original error too,
+// especially cancellation, while preventing model-error retry of this run.
+func captureFinalSession(ctx context.Context, s *agentcore.Session, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+	text, reason, err := captureRunSession(ctx, s, input, emit)
+	if closeErr := s.Close(); closeErr != nil {
+		closeErr = fmt.Errorf("close execution environment: %w", closeErr)
+		err = errors.Join(err, closeErr)
+		reason = harness.ReasonExecutionError
+		if emit != nil {
+			emit(db.Activity{Kind: "result", IsError: true, Summary: "执行环境收尾失败: " + closeErr.Error(), Detail: closeErr.Error()})
+		}
+	}
+	return text, reason, err
 }
 
 // captureRunSession is captureRun over an existing session, so a caller can run

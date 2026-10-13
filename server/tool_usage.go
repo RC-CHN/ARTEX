@@ -33,6 +33,12 @@ func meterTool(t actool.CoreTool, recorder toolUsageRecorder, toolKey, agentKey 
 	return &meteredTool{CoreTool: t, recorder: recorder, toolKey: toolKey, agentKey: agentKey, ri: ri}
 }
 
+func (m *meteredTool) WithExecutionRuntime(runtime actool.ExecutionRuntime) actool.CoreTool {
+	copy := *m
+	copy.CoreTool = actool.BindExecutionRuntime([]actool.CoreTool{m.CoreTool}, runtime)[0]
+	return &copy
+}
+
 func (m *meteredTool) Call(ctx context.Context, input json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
 	if err := m.recorder.InsertToolUsage(&db.ToolUsage{
 		ToolKey:       m.toolKey,

@@ -1384,3 +1384,10 @@ CREATE INDEX IF NOT EXISTS idx_notification_deliveries_batch
     ON notification_deliveries(batch_id) WHERE batch_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_channel
     ON notification_deliveries(channel_id, id DESC);
+-- Experimental remote runners. Disabled by default; credentials are hashed by
+-- the broker, and revision CAS fences superseded controller instances.
+CREATE TABLE IF NOT EXISTS runner_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    revision BIGINT NOT NULL CHECK (revision > 0),
+    payload JSONB NOT NULL
+);

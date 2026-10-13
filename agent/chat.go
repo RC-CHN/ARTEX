@@ -120,11 +120,17 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	// have no tools-table rows, so they always pass through.
 	base := actool.DefaultTools()
 	ctx = WithRunInfo(ctx, RunInfo{SessionID: sessionID})
+	ctx, runtime, releaseExecution, err := prepareExecution(ctx, agentKey, sessionWorkDir)
+	if err != nil {
+		return "", err
+	}
+	defer releaseExecution()
 	tools, def, cleanup := AugmentTools(ctx, agentKey, base)
 	defer cleanup()
 
 	system, boundary := deferredSystem(chatSystem(agentKey, c.workDir, sessionWorkDir), def)
 	opts := agentcore.Options{
+		Runtime:         runtime,
 		Provider:        c.prov,
 		SystemPrompt:    system,
 		DynamicBoundary: boundary,
@@ -180,7 +186,7 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 	// re-unlock skill-gated MCPs from prior Skill() calls in the reloaded history so
 	// revealed tools stay callable across the fresh session.
 	seedUnlockFromHistory(s.Messages(), def.UnlockSkill)
-	text, _, err := captureRunSession(ctx, s, message, func(r db.Activity) {
+	text, _, err := captureFinalSession(ctx, s, message, func(r db.Activity) {
 		if emit != nil {
 			r.Worker = agentKey
 			emit(r)

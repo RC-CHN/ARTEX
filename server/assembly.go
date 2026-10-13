@@ -10,9 +10,10 @@ import (
 
 	"github.com/RC-CHN/ARTEX/agent"
 	"github.com/RC-CHN/ARTEX/db"
-	"github.com/RC-CHN/ARTEX/traffic"
 	"github.com/RC-CHN/ARTEX/norma/skill"
 	actool "github.com/RC-CHN/ARTEX/norma/tool"
+	"github.com/RC-CHN/ARTEX/runnerfiles"
+	"github.com/RC-CHN/ARTEX/traffic"
 )
 
 // wireAgentAugment connects the PG agent_visibility table into the agent runtime:
@@ -83,7 +84,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				if !directVisible && !skillGated {
 					continue // neither directly visible nor referenced by a visible skill
 				}
-				cl, err := connectMCP(ctx, m)
+				cl, err := connectAgentMCP(ctx, m)
 				if err != nil {
 					log.Printf("[mcp] %s 连接失败: %v", m.Name, err)
 					continue
@@ -174,6 +175,17 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			GlobalNames: globalNames,
 			Unlock:      unlock,
 			UnlockSkill: unlockSkill,
+		}
+		if rt, ok := ctx.Value(remoteExecutionKey{}).(*remoteExecution); ok {
+			def.ExecutionGuidance = "\n\n本线程的执行工具在独立远程沙箱中运行。文件路径保持一致；自己的工作目录可写，同任务其他线程的产物只读并在工具调用间刷新，共享目录写入有版本冲突检测。不要用文件锁协调跨机器任务，使用平台事实/图谱通信。需要GPU等能力时先list_runners并在add_intent声明runner需求。代理以本次执行环境自动注入的环境变量为准，提示中控制端localhost地址不可直接使用。当前环境：" + rt.spec.Environment + "；节点：" + rt.NodeID()
+			var plan runnerfiles.Plan
+			if json.Unmarshal(rt.spec.Files, &plan) == nil {
+				for _, mount := range plan.Mounts {
+					if mount.Name == "published" {
+						def.ExecutionGuidance += "。同任务最新已发布产物的只读目录：" + mount.Target + "（含 shared/ 和各 i<id>/，每次工具调用前刷新）。读取其他线程的新结果请使用此目录；原可写目录是本线程快照，不会被下载覆盖。写入仍使用原工作目录及任务 shared/。"
+					}
+				}
+			}
 		}
 		return extra, def, cleanup
 	}

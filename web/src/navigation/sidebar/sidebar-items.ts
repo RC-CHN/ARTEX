@@ -15,6 +15,7 @@ import {
   Plug,
   Radio,
   ScrollText,
+  Server,
   Settings2,
   ShieldAlert,
   Sparkles,
@@ -84,6 +85,7 @@ export const sidebarItems: NavGroup[] = [
     items: [
       { id: "llm", title: "LLM", url: "/system/llm", icon: Brain },
       { id: "agents", title: "Agent", url: "/system/agents", icon: Bot },
+      { id: "runners", title: "Runner", url: "/system/runners", icon: Server },
       { id: "mcp", title: "MCP", url: "/system/mcp", icon: Plug },
       { id: "skills", title: "Skill", url: "/system/skills", icon: Sparkles },
       { id: "tools", title: "工具", url: "/system/tools", icon: Wrench },
