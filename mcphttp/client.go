@@ -130,7 +130,10 @@ func NewSSE(ctx context.Context, server, sseURL string, headers map[string]strin
 	if insecure {
 		hc.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
-	streamCtx, cancel := context.WithCancel(context.Background())
+	// The initial GET and endpoint event are part of initialization too. A
+	// caller that cancels a partially opened session must not leave this stream
+	// or a goroutine blocked before Client exists and can be closed.
+	streamCtx, cancel := context.WithCancel(ctx)
 	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, sseURL, nil)
 	if err != nil {
 		cancel()
@@ -374,7 +377,9 @@ func (c *Client) Close() error {
 	if sid == "" {
 		return nil
 	}
-	req, err := http.NewRequest(http.MethodDelete, c.url, nil)
+	closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(closeCtx, http.MethodDelete, c.url, nil)
 	if err != nil {
 		return nil
 	}

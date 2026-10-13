@@ -39,6 +39,7 @@ const (
 	ReasonBlockingLimit     TerminalReason = "blocking_limit"      // hard context limit hit pre-request
 	ReasonImageError        TerminalReason = "image_error"         // unsupported media (multimodal)
 	ReasonModelError        TerminalReason = "model_error"         // provider/API failure
+	ReasonExecutionError    TerminalReason = "execution_error"     // runtime outcome unsafe to retry
 	ReasonAbortedStreaming  TerminalReason = "aborted_streaming"   // canceled during streaming
 	ReasonAbortedTools      TerminalReason = "aborted_tools"       // canceled during tool execution
 	ReasonPromptTooLong     TerminalReason = "prompt_too_long"     // overflow recovery exhausted

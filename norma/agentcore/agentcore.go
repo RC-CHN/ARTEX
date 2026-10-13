@@ -10,6 +10,7 @@ import (
 	"errors"
 	"iter"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RC-CHN/ARTEX/norma/compaction"
@@ -38,6 +39,11 @@ type Options struct {
 
 	// Tools the agent may call. Defaults to tool.DefaultTools().
 	Tools []tool.CoreTool
+
+	// Runtime optionally moves execution tools into a separate environment while
+	// the model loop, domain tools, permission checks and hooks stay on the host.
+	// A session owns its runtime and closes it on Close. Nil keeps local execution.
+	Runtime tool.ExecutionRuntime
 
 	// DeferredTools names tools whose schemas are withheld from the model (only
 	// their names surface, e.g. via tool.RenderDeferredToolsBlock placed in the
@@ -240,14 +246,22 @@ type Session struct {
 	store     *transcript.Store
 	writer    *transcript.Writer
 	tasks     *tool.Manager
+	closeOnce sync.Once
+	closeErr  error
 	unlock    *tool.UnlockSet // deferred-tool call gate (nil when no deferred tools)
 }
 
 // NewSession builds a Session, applying defaults.
 func NewSession(opts Options) *Session {
-	tools := opts.Tools
-	if tools == nil {
+	tools := append([]tool.CoreTool(nil), opts.Tools...)
+	if opts.Tools == nil {
 		tools = tool.DefaultTools()
+	}
+	if opts.Runtime != nil {
+		// Local spill paths cannot be read by remote file tools. The runtime may
+		// capture output into its own artifact store before returning; otherwise
+		// the harness applies its normal bounded head/tail truncation.
+		opts.ToolOutputDir = ""
 	}
 	if opts.PermissionMode == "" {
 		opts.PermissionMode = permission.ModeDefault
@@ -307,11 +321,14 @@ func NewSession(opts Options) *Session {
 	// control it. Disabled by the global AGENT_CORE_DISABLE_BACKGROUND_TASKS env var
 	// or by setting Options.DisableBackgroundTasks for this session only.
 	if !tool.BackgroundTasksDisabled() && !opts.DisableBackgroundTasks {
-		if mgr, err := tool.NewManager(s.sessionID); err == nil {
+		if opts.Runtime != nil {
+			tools = append(tools, tool.NewTaskOutput(), tool.NewTaskStop(), tool.NewTaskList(), tool.NewMonitor())
+		} else if mgr, err := tool.NewManager(s.sessionID); err == nil {
 			s.tasks = mgr
 			tools = append(tools, tool.NewTaskOutput(), tool.NewTaskStop(), tool.NewTaskList(), tool.NewMonitor())
 		}
 	}
+	tools = tool.BindExecutionRuntime(tools, opts.Runtime)
 	s.registry = tool.NewRegistry(tools...)
 	// Deferred tools: withhold their schemas (harness filters by opts.DeferredTools)
 	// but keep them callable via the two always-loaded access tools. Both close over
@@ -335,9 +352,23 @@ func NewSession(opts Options) *Session {
 // their temporary output directory. Safe to call multiple times. Hosts running a
 // long-lived Session should defer Close; Run does so automatically.
 func (s *Session) Close() error {
+	s.closeOnce.Do(func() {
+		if s.tasks != nil {
+			s.tasks.Cleanup()
+		}
+		if s.opts.Runtime != nil {
+			s.closeErr = s.opts.Runtime.Close()
+		}
+	})
+	return s.closeErr
+}
+
+func (s *Session) notifications() tool.NotificationSource {
+	if s.opts.Runtime != nil {
+		return s.opts.Runtime
+	}
 	if s.tasks != nil {
-		s.tasks.Cleanup()
-		s.tasks = nil
+		return s.tasks
 	}
 	return nil
 }
@@ -456,8 +487,8 @@ func (s *Session) Prompt(ctx context.Context, input string) iter.Seq2[harness.Ev
 	}
 	// Surface any background-task completions that landed since the previous turn
 	// returned, before the new user message.
-	if s.tasks != nil {
-		if notes := s.tasks.DrainNotifications(); len(notes) > 0 {
+	if source := s.notifications(); source != nil {
+		if notes := source.DrainNotifications(); len(notes) > 0 {
 			var b strings.Builder
 			for i, n := range notes {
 				if i > 0 {
@@ -501,6 +532,7 @@ func (s *Session) Prompt(ctx context.Context, input string) iter.Seq2[harness.Ev
 		ToolOutputDir:      s.opts.ToolOutputDir,
 		MaxToolOutputChars: s.opts.MaxToolOutputChars,
 		Tasks:              s.tasks,
+		Notifications:      s.notifications(),
 		BashEnv:            s.opts.BashEnv,
 		PermissionMode:     s.opts.PermissionMode,
 		Allowed:            s.opts.AllowedTools,
@@ -534,11 +566,13 @@ func (s *Session) Prompt(ctx context.Context, input string) iter.Seq2[harness.Ev
 
 // Run is a one-shot convenience: it creates a Session, runs a single prompt to
 // completion, and returns the assistant's final text (FR-07.4).
-func Run(ctx context.Context, opts Options, input string) (string, error) {
+func Run(ctx context.Context, opts Options, input string) (text string, rerr error) {
 	s := NewSession(opts)
-	defer s.Close()
-	var text string
-	var rerr error
+	defer func() {
+		if closeErr := s.Close(); closeErr != nil {
+			rerr = errors.Join(rerr, closeErr)
+		}
+	}()
 	for ev, err := range s.Prompt(ctx, input) {
 		if err != nil {
 			return "", err

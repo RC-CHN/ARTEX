@@ -41,7 +41,7 @@ func execWith(t *testing.T, ct tool.CoreTool, input string) llm.ContentBlock {
 		Tools:          tool.NewRegistry(ct),
 		PermissionMode: permission.ModeBypass,
 	}}
-	res, _ := l.execOne(llm.ContentBlock{
+	res, _ := l.execOne(l.ctx, llm.ContentBlock{
 		Type: llm.BlockToolUse, ID: "toolu_1", Name: ct.Name(), Input: json.RawMessage(input),
 	}, nil)
 	return res

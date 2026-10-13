@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"context"
 	"sync"
 
 	"github.com/RC-CHN/ARTEX/norma/llm"
@@ -15,6 +16,7 @@ import (
 // arrival order; progress is yielded as soon as it arrives.
 type streamExec struct {
 	l      *loop
+	ctx    context.Context // fixed for this turn; settlement may replace loop.toolCtx
 	mu     sync.Mutex
 	tools  []*tracked
 	notify chan struct{} // pinged when a tool completes or emits progress
@@ -39,7 +41,7 @@ type tracked struct {
 }
 
 func newStreamExec(l *loop) *streamExec {
-	return &streamExec{l: l, notify: make(chan struct{}, 1)}
+	return &streamExec{l: l, ctx: l.toolCtx, notify: make(chan struct{}, 1)}
 }
 
 func (e *streamExec) ping() {
@@ -75,6 +77,10 @@ func (e *streamExec) canStartLocked(safe bool) bool {
 // tool that cannot start blocks the tools behind it.
 func (e *streamExec) processQueue() {
 	e.mu.Lock()
+	if e.ctx.Err() != nil {
+		e.mu.Unlock()
+		return
+	}
 	var start []*tracked
 	for _, t := range e.tools {
 		if t.status != stQueued {
@@ -96,7 +102,15 @@ func (e *streamExec) processQueue() {
 func (e *streamExec) run(t *tracked) {
 	e.l.sem <- struct{}{} // bound concurrent tool execution
 	defer func() { <-e.l.sem }()
-	res, extra := e.l.execOne(t.block, func(p tool.ProgressInfo) {
+	if e.ctx.Err() != nil {
+		e.mu.Lock()
+		t.result = llm.ToolResultText(t.block.ID, "tool execution interrupted", true)
+		t.status = stCompleted
+		e.mu.Unlock()
+		e.ping()
+		return
+	}
+	res, extra := e.l.execOne(e.ctx, t.block, func(p tool.ProgressInfo) {
 		e.mu.Lock()
 		t.prog = append(t.prog, p.Message)
 		e.mu.Unlock()
@@ -167,7 +181,7 @@ func (e *streamExec) finish() (consumerStopped, aborted bool) {
 		// run's own MaxDuration deadline firing on an in-flight tool. Either way we
 		// synthesize interrupted results and report aborted; the turn loop then decides
 		// (parent-cancel → abort, budget-only → wrap-up) via ctx vs toolCtx.
-		if e.l.toolCtx.Err() != nil {
+		if e.ctx.Err() != nil {
 			return !e.drainSynthetic("tool execution interrupted"), true
 		}
 		if !e.pending() {
@@ -178,7 +192,7 @@ func (e *streamExec) finish() (consumerStopped, aborted bool) {
 		}
 		select {
 		case <-e.notify:
-		case <-e.l.toolCtx.Done():
+		case <-e.ctx.Done():
 		}
 	}
 }

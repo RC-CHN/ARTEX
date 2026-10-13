@@ -55,6 +55,9 @@ type QueryInput struct {
 	// The loop drains its completion notifications into the conversation between
 	// tool turns so the model learns when background work finishes.
 	Tasks *tool.Manager
+	// Notifications replaces the local manager's completion source when tools
+	// execute in a host-provided runtime. Tasks remains for local tool execution.
+	Notifications tool.NotificationSource
 
 	// Todos, when non-nil, enables todo system-reminders: when the model hasn't
 	// used TodoWrite for TodoReminderTurnsSinceWrite turns (and it's been at least
@@ -205,7 +208,9 @@ func Query(ctx context.Context, in QueryInput, deps QueryDeps) iter.Seq2[Event, 
 		conc = 10
 	}
 	return func(yield func(Event, error) bool) {
-		l := &loop{ctx: ctx, in: in, deps: deps, yield: yield, sem: make(chan struct{}, conc)}
+		runCtx, cancel := context.WithCancelCause(ctx)
+		defer cancel(nil)
+		l := &loop{ctx: runCtx, cancelRun: cancel, in: in, deps: deps, yield: yield, sem: make(chan struct{}, conc)}
 		l.messages = append([]llm.Message(nil), in.Messages...)
 		l.run()
 	}
@@ -219,7 +224,8 @@ type budgetTracker struct {
 }
 
 type loop struct {
-	ctx context.Context
+	ctx       context.Context
+	cancelRun context.CancelCauseFunc
 	// toolCtx bounds tool execution with the run's MaxDuration deadline, so a tool
 	// that overruns the wall-clock budget is interrupted mid-flight (the model call
 	// stays on ctx — streams are never cut mid-flight). Derived from ctx, so a parent
@@ -276,10 +282,14 @@ func (l *loop) record(m llm.Message, u llm.Usage) {
 // manager and appends them to the conversation as a user message, so the model is
 // told when background work finishes. Returns true if any were injected.
 func (l *loop) injectTaskNotifications() bool {
-	if l.in.Tasks == nil {
+	source := l.in.Notifications
+	if source == nil && l.in.Tasks != nil {
+		source = l.in.Tasks
+	}
+	if source == nil {
 		return false
 	}
-	notes := l.in.Tasks.DrainNotifications()
+	notes := source.DrainNotifications()
 	if len(notes) == 0 {
 		return false
 	}
@@ -388,6 +398,10 @@ func (l *loop) run() {
 	}
 	iterations := 0
 	for {
+		if cause := context.Cause(l.ctx); tool.IsFatalExecution(cause) {
+			l.finish(ReasonExecutionError, cause, "")
+			return
+		}
 		if l.ctx.Err() != nil {
 			l.finish(ReasonAbortedStreaming, l.ctx.Err(), "")
 			return
@@ -410,6 +424,19 @@ func (l *loop) run() {
 		usageBefore := l.usage
 		asst, exec, stopReason, streamErr, consumerStopped, aborted := l.streamAndExecute(schemas)
 		if consumerStopped {
+			return
+		}
+		if cause := context.Cause(l.ctx); tool.IsFatalExecution(cause) {
+			// Preserve the attempted call and its error result in the transcript;
+			// resuming this intent must not look like the call never happened.
+			l.messages = append(l.messages, asst)
+			l.record(asst, usageDelta(usageBefore, l.usage))
+			if exec != nil && exec.count() > 0 {
+				result := llm.Message{Role: llm.RoleUser, Content: exec.results()}
+				l.messages = append(l.messages, result)
+				l.record(result, llm.Usage{})
+			}
+			l.finish(ReasonExecutionError, cause, "")
 			return
 		}
 		if streamErr != nil {
