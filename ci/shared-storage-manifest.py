@@ -24,7 +24,7 @@ def manifest(pv, namespace):
         csi = spec["csi"]
         if csi["driver"] != "nfs.csi.k8s.io":
             raise ValueError("only explicit NFS sources are supported")
-        attrs = csi["volumeAttributes"]
+        attrs = {key.lower(): value for key, value in csi["volumeAttributes"].items()}
         server = attrs["server"]
         subdir = attrs.get("subdir", "")
         if subdir.startswith("/") or ".." in subdir.split("/"):
@@ -38,7 +38,13 @@ def manifest(pv, namespace):
         volume = namespace + "-" + name
         items.append({"apiVersion": "v1", "kind": "PersistentVolume", "metadata": {"name": volume, "labels": {"app.kubernetes.io/part-of": "artex-shared-storage"}}, "spec": {
             "capacity": spec["capacity"], "accessModes": ["ReadWriteMany"], "persistentVolumeReclaimPolicy": "Retain", "storageClassName": "", "mountOptions": spec.get("mountOptions", ["nfsvers=4.2"]),
-            "claimRef": {"namespace": namespace, "name": name}, "nfs": {"server": server, "path": posixpath.join(base, scope)},
+            "claimRef": {"namespace": namespace, "name": name},
+            # Use the installed CSI node plugin's mount helper. An in-tree NFS
+            # volume requires mount.nfs on every host, which CSI-only clusters
+            # need not provide. Attributes point at the existing subtree;
+            # static Retain volumes neither provision nor delete task data.
+            "csi": {"driver": "nfs.csi.k8s.io", "volumeHandle": volume,
+                    "volumeAttributes": {"server": server, "share": posixpath.join(base, scope), "mountPermissions": "0"}},
         }})
         items.append({"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"namespace": namespace, "name": name}, "spec": {
             "accessModes": ["ReadWriteMany"], "storageClassName": "", "volumeName": volume, "resources": {"requests": spec["capacity"]},

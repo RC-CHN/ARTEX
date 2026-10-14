@@ -239,7 +239,7 @@ CI 已包含主模块回归、Runner 与 SDK 关键模块竞态检查，以及�
 }
 ```
 
-可用 `kubectl get pv <controller-pv> -o json | python3 ci/shared-storage-manifest.py artex-runners` 生成指向已有 NFS 子目录的静态别名，审阅后 apply；脚本仅处理存储元数据。
+可用 `kubectl get pv <controller-pv> -o json | python3 ci/shared-storage-manifest.py artex-runners` 生成指向已有 NFS 子目录的静态 CSI 别名，审阅后 apply；脚本仅处理存储元数据，要求集群已安装 `nfs.csi.k8s.io`，无需每个节点另装 NFS 挂载程序。
 
 每个映射的 `path` 必须是管理器挂载的 PVC/sub_path，且与 controller 的 `source` 指向相同数据。PVC 必须存在于执行 Pod 的命名空间；跨命名空间的 NFS 部署可为指定子目录创建静态 PV/PVC 别名，使用 `Retain`，不要创建新目录冒充已有数据。管理器仅挂载所需数据子树；数据库、JWT、配置凭据及整块 controller 数据根目录不应暴露。额外 inputs 也必须有映射；缺失映射、路径穿越、符号链接挂载、只读越权均会失败。共享能力由新管理器自动上报，旧节点不会被选择；共享文件 API 拒绝快照读写，避免旧节点静默退化。
 
