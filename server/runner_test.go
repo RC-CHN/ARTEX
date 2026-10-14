@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -381,5 +382,15 @@ func TestRunnerPlacementPersistsAndScopesRequirements(t *testing.T) {
 	}
 	if strings.Contains(spec.ThreadID, "work#") {
 		t.Fatal("thread identity used a recyclable worker slot")
+	}
+	env.FileMode = runnerfiles.SharedMode
+	cfg.Environments["gpu"] = env
+	shared, _, err := s.runnerSpec(context.Background(), cfg, "worker", agent.RunInfo{TaskID: numericID, IntentID: id}, filepath.Join(m.dir, "tasks", task.ID, "i1"))
+	var plan runnerfiles.Plan
+	if err != nil || json.Unmarshal(shared.Files, &plan) != nil || plan.Mode != runnerfiles.SharedMode || shared.Labels[runnerfiles.SharedCapability] != "v1" {
+		t.Fatalf("shared plan lost mode or required node capability: %v", err)
+	}
+	if plan.Mounts[0].Writable[0] != fmt.Sprintf("i%d", id) {
+		t.Fatal("shared mode broadened writable scope")
 	}
 }

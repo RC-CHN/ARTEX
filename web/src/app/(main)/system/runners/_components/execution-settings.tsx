@@ -318,6 +318,21 @@ export function ExecutionSettings({
               </div>
               {editable ? (
                 <>
+                  <div className="space-y-2">
+                    <Label htmlFor="runner-file-mode">文件访问方式</Label>
+                    <Select value={env.file_mode || "snapshot"} onValueChange={(value) => patchEnvironment({ file_mode: value as "snapshot" | "shared" })}>
+                      <SelectTrigger id="runner-file-mode"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="snapshot">文件快照（外部 Runner）</SelectItem>
+                        <SelectItem value="shared">共享存储（集群内）</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-muted-foreground text-xs leading-relaxed">
+                      共享存储直接访问任务文件，启动无需复制历史目录；每次执行仍有独立进程、HOME 和临时目录。
+                      启用前须完成存储映射与权限配置，并结束旧的快照执行。共享文件写入立即可见，协作产物请通过临时文件加原子重命名发布。
+                      快照每次准备最多 10,000 个文件、1 GiB，超限会明确失败。
+                    </p>
+                  </div>
                   <div className="space-y-2 rounded-lg bg-muted/40 p-3">
                     <Label htmlFor="runner-warm-idle">Kubernetes 预热 Pod 上限</Label>
                     <Input

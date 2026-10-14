@@ -1,5 +1,6 @@
 export type Mode = "local" | "remote";
 export type RunnerEnvironment = {
+  file_mode?: "snapshot" | "shared";
   warm_idle?: number;
   image: string;
   environment_prompt?: string;

@@ -27,15 +27,18 @@ type fileLease struct {
 // see complete files; compare-and-swap prevents lost updates between runners.
 // A single controller owns the workspace (matching ARTEX's existing architecture).
 type Store struct {
-	locks    [127]sync.Mutex
-	mu       sync.Mutex
-	leases   map[string]fileLease
-	MaxBytes int64
-	Now      func() time.Time
+	locks         [127]sync.Mutex
+	mu            sync.Mutex
+	leases        map[string]fileLease
+	MaxBytes      int64
+	MaxFiles      int
+	MaxTotalBytes int64
+	MaxEntries    int
+	Now           func() time.Time
 }
 
 func NewStore() *Store {
-	return &Store{leases: map[string]fileLease{}, MaxBytes: 8 << 30, Now: time.Now}
+	return &Store{leases: map[string]fileLease{}, MaxBytes: MaxSnapshotBytes, MaxFiles: MaxSnapshotFiles, MaxTotalBytes: MaxSnapshotBytes, MaxEntries: MaxSnapshotEntries, Now: time.Now}
 }
 func (s *Store) key(m Mount, p string) string { return filepath.Clean(m.Source) + "/" + p }
 func (s *Store) lock(key string) func() {
@@ -153,57 +156,77 @@ func (s *Store) manifest(ctx context.Context, m Mount, checkpoint bool) ([]Entry
 	}
 	defer r.Close()
 	out := []Entry{}
+	var total int64
+	visited := 0
 	var walk func(*os.Root, string) error
 	walk = func(dir *os.Root, prefix string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		entries, err := fs.ReadDir(dir.FS(), ".")
+		if strings.Count(prefix, "/") >= 64 {
+			return ErrLimit
+		}
+		listing, err := dir.Open(".")
 		if err != nil {
 			return err
 		}
-		for _, d := range entries {
-			if err := ctx.Err(); err != nil {
+		defer listing.Close()
+		for {
+			entries, err := listing.ReadDir(128)
+			if err != nil && err != io.EOF {
 				return err
 			}
-			if strings.HasPrefix(d.Name(), ".artex-transfer-") {
-				continue
+			if len(entries) == 0 {
+				break
 			}
-			p := path.Join(prefix, d.Name())
-			if !validPath(p) {
-				return ErrPath
-			}
-			if d.IsDir() {
-				child, err := openDirectory(dir, d.Name(), false)
-				if err != nil {
+			for _, d := range entries {
+				if err := ctx.Err(); err != nil {
 					return err
 				}
-				err = walk(child, p)
-				child.Close()
-				if err != nil {
-					return err
+				visited++
+				if visited > s.MaxEntries {
+					return ErrLimit
 				}
-				continue
-			}
-			if !d.Type().IsRegular() {
-				return fmt.Errorf("%w: %s (only regular files can be synchronized)", ErrPath, p)
-			}
-			unlock := s.lock(s.key(m, p))
-			entry, err := digestFileContext(ctx, dir, d.Name(), s.MaxBytes)
-			unlock()
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			if checkpoint && errors.Is(err, ErrSourceBusy) {
-				continue // a later checkpoint or the mandatory final push captures it
-			}
-			if err != nil {
-				return fmt.Errorf("snapshot %s: %w", p, err)
-			}
-			entry.Path = p
-			out = append(out, entry)
-			if len(out) > 100000 {
-				return ErrLimit
+				if strings.HasPrefix(d.Name(), ".artex-transfer-") {
+					continue
+				}
+				p := path.Join(prefix, d.Name())
+				if !validPath(p) {
+					return ErrPath
+				}
+				if d.IsDir() {
+					child, err := openDirectory(dir, d.Name(), false)
+					if err != nil {
+						return err
+					}
+					err = walk(child, p)
+					child.Close()
+					if err != nil {
+						return err
+					}
+					continue
+				}
+				if !d.Type().IsRegular() {
+					return fmt.Errorf("%w: %s (only regular files can be synchronized)", ErrPath, p)
+				}
+				if len(out) >= s.MaxFiles {
+					return ErrLimit
+				}
+				unlock := s.lock(s.key(m, p))
+				entry, err := digestFileContext(ctx, dir, d.Name(), min(s.MaxBytes, s.MaxTotalBytes-total))
+				unlock()
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+				if checkpoint && errors.Is(err, ErrSourceBusy) {
+					continue // a later checkpoint or the mandatory final push captures it
+				}
+				if err != nil {
+					return fmt.Errorf("snapshot %s: %w", p, err)
+				}
+				entry.Path = p
+				total += entry.Size
+				out = append(out, entry)
 			}
 		}
 		return nil

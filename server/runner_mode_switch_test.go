@@ -132,6 +132,13 @@ func TestRunnerModeSwitchRejectsOpeningAndFencedReservations(t *testing.T) {
 		if w.Code != 409 || h.IsClosed() || s.runners != h || len(s.runnerCfg.AgentModes) != 0 {
 			t.Fatalf("%s reservation bypassed: %d %s", state, w.Code, w.Body.String())
 		}
+		shared := s.runnerCfg
+		env := shared.Environments["default"]
+		env.FileMode = "shared"
+		shared.Environments = map[string]runnerEnvironment{"default": env}
+		if w := switchConfig(t, s, shared); w.Code != 409 || s.runnerCfg.Environments["default"].FileMode != "" {
+			t.Fatalf("%s shared transition bypassed active lease: %d", state, w.Code)
+		}
 	}
 }
 

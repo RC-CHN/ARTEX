@@ -39,6 +39,7 @@ type nodeSession struct {
 	cancel             context.CancelFunc
 	sandbox            Sandbox
 	syncer             *runnerfiles.Syncer
+	storageCheck       func() error // shared-volume admission/periodic free-space guard
 	mu                 sync.Mutex
 	stopMu             sync.Mutex // serialize and confirm process cleanup
 	ended              bool
@@ -482,10 +483,21 @@ func (n *Node) executeCommand(ctx context.Context, cmd runner.Command) runner.Re
 		if err == nil && warm != nil {
 			err = warm.activate()
 			if err == nil {
-				roots, err = warm.roots(plan)
+				if plan.Mode == runnerfiles.SharedMode {
+					roots, err = n.Executor.(*KubernetesExecutor).sharedRoots(plan)
+				} else {
+					roots, err = warm.roots(plan)
+				}
 			}
 		}
-		if err == nil && warm == nil {
+		if err == nil && warm == nil && plan.Mode == runnerfiles.SharedMode {
+			roots, err = n.Executor.(*KubernetesExecutor).sharedRoots(plan)
+		}
+		if err == nil && plan.Mode == runnerfiles.SharedMode {
+			k := n.Executor.(*KubernetesExecutor)
+			s.storageCheck = func() error { return k.checkSharedCapacity(roots) }
+		}
+		if err == nil && warm == nil && plan.Mode != runnerfiles.SharedMode {
 			for _, mount := range plan.Mounts {
 				roots[mount.Name] = filepath.Join(s.dir, "mounts", safeID(mount.Name))
 				if e := os.MkdirAll(roots[mount.Name], 0700); e != nil {
@@ -509,7 +521,11 @@ func (n *Node) executeCommand(ctx context.Context, cmd runner.Command) runner.Re
 				tr.ResponseHeaderTimeout = 30 * time.Second
 				fileHTTP.Transport = tr
 			}
-			s.syncer = &runnerfiles.Syncer{Client: &runnerfiles.Client{BaseURL: n.Config.ServerURL, Credential: n.identity.Credential, HTTP: &fileHTTP}, Session: s.id, Plan: plan, Roots: roots}
+			transferPlan := plan
+			if plan.Mode == runnerfiles.SharedMode {
+				transferPlan = runnerfiles.Plan{}
+			}
+			s.syncer = &runnerfiles.Syncer{Client: &runnerfiles.Client{BaseURL: n.Config.ServerURL, Credential: n.identity.Credential, HTTP: &fileHTTP}, Session: s.id, Plan: transferPlan, Roots: roots}
 			err = s.syncer.Pull(sessionCtx)
 		}
 		if err == nil {
@@ -669,9 +685,9 @@ func (n *Node) executeCommand(ctx context.Context, cmd runner.Command) runner.Re
 		}
 		n.mu.Unlock()
 		s.mu.Lock()
-		preserve := s.syncErr != nil || (cmd.Abort && s.opened)
+		preserve := s.storageCheck == nil && (s.syncErr != nil || (cmd.Abort && s.opened))
 		s.mu.Unlock()
-		if !preserve && !result.UnknownOutcome && result.Error == "" {
+		if !preserve && !result.UnknownOutcome && (result.Error == "" || s.storageCheck != nil) {
 			_ = os.RemoveAll(s.dir)
 		} // retain conflicted files for recovery
 	default:
@@ -979,7 +995,13 @@ func (n *Node) checkpoints(ctx context.Context) {
 				noteCtx, cancel := context.WithTimeout(s.ctx, 3*time.Second)
 				reply, e := sb.Request(noteCtx, SandboxRequest{Method: "notifications"})
 				cancel()
-				err := s.syncer.Checkpoint(s.ctx)
+				var err error
+				if s.storageCheck != nil {
+					err = s.storageCheck()
+				}
+				if err == nil {
+					err = s.syncer.Checkpoint(s.ctx)
+				}
 				if errors.Is(err, runnerfiles.ErrSourceBusy) {
 					// A command is still writing; the next checkpoint/final Push
 					// retries synchronization without replaying any commands.

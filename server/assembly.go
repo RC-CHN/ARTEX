@@ -179,15 +179,16 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 		}
 		def.ExecutionGuidance = toolenv.Detect("").Prompt()
 		if rt, ok := ctx.Value(remoteExecutionKey{}).(*remoteExecution); ok {
-			def.ExecutionGuidance = "\n\n本线程的执行工具在独立远程沙箱中运行。文件路径保持一致；自己的工作目录可写，同任务其他线程的产物只读并在工具调用间刷新，共享目录写入有版本冲突检测。不要用文件锁协调跨机器任务，使用平台事实/图谱通信。需要GPU等能力时先list_runners并在add_intent声明runner需求。按需代理见环境说明；提示中的控制端 localhost 地址不可直接使用。当前环境：" + rt.spec.Environment + "；节点：" + rt.NodeID()
+			def.ExecutionGuidance = "\n\n本线程的执行工具在独立远程沙箱中运行。文件路径保持一致；自己的工作目录可写，同任务其他线程的产物只读。不要用文件锁协调跨机器任务，使用平台事实/图谱通信。需要GPU等能力时先list_runners并在add_intent声明runner需求。按需代理见环境说明；提示中的控制端 localhost 地址不可直接使用。当前环境：" + rt.spec.Environment + "；节点：" + rt.NodeID()
 			def.ExecutionGuidance += agent.EnvironmentPromptBlock("执行环境说明", rt.environmentPrompt)
 			def.ExecutionGuidance += agent.EnvironmentPromptBlock("当前 Runner 专属说明", rt.EnvironmentPrompt())
 			def.ExecutionGuidance += rt.EnvironmentTools().Prompt()
 			var plan runnerfiles.Plan
 			if json.Unmarshal(rt.spec.Files, &plan) == nil {
+				def.ExecutionGuidance += runnerFileGuidance(plan)
 				for _, mount := range plan.Mounts {
 					if mount.Name == "published" {
-						def.ExecutionGuidance += "。同任务最新已发布产物的只读目录：" + mount.Target + "（含 shared/ 和各 i<id>/，每次工具调用前刷新）。读取其他线程的新结果请使用此目录；原可写目录是本线程快照，不会被下载覆盖。写入仍使用原工作目录及任务 shared/。"
+						def.ExecutionGuidance += "。同任务产物的只读目录：" + mount.Target + "（含 shared/ 和各 i<id>/）。写入仍使用原工作目录及任务 shared/。"
 					}
 				}
 			}

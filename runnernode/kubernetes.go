@@ -22,13 +22,16 @@ import (
 )
 
 type KubernetesConfig struct {
-	Binary           string            `json:"binary,omitempty"`
-	Namespace        string            `json:"namespace"`
-	WorkspacePVC     string            `json:"workspace_pvc"`
-	WorkspaceSubPath string            `json:"workspace_sub_path,omitempty"`
-	ServiceAccount   string            `json:"service_account,omitempty"`
-	ImagePullSecrets []string          `json:"image_pull_secrets,omitempty"`
-	NodeSelector     map[string]string `json:"node_selector,omitempty"`
+	SharedMinFreeBytes  uint64            `json:"shared_min_free_bytes,omitempty"`
+	SharedMinFreeInodes uint64            `json:"shared_min_free_inodes,omitempty"`
+	SharedMounts        []SharedMount     `json:"shared_mounts,omitempty"`
+	Binary              string            `json:"binary,omitempty"`
+	Namespace           string            `json:"namespace"`
+	WorkspacePVC        string            `json:"workspace_pvc"`
+	WorkspaceSubPath    string            `json:"workspace_sub_path,omitempty"`
+	ServiceAccount      string            `json:"service_account,omitempty"`
+	ImagePullSecrets    []string          `json:"image_pull_secrets,omitempty"`
+	NodeSelector        map[string]string `json:"node_selector,omitempty"`
 }
 
 var kubeName = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
@@ -50,6 +53,15 @@ func (c *KubernetesConfig) validate() error {
 	}
 	if c.Binary == "" {
 		c.Binary = "kubectl"
+	}
+	if err := validateSharedMounts(c.SharedMounts); err != nil {
+		return err
+	}
+	if c.SharedMinFreeBytes == 0 {
+		c.SharedMinFreeBytes = 1 << 30
+	}
+	if c.SharedMinFreeInodes == 0 {
+		c.SharedMinFreeInodes = 10000
 	}
 	return nil
 }
@@ -151,18 +163,42 @@ func (k *KubernetesExecutor) Pod(id string, spec runner.RunSpec, plan runnerfile
 		gid = 10001
 	}
 	volumes := []any{
-		map[string]any{"name": "cache", "persistentVolumeClaim": map[string]any{"claimName": k.Config.WorkspacePVC}},
 		map[string]any{"name": "home", "emptyDir": map[string]any{"medium": "Memory", "sizeLimit": "256Mi"}},
 		map[string]any{"name": "tmp", "emptyDir": map[string]any{"medium": "Memory", "sizeLimit": "512Mi"}},
+	}
+	if plan.Mode != runnerfiles.SharedMode {
+		volumes = append(volumes, map[string]any{"name": "cache", "persistentVolumeClaim": map[string]any{"claimName": k.Config.WorkspacePVC}})
 	}
 	mounts := []any{map[string]any{"name": "home", "mountPath": "/home/runner"}, map[string]any{"name": "tmp", "mountPath": "/tmp"}}
 	if !inMounts("/workspace", plan) {
 		volumes = append(volumes, map[string]any{"name": "scratch", "emptyDir": map[string]any{"sizeLimit": "512Mi"}})
 		mounts = append(mounts, map[string]any{"name": "scratch", "mountPath": "/workspace"})
 	}
+	sharedVolumes := map[string]string{}
 	for _, m := range plan.Mounts {
 		root := roots[m.Name]
-		sub, err := k.subPath(root)
+		volumeName := "cache"
+		var sub string
+		var err error
+		if plan.Mode == runnerfiles.SharedMode {
+			var mapping SharedMount
+			var mappedRoot string
+			mapping, mappedRoot, sub, err = k.sharedMount(m)
+			if err == nil && mappedRoot != root {
+				err = fmt.Errorf("shared root differs from provisioned mapping")
+			}
+			volumeName = sharedVolumes[mapping.PVC]
+			if volumeName == "" {
+				volumeName = "shared-" + safeID(mapping.PVC)
+				sharedVolumes[mapping.PVC] = volumeName
+				// One volume per claim, with access enforced on each mount. Multiple
+				// aliases of one CSI claim with different volume-level readOnly flags
+				// can stall kubelet volume setup. The cache isn't mounted in this mode.
+				volumes = append(volumes, map[string]any{"name": volumeName, "persistentVolumeClaim": map[string]any{"claimName": mapping.PVC}})
+			}
+		} else {
+			sub, err = k.subPath(root)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -172,16 +208,21 @@ func (k *KubernetesExecutor) Pod(id string, spec runner.RunSpec, plan runnerfile
 				readOnly = false
 			}
 		}
-		mounts = append(mounts, map[string]any{"name": "cache", "mountPath": m.Target, "subPath": sub, "readOnly": readOnly})
+		mounts = append(mounts, map[string]any{"name": volumeName, "mountPath": m.Target, "subPath": sub, "readOnly": readOnly})
 		if readOnly {
 			for _, w := range m.Writable {
 				if !safeSubPath(w) {
 					return nil, fmt.Errorf("invalid Pod writable prefix")
 				}
-				if err := prepareWritable(root, filepath.Join(root, w)); err != nil {
+				if plan.Mode == runnerfiles.SharedMode {
+					err = sharedWritable(root, w)
+				} else {
+					err = prepareWritable(root, filepath.Join(root, w))
+				}
+				if err != nil {
 					return nil, err
 				}
-				mounts = append(mounts, map[string]any{"name": "cache", "mountPath": filepath.Join(m.Target, w), "subPath": filepath.Join(sub, w), "readOnly": false})
+				mounts = append(mounts, map[string]any{"name": volumeName, "mountPath": filepath.Join(m.Target, w), "subPath": filepath.Join(sub, w), "readOnly": false})
 			}
 		}
 	}
@@ -215,6 +256,13 @@ func (k *KubernetesExecutor) Pod(id string, spec runner.RunSpec, plan runnerfile
 		"serviceAccountName": cfg.ServiceAccount, "terminationGracePeriodSeconds": 5,
 		"securityContext": map[string]any{"runAsNonRoot": true, "runAsUser": uid, "runAsGroup": gid, "fsGroup": gid, "fsGroupChangePolicy": "OnRootMismatch", "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
 		"containers":      []any{container}, "volumes": volumes,
+	}
+	if plan.Mode == runnerfiles.SharedMode {
+		// A large shared PVC must never trigger recursive ownership changes on
+		// each Pod startup. Provision its UID/GID once during migration instead.
+		sc := ps["securityContext"].(map[string]any)
+		delete(sc, "fsGroup")
+		delete(sc, "fsGroupChangePolicy")
 	}
 	if len(k.Config.NodeSelector) > 0 {
 		ps["nodeSelector"] = k.Config.NodeSelector

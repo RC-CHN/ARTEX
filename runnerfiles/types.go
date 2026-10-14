@@ -1,5 +1,6 @@
 // Package runnerfiles transfers versioned files between the controller and
-// standalone runners. It deliberately does not emulate a shared POSIX filesystem.
+// standalone runners. Shared plans instead require explicitly provisioned direct
+// storage mappings and are forbidden on the snapshot HTTP endpoints.
 package runnerfiles
 
 import (
@@ -12,6 +13,15 @@ import (
 
 const Missing = "missing"
 
+const SharedMode = "shared"
+const SharedCapability = "artex.io/shared-files"
+
+// Snapshot preparation is deliberately bounded. Large/long-lived workspaces
+// use shared storage or explicitly narrowed inputs instead of unbounded copies.
+const MaxSnapshotFiles = 10000
+const MaxSnapshotBytes int64 = 1 << 30
+const MaxSnapshotEntries = 20000
+
 var (
 	ErrConflict = errors.New("file changed since the downloaded version")
 	// SourceBusy means no conflicting publication happened: a source changed
@@ -20,7 +30,7 @@ var (
 	ErrLocked     = errors.New("file is leased by another execution")
 	ErrPath       = errors.New("invalid or unauthorized file path")
 	ErrDigest     = errors.New("file digest does not match")
-	ErrLimit      = errors.New("file exceeds configured transfer limit")
+	ErrLimit      = errors.New("snapshot transfer limit exceeded; narrow inputs or use shared storage")
 )
 
 // Source belongs to the controller; a runner must never interpret it as a host
@@ -32,6 +42,9 @@ type Mount struct {
 	Writable []string `json:"writable,omitempty"`
 }
 type Plan struct {
+	// Shared requires explicitly provisioned Kubernetes mappings. Never fall back
+	// to snapshots: mixing publication protocols can overwrite live shared data.
+	Mode   string  `json:"mode,omitempty"`
 	Mounts []Mount `json:"mounts"`
 }
 type Entry struct {

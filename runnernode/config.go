@@ -102,6 +102,19 @@ func (c *Config) Validate() error {
 		}
 	}
 	c.Capabilities.Executor = c.Executor
+	// Existing protocol labels let older controllers ignore this capability.
+	if c.Capabilities.Labels == nil {
+		c.Capabilities.Labels = map[string]string{}
+	}
+	delete(c.Capabilities.Labels, runnerfiles.SharedCapability)
+	if c.Executor == "kubernetes" && len(c.Kubernetes.SharedMounts) > 0 {
+		c.Capabilities.Labels[runnerfiles.SharedCapability] = "v1"
+		for _, m := range c.Kubernetes.SharedMounts {
+			if within(c.DataDir, m.Path) || within(m.Path, c.DataDir) || within(c.WorkspaceDir, m.Path) || within(m.Path, c.WorkspaceDir) {
+				return fmt.Errorf("shared storage must be separate from runner identity and session caches")
+			}
+		}
+	}
 	if c.SandboxBinary == "" {
 		c.SandboxBinary = "/usr/local/bin/artex-runner"
 	}
@@ -185,11 +198,25 @@ func decodePlan(raw json.RawMessage) (runnerfiles.Plan, error) {
 			return p, fmt.Errorf("file plan: %w", err)
 		}
 	}
+	if p.Mode != "" && p.Mode != "snapshot" && p.Mode != runnerfiles.SharedMode {
+		return p, fmt.Errorf("unsupported file mode")
+	}
+	if len(p.Mounts) > 128 {
+		return p, fmt.Errorf("file plan exceeds 128 mounts")
+	}
 	names := map[string]bool{}
 	targets := map[string]bool{}
 	for _, m := range p.Mounts {
 		if m.Name == "" || names[m.Name] {
 			return p, fmt.Errorf("duplicate or empty file mount name")
+		}
+		if len(m.Writable) > 128 {
+			return p, fmt.Errorf("file mount exceeds 128 writable prefixes")
+		}
+		for _, w := range m.Writable {
+			if w != "." && !safeSubPath(w) {
+				return p, fmt.Errorf("invalid writable mount prefix")
+			}
 		}
 		names[m.Name] = true
 		if !filepath.IsAbs(m.Target) || filepath.Clean(m.Target) != m.Target || strings.ContainsAny(m.Target, "\x00,\n") {
@@ -234,12 +261,15 @@ func controllerLocalURL(raw string) bool {
 }
 
 // Prepare applies only explicit node overrides and rejects known controller-local
-// references. It never interprets Files.Source on this host.
+// references. Shared sources require separately provisioned Kubernetes mappings.
 func (c Config) Prepare(spec runner.RunSpec) (runner.RunSpec, runnerfiles.Plan, error) {
 	spec.MCPs = append([]runner.MCPConfig(nil), spec.MCPs...)
 	plan, err := decodePlan(spec.Files)
 	if err != nil {
 		return spec, plan, err
+	}
+	if plan.Mode == runnerfiles.SharedMode && (c.Executor != "kubernetes" || len(c.Kubernetes.SharedMounts) == 0) {
+		return spec, plan, fmt.Errorf("shared file mode requires configured Kubernetes shared_mounts")
 	}
 	if c.ImageOverride != "" {
 		spec.Image = c.ImageOverride

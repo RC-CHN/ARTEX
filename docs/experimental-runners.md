@@ -215,3 +215,36 @@ PG 测试会创建并清理专用测试数据库，不连接应用配置中的�
 - 在线降低并发、CPU、内存额度后，实际运行环境的 cgroup 配额保持不变；持久化限额、非法输入原子拒绝、并发 Pod 创建容量竞争、创建响应丢失、删除未确认、慢 MCP 初始化心跳，以及工作池扩缩容与关机竞争的回归测试通过。
 
 CI 已包含主模块回归、Runner 与 SDK 关键模块竞态检查，以及显式开启的真实 Docker 集成测试。GPU 实际计算与跨公网吞吐仍需对应硬件和网络验证；大文件分片断点续传尚未实现。
+
+
+## 共享存储执行（Kubernetes）
+
+长任务建议将执行环境设为 `file_mode: "shared"`。启动仅检查挂载路径和文件系统剩余容量，准备成本随挂载数量增长，不再扫描、哈希、复制任务历史。已有任务目录、会话和进度保持原位置；`published` 是同一任务目录的只读别名，不产生第二份数据。原有快照模式保留给外部 Runner，准备上限为全部挂载合计 10,000 个文件、1 GiB，每次目录遍历至多 20,000 个条目、64 层目录；超限明确失败，不截断输入后继续运行。
+
+每次执行仍创建独立 Pod，保留只读根文件系统、无特权运行、独立 HOME/tmp、CPU/内存额度和租约 watchdog。HOME 256 MiB、tmp 512 MiB、未另行挂载的 `/workspace` 512 MiB，Pod 临时存储上限 1 GiB。任务产物是持久共享目录，Worker 仅能写自己的 `i<id>/` 与 `shared/`；主对话与 Planner 保持原任务范围写权限。共享文件实时可见，没有快照 CAS；协作产物请用唯一名字，写同目录临时文件后原子重命名，不同时覆盖一个文件。租约失效会停止进程，但已经写入的数据不会回滚。
+
+管理员在 Runner 的 `kubernetes` 下配置映射，例如：
+
+```json
+{
+  "shared_mounts": [
+    {"source":"/app/data/tasks","path":"/var/lib/artex-shared/tasks","pvc":"artex-shared-tasks","sub_path":""},
+    {"source":"/app/data/sessions","path":"/var/lib/artex-shared/sessions","pvc":"artex-shared-sessions","sub_path":""},
+    {"source":"/app/data/skills","path":"/var/lib/artex-shared/skills","pvc":"artex-shared-skills","read_only":true},
+    {"source":"/app/data/drafts","path":"/var/lib/artex-shared/drafts","pvc":"artex-shared-drafts","read_only":true},
+    {"source":"/app/data/runner-inputs","path":"/var/lib/artex-shared/runner-inputs","pvc":"artex-shared-inputs","read_only":true}
+  ],
+  "shared_min_free_bytes": 1073741824,
+  "shared_min_free_inodes": 10000
+}
+```
+
+可用 `kubectl get pv <controller-pv> -o json | python3 ci/shared-storage-manifest.py artex-runners` 生成指向已有 NFS 子目录的静态别名，审阅后 apply；脚本仅处理存储元数据。
+
+每个映射的 `path` 必须是管理器挂载的 PVC/sub_path，且与 controller 的 `source` 指向相同数据。PVC 必须存在于执行 Pod 的命名空间；跨命名空间的 NFS 部署可为指定子目录创建静态 PV/PVC 别名，使用 `Retain`，不要创建新目录冒充已有数据。管理器仅挂载所需数据子树；数据库、JWT、配置凭据及整块 controller 数据根目录不应暴露。额外 inputs 也必须有映射；缺失映射、路径穿越、符号链接挂载、只读越权均会失败。共享能力由新管理器自动上报，旧节点不会被选择；共享文件 API 拒绝快照读写，避免旧节点静默退化。
+
+共享 Pod 不配置 `fsGroup`，防止启动时递归修改大卷权限。迁移时一次性为上述目录配置管理器/执行器的 UID/GID（模板为 10001），并确保控制器未来新建的目录也可由该身份访问；不要每次启动递归 chown。映射检查不遍历任务文件。
+
+共享存储默认在接入和每次后台检查时保留至少 1 GiB 可用空间、10,000 个 inode，不足会拒绝新执行或停止当前执行并保留持久文件；不报告 inode 总量的文件系统只检查字节。这是容量保护而非每任务硬配额，检查周期内仍可能消耗余量。NFS 的 PVC 请求容量不是硬配额；严格持久容量/文件数上限需在存储端设置，不通过每次扫描任务实现。
+
+迁移顺序：备份数据库与部署配置；停止接纳新执行并让旧快照执行完成清理，保留未发布缓存；原地配置共享卷别名和权限；升级管理器/控制器后，在无保留租约时切换环境模式；验证合成任务后恢复原有任务进度。不要把未知结果的工具当成未执行而自动重放。切换接口会拒绝仍占用租约的变更，不同环境也不能同时对重叠目录混用共享和快照。回滚须同样先清理共享执行，再切回快照；大目录可能触发快照上限，不能依靠回滚恢复全量同步。

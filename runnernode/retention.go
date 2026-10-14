@@ -25,7 +25,7 @@ func (n *Node) collectRetired(now time.Time) {
 		s.mu.Lock()
 		if s.stopped && !s.cleanupRunning {
 			delete(n.sessions, id)
-			if !s.opened && s.syncErr == nil {
+			if (!s.opened && s.syncErr == nil) || s.storageCheck != nil {
 				emptyCaches = append(emptyCaches, s.dir)
 			}
 		}

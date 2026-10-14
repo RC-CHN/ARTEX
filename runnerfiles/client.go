@@ -337,6 +337,27 @@ func (s *Syncer) pull(ctx context.Context, readOnly bool) error {
 	if s.versions == nil {
 		s.versions = map[string]map[string]string{}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Validate the whole input set before downloading any blobs. The controller
+	// bounds each traversal; this also bounds aggregate files/bytes across mounts.
+	manifests := make(map[string][]Entry, len(s.Plan.Mounts))
+	files, total := 0, int64(0)
+	for _, m := range s.Plan.Mounts {
+		entries, err := s.Client.Manifest(ctx, s.Session, m.Name)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			files++
+			if files > MaxSnapshotFiles || entry.Size > MaxSnapshotBytes-total {
+				return ErrLimit
+			}
+			total += entry.Size
+		}
+		manifests[m.Name] = entries
+	}
 	for _, m := range s.Plan.Mounts {
 		root := s.Roots[m.Name]
 		if root == "" {
@@ -345,10 +366,7 @@ func (s *Syncer) pull(ctx context.Context, readOnly bool) error {
 		if e := os.MkdirAll(root, 0700); e != nil {
 			return e
 		}
-		entries, e := s.Client.Manifest(ctx, s.Session, m.Name)
-		if e != nil {
-			return e
-		}
+		entries := manifests[m.Name]
 		if s.versions[m.Name] == nil {
 			s.versions[m.Name] = map[string]string{}
 		}

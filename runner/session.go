@@ -109,6 +109,10 @@ func (h *Hub) Acquire(ctx context.Context, spec RunSpec) (*Session, error) {
 			}
 		}
 		for _, s := range h.state.Sessions {
+			if s.reserved(h.opts.Clock()) && incompatibleFileModes(spec.Files, s.Spec.Files) {
+				h.mu.Unlock()
+				return nil, errors.New("overlapping workspace has an active snapshot/shared execution; wait for cleanup before switching file mode")
+			}
 			if s.Spec.ThreadID == spec.ThreadID && s.reserved(h.opts.Clock()) {
 				h.mu.Unlock()
 				return nil, ErrThreadBusy

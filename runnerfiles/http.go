@@ -23,6 +23,10 @@ func Handler(store *Store, authorize Authorize, commit CommitGuard) http.Handler
 			http.Error(w, "execution is not authorized", http.StatusForbidden)
 			return Mount{}, false
 		}
+		if plan.Mode == SharedMode {
+			http.Error(w, "shared mounts require direct storage access; snapshot transfer is disabled", http.StatusForbidden)
+			return Mount{}, false
+		}
 		for _, m := range plan.Mounts {
 			if m.Name == r.URL.Query().Get("mount") {
 				return m, true

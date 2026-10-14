@@ -249,6 +249,10 @@ func (s *Server) runnerSpec(ctx context.Context, cfg runnerConfig, key string, i
 	if err = s.runnerNetwork(&spec, &plan, env, cfg); err != nil {
 		return spec, nil, err
 	}
+	if env.FileMode == runnerfiles.SharedMode {
+		plan.Mode = runnerfiles.SharedMode
+		spec.Labels[runnerfiles.SharedCapability] = "v1"
+	}
 	spec.Files, _ = json.Marshal(plan)
 	versionBytes, _ := json.Marshal(struct {
 		Config runnerConfig
@@ -401,4 +405,11 @@ func runnerEnvironmentSummary(c runnerConfig) map[string]any {
 		out[name] = map[string]any{"resources": e.Resources, "labels": e.Labels}
 	}
 	return out
+}
+
+func runnerFileGuidance(plan runnerfiles.Plan) string {
+	if plan.Mode == runnerfiles.SharedMode {
+		return "。文件采用共享存储直接挂载，无需同步或发布操作；读写实时可见（受文件系统缓存约束），没有快照版本冲突检测。不要同时覆盖同一个文件；协作产物使用唯一文件名，先写同目录临时文件再原子重命名，避免其他线程读到未完成内容。HOME、/tmp 和 /workspace 为本次执行私有临时空间，结束即回收；需恢复的结果写入任务目录。"
+	}
+	return "。文件采用版本快照，同任务已发布产物在工具调用前刷新；读取新结果使用只读产物目录，原可写目录不会被下载覆盖。共享目录发布有版本冲突检测；冲突时保留现场，不重放已经执行的工具。快照准备上限为 10,000 个文件、1 GiB；超限需缩小输入范围或使用共享存储。"
 }

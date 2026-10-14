@@ -25,6 +25,7 @@ const runnerConfigKey = "experimental.runners"
 var runnerImageDigest = regexp.MustCompile(`^[^\s@]+@sha256:[a-f0-9]{64}$`)
 
 type runnerEnvironment struct {
+	FileMode          string              `json:"file_mode,omitempty"`
 	WarmIdle          int                 `json:"warm_idle,omitempty"`
 	EnvironmentPrompt string              `json:"environment_prompt,omitempty"`
 	Image             string              `json:"image"`
@@ -68,6 +69,9 @@ func (c runnerConfig) validate() error {
 		return errors.New("default_environment is not defined")
 	}
 	for name, e := range c.Environments {
+		if e.FileMode != "" && e.FileMode != "snapshot" && e.FileMode != runnerfiles.SharedMode {
+			return fmt.Errorf("environment %s file_mode must be snapshot or shared", name)
+		}
 		if e.WarmIdle < 0 || e.WarmIdle > 32 {
 			return fmt.Errorf("环境 %s 的预热数量必须为 0..32", name)
 		}
@@ -220,7 +224,7 @@ func (s *Server) saveRunnerConfig(w http.ResponseWriter, r *http.Request) {
 	defer s.runnerMu.Unlock()
 	b, _ := json.Marshal(cfg)
 	persist := func() error { return s.m.pg.SetSetting(runnerConfigKey, string(b)) }
-	modeChanged := cfg.Enabled && s.runnerCfg.Enabled && (cfg.DefaultMode != s.runnerCfg.DefaultMode || !maps.Equal(cfg.AgentModes, s.runnerCfg.AgentModes))
+	modeChanged := cfg.Enabled && s.runnerCfg.Enabled && (cfg.DefaultMode != s.runnerCfg.DefaultMode || !maps.Equal(cfg.AgentModes, s.runnerCfg.AgentModes) || fileModesChanged(cfg, s.runnerCfg))
 	allowsLocal := cfg.DefaultMode == "local"
 	for _, mode := range cfg.AgentModes {
 		allowsLocal = allowsLocal || mode == "local"
@@ -296,6 +300,20 @@ func (s *Server) saveRunnerConfig(w http.ResponseWriter, r *http.Request) {
 		s.runners.SetWarmProfiles(s.runnerWarmProfiles(cfg))
 	}
 	writeJSON(w, 200, cfg)
+}
+
+func fileModesChanged(a, b runnerConfig) bool {
+	for name, env := range a.Environments {
+		if (env.FileMode == runnerfiles.SharedMode) != (b.Environments[name].FileMode == runnerfiles.SharedMode) {
+			return true
+		}
+	}
+	for name, env := range b.Environments {
+		if (env.FileMode == runnerfiles.SharedMode) != (a.Environments[name].FileMode == runnerfiles.SharedMode) {
+			return true
+		}
+	}
+	return false
 }
 func (s *Server) runnerRegistration(w http.ResponseWriter, r *http.Request) {
 	cfg, h, err := s.runnerSnapshot()

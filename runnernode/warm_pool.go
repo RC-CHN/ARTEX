@@ -261,7 +261,10 @@ func (k *KubernetesExecutor) createWarm(ctx context.Context, p *warmPod, policy 
 		err = os.WriteFile(filepath.Join(p.dir, idleMarker), []byte("unused prewarm cache\n"), 0600)
 	}
 	roots := map[string]string{}
-	if err == nil {
+	if err == nil && plan.Mode == runnerfiles.SharedMode {
+		roots, err = k.sharedRoots(plan)
+	}
+	if err == nil && plan.Mode != runnerfiles.SharedMode {
 		for _, m := range plan.Mounts {
 			roots[m.Name] = filepath.Join(p.dir, "mounts", safeID(m.Name))
 			if err = secureDir(roots[m.Name]); err != nil {
