@@ -322,9 +322,15 @@ ON CONFLICT DO NOTHING`, r.kind, r.pattern, r.note); err != nil {
 // declares `mcps: ScopeSentry`, which only takes effect once it's made visible and
 // that MCP is enabled/configured.
 var builtinSkillVisibility = map[string][]string{
-	"api-recon": {"auto", "pentest", "worker"},
-	"nuclei":    {"mainagent", "planner", "worker", "auto", "pentest"},
-	"vulnx":     {"mainagent", "planner", "worker", "auto", "pentest"},
+	"api-recon":            {"auto", "pentest", "worker"},
+	"nuclei":               {"mainagent", "planner", "worker", "auto", "pentest"},
+	"vulnx":                {"mainagent", "planner", "worker", "auto", "pentest"},
+	"web-discovery":        {"mainagent", "planner", "worker", "auto", "pentest"},
+	"authenticated-verify": {"mainagent", "planner", "worker", "auto", "pentest"},
+	"portable-tools":       {"mainagent", "planner", "worker", "auto", "pentest"},
+	"targeted-verify":      {"mainagent", "planner", "worker", "auto", "pentest"},
+	"protocol-check":       {"mainagent", "planner", "worker", "auto", "pentest"},
+	"ip-lookup":            {"mainagent", "planner", "worker", "auto", "pentest"},
 }
 
 // seedBuiltinSkillVisibility binds the shipped built-in skills to their default

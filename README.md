@@ -114,6 +114,8 @@ ARTEX_TAG=latest
 
 支持默认关闭的[实验性远程 Runner](docs/experimental-runners.md)：独立 Linux 主机主动注册，一个节点承载多个隔离线程，并按 CPU、内存、GPU 和环境能力调度。统一下发 MCP 配置和任务文件，仍可选择原有本机执行。
 
+完整镜像预装常用 Python/SSH 工具和固定版本安全工具；[工具仓库与验证工作流](docs/工具仓库与验证工作流.md)提供多架构包、按需 SFTP 分发、真实身份验证、共享请求预算和持久化 HTTP 回调。嵌入式交叉编译包单独生成，按需取用，不复制进每个任务目录。
+
 ### 方式三：下载预编译二进制（Releases）
 
 到本仓库 [Releases](https://github.com/RC-CHN/ARTEX/releases) 下载对应平台的 zip 和 `SHA256SUMS` 并核对校验和：解压后得到 `artex` + `start.sh`（Windows 为 `start.bat`）+ `skills/` + `config.example.json`：

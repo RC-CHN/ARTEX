@@ -36,3 +36,20 @@ func TestInventoryPromptRejectsInstructionsInVersionFields(t *testing.T) {
 		t.Fatal("untrusted inventory became prompt instructions", text)
 	}
 }
+
+func TestToolkitInventoryIsScopedAndIgnoresUnknownNames(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"artex-kit", "ffuf", "sshpass", "grpcurl", "websocat"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("not run"), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	i := Detect(dir)
+	if i.Kit == nil || i.FFUF == nil || i.HTTPX != nil || i.Extras["sshpass"] == nil || i.Extras["grpcurl"] == nil || i.Extras["websocat"] == nil {
+		t.Fatalf("wrong tools: %+v", i)
+	}
+	i.Extras["INJECT"] = &Tool{Version: "malicious"}
+	if strings.Contains(i.Prompt(), "INJECT") {
+		t.Fatal("unknown name became instructions")
+	}
+}

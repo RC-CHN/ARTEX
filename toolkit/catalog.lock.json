@@ -1,0 +1,408 @@
+{
+  "schema": 1,
+  "tools": {
+    "httpx": {
+      "version": "1.12.0",
+      "upstream": "https://github.com/projectdiscovery/httpx/releases/tag/v1.12.0",
+      "license": "MIT",
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/projectdiscovery/httpx/releases/download/v1.12.0/httpx_1.12.0_linux_amd64.zip",
+          "sha256": "9d8439e8b6c9aa7d1e2314817a392e00d5178da3af5652f7475f88868f418f76",
+          "format": "zip",
+          "member": "httpx",
+          "filename": "httpx",
+          "abi": "Linux amd64; verify minimum kernel and libc with upstream release"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/projectdiscovery/httpx/releases/download/v1.12.0/httpx_1.12.0_linux_arm64.zip",
+          "sha256": "fd7b123c1dfbc3d69f19f524e4eebcd6ec06b9a6cbd56813c76f11645197331e",
+          "format": "zip",
+          "member": "httpx",
+          "filename": "httpx",
+          "abi": "Linux arm64; verify minimum kernel and libc with upstream release"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/projectdiscovery/httpx/releases/download/v1.12.0/httpx_1.12.0_windows_amd64.zip",
+          "sha256": "14d8ccaa2d95ce9365162682f1a2ba3f14d2000bb4bfb0924af65ec5163ae021",
+          "format": "zip",
+          "member": "httpx.exe",
+          "filename": "httpx.exe",
+          "abi": "Windows amd64"
+        }
+      }
+    },
+    "katana": {
+      "version": "1.8.0",
+      "upstream": "https://github.com/projectdiscovery/katana/releases/tag/v1.8.0",
+      "license": "MIT",
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/projectdiscovery/katana/releases/download/v1.8.0/katana_1.8.0_linux_amd64.zip",
+          "sha256": "cb027ae99d0757061b70c07a15c7a80f62c5a535ab52c4a329f80c4b0a7309d2",
+          "format": "zip",
+          "member": "katana",
+          "filename": "katana",
+          "abi": "Linux amd64; verify minimum kernel and libc with upstream release"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/projectdiscovery/katana/releases/download/v1.8.0/katana_1.8.0_linux_arm64.zip",
+          "sha256": "80e269210727a855511ffac8dfb01297b2344742acec71a35e8ba4a67a90f0f2",
+          "format": "zip",
+          "member": "katana",
+          "filename": "katana",
+          "abi": "Linux arm64; verify minimum kernel and libc with upstream release"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/projectdiscovery/katana/releases/download/v1.8.0/katana_1.8.0_windows_amd64.zip",
+          "sha256": "8013253e3092e08524527a5c3f7ebd70747acc4bb51414858f8e6dffeb17f907",
+          "format": "zip",
+          "member": "katana.exe",
+          "filename": "katana.exe",
+          "abi": "Windows amd64"
+        }
+      }
+    },
+    "ffuf": {
+      "version": "2.3.0",
+      "upstream": "https://github.com/ffuf/ffuf/releases/tag/v2.3.0",
+      "license": "Apache-2.0",
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/ffuf/ffuf/releases/download/v2.3.0/ffuf_2.3.0_linux_amd64.tar.gz",
+          "sha256": "b2a3c725fcb9da175159682f54d6e9149f2905b00d84d155e7efc5d599975ceb",
+          "format": "tar.gz",
+          "member": "ffuf",
+          "filename": "ffuf",
+          "abi": "Linux amd64; verify minimum kernel and libc with upstream release"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/ffuf/ffuf/releases/download/v2.3.0/ffuf_2.3.0_linux_arm64.tar.gz",
+          "sha256": "e2d712615d53da797ee929006e41f2df5a7960a5353133db9c150ddaa22ae4e8",
+          "format": "tar.gz",
+          "member": "ffuf",
+          "filename": "ffuf",
+          "abi": "Linux arm64; verify minimum kernel and libc with upstream release"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/ffuf/ffuf/releases/download/v2.3.0/ffuf_2.3.0_windows_amd64.zip",
+          "sha256": "091c8a22d0c7fbe07d343b3ae2c213dbd37b38a8a2ed40631fcd3128ea1764fb",
+          "format": "zip",
+          "member": "ffuf.exe",
+          "filename": "ffuf.exe",
+          "abi": "Windows amd64"
+        }
+      }
+    },
+    "jq": {
+      "version": "1.8.2",
+      "upstream": "https://github.com/jqlang/jq/releases/tag/jq-1.8.2",
+      "license": "MIT",
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64",
+          "sha256": "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f",
+          "format": "raw",
+          "member": "",
+          "filename": "jq",
+          "abi": "Linux amd64; verify minimum kernel and libc with upstream release"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-arm64",
+          "sha256": "8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309",
+          "format": "raw",
+          "member": "",
+          "filename": "jq",
+          "abi": "Linux arm64; verify minimum kernel and libc with upstream release"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-windows-amd64.exe",
+          "sha256": "a6fc67fedaf9128a3309a1e2ebb8b986aeccf70122ee46d2cb4849e423f0c627",
+          "format": "raw",
+          "member": "",
+          "filename": "jq.exe",
+          "abi": "Windows amd64"
+        }
+      }
+    },
+    "interactsh-client": {
+      "version": "1.4.1",
+      "upstream": "https://github.com/projectdiscovery/interactsh/releases/tag/v1.4.1",
+      "license": "MIT",
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/projectdiscovery/interactsh/releases/download/v1.4.1/interactsh-client_1.4.1_linux_amd64.zip",
+          "sha256": "1b7e2f1c2f61b36b8d3ce9857f0f338ad7dba47c32274465c77e868bcbc5eeeb",
+          "format": "zip",
+          "member": "interactsh-client",
+          "filename": "interactsh-client",
+          "abi": "Linux amd64; verify minimum kernel and libc with upstream release"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/projectdiscovery/interactsh/releases/download/v1.4.1/interactsh-client_1.4.1_linux_arm64.zip",
+          "sha256": "53cb19b97fa39ffe152903f61ca0359a2a98b413e9d1d78250d604f0f4308579",
+          "format": "zip",
+          "member": "interactsh-client",
+          "filename": "interactsh-client",
+          "abi": "Linux arm64; verify minimum kernel and libc with upstream release"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/projectdiscovery/interactsh/releases/download/v1.4.1/interactsh-client_1.4.1_windows_amd64.zip",
+          "sha256": "fba02aa31b223975cfd01958b417f8c270777d60bebef3fb606ba0c6983e8d4d",
+          "format": "zip",
+          "member": "interactsh-client.exe",
+          "filename": "interactsh-client.exe",
+          "abi": "Windows amd64"
+        }
+      }
+    },
+    "subfinder": {
+      "version": "2.17.0",
+      "upstream": "https://github.com/projectdiscovery/subfinder/releases/tag/v2.17.0",
+      "license": "MIT",
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/projectdiscovery/subfinder/releases/download/v2.17.0/subfinder_2.17.0_linux_amd64.zip",
+          "sha256": "a39c3e5c7a26ef3c430915c4d6cbf7716a00f26769a75e9405aba796142eba37",
+          "format": "zip",
+          "member": "subfinder",
+          "filename": "subfinder",
+          "abi": "linux amd64; verify upstream minimum kernel/runtime requirements"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/projectdiscovery/subfinder/releases/download/v2.17.0/subfinder_2.17.0_linux_arm64.zip",
+          "sha256": "24913d49dddc1d3a5e99a4a7580da5be980959b9415b96f52c4f7f4124392190",
+          "format": "zip",
+          "member": "subfinder",
+          "filename": "subfinder",
+          "abi": "linux arm64; verify upstream minimum kernel/runtime requirements"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/projectdiscovery/subfinder/releases/download/v2.17.0/subfinder_2.17.0_windows_amd64.zip",
+          "sha256": "a3fd612928d591fb31c1e59a2e06055e364421ba32251e553073f5673a2d3103",
+          "format": "zip",
+          "member": "subfinder.exe",
+          "filename": "subfinder.exe",
+          "abi": "windows amd64; verify upstream minimum kernel/runtime requirements"
+        }
+      }
+    },
+    "dnsx": {
+      "version": "1.3.1",
+      "upstream": "https://github.com/projectdiscovery/dnsx/releases/tag/v1.3.1",
+      "license": "MIT",
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/projectdiscovery/dnsx/releases/download/v1.3.1/dnsx_1.3.1_linux_amd64.zip",
+          "sha256": "438b964653056dd51dcfe614b1a16f8bced3cc48a1d27bc07cc6fdf2ef2a9533",
+          "format": "zip",
+          "member": "dnsx",
+          "filename": "dnsx",
+          "abi": "linux amd64; verify upstream minimum kernel/runtime requirements"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/projectdiscovery/dnsx/releases/download/v1.3.1/dnsx_1.3.1_linux_arm64.zip",
+          "sha256": "dd657dd1ccee5e137eca2dbad0e97dbd067555f744adb97efcda774f1b2fbde1",
+          "format": "zip",
+          "member": "dnsx",
+          "filename": "dnsx",
+          "abi": "linux arm64; verify upstream minimum kernel/runtime requirements"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/projectdiscovery/dnsx/releases/download/v1.3.1/dnsx_1.3.1_windows_amd64.zip",
+          "sha256": "112c2d62d67d26a1b940ed9d10d500d2aa1ee3e3e18393d181ac4969936b9d96",
+          "format": "zip",
+          "member": "dnsx.exe",
+          "filename": "dnsx.exe",
+          "abi": "windows amd64; verify upstream minimum kernel/runtime requirements"
+        }
+      }
+    },
+    "naabu": {
+      "version": "2.6.1",
+      "upstream": "https://github.com/projectdiscovery/naabu/releases/tag/v2.6.1",
+      "license": "MIT",
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/projectdiscovery/naabu/releases/download/v2.6.1/naabu_2.6.1_linux_amd64.zip",
+          "sha256": "018c4c9884dea971eda860435ede3021d1150732f34cfd245498c6726d8cab90",
+          "format": "zip",
+          "member": "naabu",
+          "filename": "naabu",
+          "abi": "linux amd64; verify upstream minimum kernel/runtime requirements"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/projectdiscovery/naabu/releases/download/v2.6.1/naabu_2.6.1_linux_arm64.zip",
+          "sha256": "3adc2bb2395c3efff89623499b20eea66ef54924c485d3ae86762393a31736ea",
+          "format": "zip",
+          "member": "naabu",
+          "filename": "naabu",
+          "abi": "linux arm64; verify upstream minimum kernel/runtime requirements"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/projectdiscovery/naabu/releases/download/v2.6.1/naabu_2.6.1_windows_amd64.zip",
+          "sha256": "4efaa341f36a0c6e676164f75e2d93d5a72f4090d690fd1bc293f5a4b79c202b",
+          "format": "zip",
+          "member": "naabu.exe",
+          "filename": "naabu.exe",
+          "abi": "windows amd64; verify upstream minimum kernel/runtime requirements"
+        }
+      }
+    },
+    "tlsx": {
+      "version": "1.4.0",
+      "upstream": "https://github.com/projectdiscovery/tlsx/releases/tag/v1.4.0",
+      "license": "MIT",
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/projectdiscovery/tlsx/releases/download/v1.4.0/tlsx_1.4.0_linux_amd64.zip",
+          "sha256": "05628cec246e292e2f9afc6e7bc5de95aaa0fbe78fd556d5ad220b9f4702d364",
+          "format": "zip",
+          "member": "tlsx",
+          "filename": "tlsx",
+          "abi": "linux amd64; verify upstream minimum kernel/runtime requirements"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/projectdiscovery/tlsx/releases/download/v1.4.0/tlsx_1.4.0_linux_arm64.zip",
+          "sha256": "b757125d94c7d0e1f1f109534f0ed88d2a4b1c3856e1fa35efc1ef9e36781b0e",
+          "format": "zip",
+          "member": "tlsx",
+          "filename": "tlsx",
+          "abi": "linux arm64; verify upstream minimum kernel/runtime requirements"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/projectdiscovery/tlsx/releases/download/v1.4.0/tlsx_1.4.0_windows_amd64.zip",
+          "sha256": "5648fb4a81851e6349196cbb3274589b0edd9ca3021c2b62370234eea51a1dce",
+          "format": "zip",
+          "member": "tlsx.exe",
+          "filename": "tlsx.exe",
+          "abi": "windows amd64; verify upstream minimum kernel/runtime requirements"
+        }
+      }
+    },
+    "yq": {
+      "version": "4.54.1",
+      "upstream": "https://github.com/mikefarah/yq/releases/tag/v4.54.1",
+      "license": "MIT",
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/mikefarah/yq/releases/download/v4.54.1/yq_linux_amd64",
+          "sha256": "8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f",
+          "format": "raw",
+          "member": "",
+          "filename": "yq",
+          "abi": "linux amd64; verify upstream minimum kernel/runtime requirements"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/mikefarah/yq/releases/download/v4.54.1/yq_linux_arm64",
+          "sha256": "189088da0c6429ec5178dfaab1a114805f6cab0b61b165ab236efedf1d57a71b",
+          "format": "raw",
+          "member": "",
+          "filename": "yq",
+          "abi": "linux arm64; verify upstream minimum kernel/runtime requirements"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/mikefarah/yq/releases/download/v4.54.1/yq_windows_amd64.exe",
+          "sha256": "b645f47ebb3a0d2fbab52998550bbd0a1706f23b5ca5f5b48e638c580bb70928",
+          "format": "raw",
+          "member": "",
+          "filename": "yq.exe",
+          "abi": "windows amd64; verify upstream minimum kernel/runtime requirements"
+        }
+      }
+    },
+    "chisel": {
+      "version": "1.12.0",
+      "upstream": "https://github.com/jpillora/chisel/releases/tag/v1.12.0",
+      "license": "MIT",
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/jpillora/chisel/releases/download/v1.12.0/chisel_1.12.0_linux_amd64.gz",
+          "sha256": "f3f180f1d93aa72cce4e6386f98cc06569a0146fbd65eb4423cf83e6434bcfe6",
+          "format": "gz",
+          "member": "",
+          "filename": "chisel",
+          "abi": "linux amd64; verify upstream minimum kernel/runtime requirements"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/jpillora/chisel/releases/download/v1.12.0/chisel_1.12.0_linux_arm64.gz",
+          "sha256": "2ec6152cd2c74fe0146d4d79e4e7aa174521368c56e433d55e023a92ea404ec3",
+          "format": "gz",
+          "member": "",
+          "filename": "chisel",
+          "abi": "linux arm64; verify upstream minimum kernel/runtime requirements"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/jpillora/chisel/releases/download/v1.12.0/chisel_1.12.0_windows_amd64.zip",
+          "sha256": "600a8ad6f03bc7f6d285fd01ab6a3f8a657204adaafa5666ade9451d18df1ebc",
+          "format": "zip",
+          "member": "chisel.exe",
+          "filename": "chisel.exe",
+          "abi": "windows amd64; verify upstream minimum kernel/runtime requirements"
+        }
+      }
+    },
+    "grpcurl": {
+      "version": "1.9.4",
+      "upstream": "https://github.com/fullstorydev/grpcurl/releases/tag/v1.9.4",
+      "license": "MIT",
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/fullstorydev/grpcurl/releases/download/v1.9.4/grpcurl_1.9.4_linux_x86_64.tar.gz",
+          "sha256": "97e13d58d2733a0e62cd2571d1d5f0c02823f0d25282f08bddedf1ad9c5d1736",
+          "format": "tar.gz",
+          "member": "grpcurl",
+          "filename": "grpcurl",
+          "abi": "linux/amd64; verify upstream minimum OS/runtime requirements"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/fullstorydev/grpcurl/releases/download/v1.9.4/grpcurl_1.9.4_linux_arm64.tar.gz",
+          "sha256": "ad66227d90631da5428b4a5ccf28d63846f0f15649d8b2367df044a59edbb617",
+          "format": "tar.gz",
+          "member": "grpcurl",
+          "filename": "grpcurl",
+          "abi": "linux/arm64; verify upstream minimum OS/runtime requirements"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/fullstorydev/grpcurl/releases/download/v1.9.4/grpcurl_1.9.4_windows_x86_64.zip",
+          "sha256": "412dbe98dc6f3fddfbdc15db061768495d3b4c6ee24de998c83c36f79857680d",
+          "format": "zip",
+          "member": "grpcurl.exe",
+          "filename": "grpcurl.exe",
+          "abi": "windows/amd64; verify upstream minimum OS/runtime requirements"
+        }
+      }
+    },
+    "websocat": {
+      "version": "1.14.1",
+      "upstream": "https://github.com/vi/websocat/releases/tag/v1.14.1",
+      "license": "MIT",
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/vi/websocat/releases/download/v1.14.1/websocat.x86_64-unknown-linux-musl",
+          "sha256": "66f8dd3a0394761556339117f8bb5123bddefd44e087af2a72ec22b0bd08d514",
+          "format": "raw",
+          "member": "",
+          "filename": "websocat",
+          "abi": "Linux musl static release; TLS included"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/vi/websocat/releases/download/v1.14.1/websocat.aarch64-unknown-linux-musl",
+          "sha256": "711a69576a2ff473fb01a90ffafb571c2ed019e55479d7ae71b12c2eadeb7011",
+          "format": "raw",
+          "member": "",
+          "filename": "websocat",
+          "abi": "Linux musl static release; TLS included"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/vi/websocat/releases/download/v1.14.1/websocat.x86_64-pc-windows-gnu.exe",
+          "sha256": "284339b5b86f2b11496137d97b6705bb2ef27e64f21527c1ba240bdb6177ba3b",
+          "format": "raw",
+          "member": "",
+          "filename": "websocat.exe",
+          "abi": "windows/amd64; verify upstream minimum OS/runtime requirements"
+        }
+      }
+    }
+  }
+}

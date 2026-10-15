@@ -47,6 +47,7 @@ FROM node:22.23.3-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527
 FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS runtime-tools
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 ARG PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
+ARG DEBIAN_MIRROR=https://deb.debian.org
 # 工具包固定到 lockfile；镜像源只影响下载地址，不改变依赖版本与 integrity。
 ENV npm_config_registry=$NPM_REGISTRY \
     PLAYWRIGHT_DOWNLOAD_HOST=$PLAYWRIGHT_DOWNLOAD_HOST \
@@ -55,10 +56,19 @@ ENV npm_config_registry=$NPM_REGISTRY \
     PATH="/opt/artex-tools/node_modules/.bin:${PATH}"
 # 常用工具：ripgrep / curl / vim，加一批 recon 常备件（按需增删）。
 # Node/npm 直接来自固定摘要的官方 Debian 镜像，不再执行在线安装脚本。
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 update \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 install -y --no-install-recommends \
       ca-certificates libatomic1 libstdc++6 ripgrep curl wget vim git jq unzip \
       dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
+      openssh-client sshpass openssl procps iproute2 net-tools file socat \
+      rsync tcpdump traceroute mtr-tiny psmisc strace lsof busybox-static \
+      zip xz-utils zstd \
     && rm -rf /var/lib/apt/lists/*
+COPY deploy/container-tools/requirements.lock /opt/artex-tools/requirements.lock
+ARG PIP_INDEX_URL=https://pypi.org/simple
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes \
+      -r /opt/artex-tools/requirements.lock && pip check
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
@@ -80,13 +90,43 @@ RUN node install-browsers.cjs \
     && npm_config_offline=true npx --version \
     && rm -rf /var/lib/apt/lists/*
 
+# testssl and binary inspection need these small applets from bundled BusyBox.
+RUN ln -s /usr/bin/busybox /usr/local/bin/hexdump \
+    && ln -s /usr/bin/busybox /usr/local/bin/strings
+
+########## 固定工具链生成全平台便携包（编译器不进入运行镜像）##########
+FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine@sha256:91eda9776261207ea25fd06b5b7fed8d397dd2c0a283e77f2ab6e91bfa71079d AS portable-go
+FROM --platform=$BUILDPLATFORM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS portable-tools-build
+COPY --from=portable-go /usr/local/go /usr/local/go
+ARG GOPROXY=https://goproxy.cn,https://proxy.golang.org,direct
+ENV PATH="/usr/local/go/bin:${PATH}" GOPROXY=$GOPROXY
+WORKDIR /src
+COPY deploy/build-portable-tools.py /src/deploy/build-portable-tools.py
+COPY toolkit/portable-build.lock.json /src/toolkit/portable-build.lock.json
+RUN --mount=type=cache,target=/portable-work \
+    --mount=type=bind,source=deploy/container-tools/download-cache,target=/tool-downloads,readonly \
+    ARTEX_TOOL_ARCHIVES=/tool-downloads python3 deploy/build-portable-tools.py \
+      --work /portable-work --output /portable-tools --jobs 3
+
 ########## 固定版本的漏洞查询和检测工具 ##########
 FROM runtime-tools AS security-tools
 ARG TARGETARCH
 COPY deploy/container-tools/security-tools.lock.json deploy/container-tools/install-security-tools.py /tmp/security-tools/
-RUN python3 /tmp/security-tools/install-security-tools.py "$TARGETARCH" \
+RUN --mount=type=bind,source=deploy/container-tools/download-cache,target=/tool-downloads,readonly \
+    ARTEX_TOOL_ARCHIVES=/tool-downloads python3 /tmp/security-tools/install-security-tools.py "$TARGETARCH" \
     && rm -rf /tmp/security-tools
 COPY --chmod=755 deploy/container-tools/nuclei.py /usr/local/bin/nuclei
+COPY toolkit/artex_toolkit/ /opt/artex-kit/artex_toolkit/
+COPY toolkit/catalog.lock.json /opt/artex-kit/catalog.lock.json
+COPY toolkit/ip-data.lock.json /opt/artex-kit/ip-data.lock.json
+COPY toolkit/licenses/ /opt/artex-kit/licenses/
+COPY --from=portable-tools-build /portable-tools/ /opt/artex-kit/portable/
+COPY deploy/container-tools/install-toolkit.py /tmp/install-toolkit.py
+RUN --mount=type=bind,source=deploy/container-tools/download-cache,target=/tool-downloads,readonly \
+    ARTEX_TOOL_ARCHIVES=/tool-downloads python3 /tmp/install-toolkit.py "$TARGETARCH" && rm /tmp/install-toolkit.py
+COPY --chmod=755 deploy/container-tools/artex-kit /usr/local/bin/artex-kit
+RUN --mount=type=bind,source=deploy/container-tools/download-cache,target=/tool-downloads,readonly \
+    ARTEX_TOOL_ARCHIVES=/tool-downloads artex-kit ipdb install --data-dir /opt/artex-kit/ip-data
 
 ########## Runner 管理客户端：仅管理进程持有 socket/API 凭据 ##########
 FROM docker:29.1.3-cli@sha256:4fa0ee1f3a7e4354c4ea34558b6d4ee32859baf4973d4c8ccc8e7fe3dd730c04 AS runner-clients

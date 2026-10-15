@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -23,6 +24,9 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[
 		var p map[string]any
 		_ = json.Unmarshal(n.Payload, &p)
 		m := map[string]any{"id": n.ID, "summary": p["summary"], "state": n.State}
+		if n.State == "stopped" && p["cancellation"] != nil {
+			m["cancellation"] = p["cancellation"]
+		}
 		if n.Inherited {
 			m["source_task_id"] = n.SourceTaskID
 			m["inherited"] = true
@@ -1683,6 +1687,33 @@ func (t *ToolSet) addHint() actool.CoreTool {
 		})
 }
 
+// cancelPendingIntentTool only closes work that is still in the queue.
+func (t *ToolSet) cancelPendingIntentTool() actool.CoreTool {
+	return t.writeExpTool("cancel_pending_intent", "关闭本任务仍待领取(open)且已过时、重复或因其他工作完成而不再必要的意图，必须写明原因。保留节点、关联记录和历史，标记 stopped，不再自动领取。与 Worker 领取原子互斥：已领取/运行中或其他状态会返回冲突，不会中断 Worker；此时先重新查看态势再决定是否 steer_work 或 kill_work。",
+		obj(map[string]any{"intent_id": idp("本任务待领取的意图 id"), "reason": str("不再需要执行的具体原因（最多 4096 字节）")}, "intent_id", "reason"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				IntentID json.RawMessage `json:"intent_id"`
+				Reason   string          `json:"reason"`
+			}
+			if err := json.Unmarshal(in, &a); err != nil {
+				return actool.Errorf("参数必须为有效 JSON"), nil
+			}
+			id := pid(a.IntentID)
+			actor := t.worker
+			if actor == "" {
+				actor = "planner"
+			}
+			if err := t.ts.CancelPendingIntent(id, a.Reason, actor); err != nil {
+				if errors.Is(err, db.ErrIntentStateConflict) {
+					return actool.Errorf("状态冲突：intent_id 必须是本任务仍待领取(open)的意图；可能已被领取或关闭，请重新查看态势。"), nil
+				}
+				return actool.Errorf(err.Error()), nil
+			}
+			return jsonResult(map[string]any{"intent_id": id, "state": "stopped", "reason": strings.TrimSpace(a.Reason)})
+		})
+}
+
 // killWorkTool lets the planner terminate a single running work (by intent id).
 func (t *ToolSet) killWorkTool() actool.CoreTool {
 	return t.writeExpTool("kill_work", "终止一条正在运行的意图(work)。用于叫停跑偏/无意义的探索；被终止的意图标记为 stopped，不再自动重领。先用 get_worker_output 看看它在干嘛再决定。",
@@ -2047,7 +2078,7 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		// cold-digest §6.1: restore folded cold nodes (digest body → members → detail).
 		t.expandDigest(),
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.listGoals(), t.addIntent(), t.proveGoal(), t.goalMet(),
-		t.killWorkTool(), t.steerWorkTool(),
+		t.cancelPendingIntentTool(), t.killWorkTool(), t.steerWorkTool(),
 		// report_finding：规划态势研判时若自身已确证漏洞，可直接登记（与 worker 同工具）。
 		t.addFinding(),
 		// list_companies：查看企业列表 + scope + 资产数（拿 company_id / 理解归属范围）。

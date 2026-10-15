@@ -71,6 +71,11 @@ jobs:
           cd norma
           go mod verify
           go vet ./...
+      - name: Tool catalog, sessions, request budgets and real SFTP regressions
+        run: |
+          python3 -m venv /tmp/artex-kit-tests
+          /tmp/artex-kit-tests/bin/pip install --only-binary=:all: --require-hashes -r deploy/container-tools/requirements.lock
+          PYTHONPATH=toolkit /tmp/artex-kit-tests/bin/python -m unittest discover -s toolkit/tests -v
       - name: Two full integration runs
         run: go test ./... -count=2 -timeout=10m
       - name: Scheduling, cancellation, failover and shutdown races

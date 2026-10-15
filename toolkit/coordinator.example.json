@@ -1,0 +1,18 @@
+{
+  "token": "",
+  "callback_base": "",
+  "max_runs": 10000,
+  "origins": {
+    "http://127.0.0.1:8080": {"requests": 1000, "rate": 5, "concurrency": 2, "window_seconds": 3600}
+  },
+  "identities": {
+    "user-a": {
+      "origins": ["http://127.0.0.1:8080"],
+      "headers": {"Authorization": "Bearer REPLACE_WITH_TEST_SESSION"},
+      "check": {
+        "request": {"url": "http://127.0.0.1:8080/whoami"},
+        "expect": {"status": 200, "json": {"/id": "user-a"}}
+      }
+    }
+  }
+}

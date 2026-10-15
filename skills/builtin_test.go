@@ -27,7 +27,7 @@ func TestConcurrentSeedAndNativeInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"nuclei", "vulnx"} {
+	for _, name := range builtinNames {
 		s, ok := reg.Get(name)
 		if !ok || s.Description == "" || s.Compatibility == "" {
 			t.Fatalf("missing skill: %s", name)

@@ -11,7 +11,8 @@
  *   2. interceptor gate-> rewrite the "unauthorized" code field to success
  *   3. content gate   -> stub the menu/permission endpoint with a full-feature payload
  *
- * Requires puppeteer-core + a system Chromium.  ( cd scripts && npm ci )
+ * The default Runner bundles puppeteer-core and Playwright Chromium. Custom
+ * environments must provide puppeteer-core and config.chromium or CHROMIUM.
  *
  * config.json schema (all fields optional except baseUrl):
  * {
@@ -38,11 +39,18 @@ const path = require('path');
 
 let puppeteer;
 try { puppeteer = require('puppeteer-core'); }
-catch (e) { console.error("[!] run `npm ci` in the scripts/ dir first (needs puppeteer-core)"); process.exit(1); }
+catch (e) {
+  try { puppeteer = require('/opt/artex-tools/node_modules/puppeteer-core'); }
+  catch (_) { console.error("[!] puppeteer-core unavailable; select a Runner with api-recon browser dependencies"); process.exit(1); }
+}
 
 function loadCfg(p) {
   const c = JSON.parse(fs.readFileSync(p, 'utf8'));
   c.baseUrl || (() => { throw new Error("config.baseUrl required"); })();
+  if (!c.chromium && !process.env.CHROMIUM) {
+    try { c.chromium = require('/opt/artex-tools/node_modules/playwright').chromium.executablePath(); }
+    catch (_) { /* External runners can supply their own Chromium. */ }
+  }
   c.chromium = c.chromium || process.env.CHROMIUM || '/usr/bin/chromium';
   c.neutralize = c.neutralize || { fields: ['response_code', 'code', 'errno', 'ret', 'status'], success: 0, flags: { success: true } };
   c.forward = c.forward !== false;
@@ -210,7 +218,7 @@ function neutralize(txt, n) {
   const wsUniq = [...new Set(ws.map(f => f.url))].filter(Boolean).sort();
   const outdir = path.dirname(process.argv[2] || '.');
   fs.writeFileSync(path.join(outdir, 'runtime_api.json'),
-    JSON.stringify({ shell, uniq, perRoute, rec, ws, wsEndpoints: wsUniq, sse: [...sse] }, null, 2));
+    JSON.stringify({ provenance: 'mock-runtime', backendVerified: false, shell, uniq, perRoute, rec, ws, wsEndpoints: wsUniq, sse: [...sse] }, null, 2));
 
   // merge with static
   let merged = new Set(uniq.map(x => x.split(' ')[1]));

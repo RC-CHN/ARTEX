@@ -29,5 +29,15 @@
     "version": "10.5.0",
     "url": "https://github.com/projectdiscovery/nuclei-templates/archive/refs/tags/v10.5.0.tar.gz",
     "sha256": "80fbabceca095fac40afecc7f023748df22b9576b9ff10a4422bd2fbf81f9a41"
+  },
+  "sqlmap": {
+    "version": "1.10",
+    "url": "https://codeload.github.com/sqlmapproject/sqlmap/tar.gz/refs/tags/1.10",
+    "sha256": "aea3bf921d9a2466bc0e33cf43bc941f527eabf7981ec1de104220def3a1cba4"
+  },
+  "testssl": {
+    "version": "3.2.4",
+    "url": "https://codeload.github.com/testssl/testssl.sh/tar.gz/refs/tags/v3.2.4",
+    "sha256": "98528f8a0ac07f1e226efaa8ead438247df8efcb8fee4e056a937ab82a305490"
   }
 }

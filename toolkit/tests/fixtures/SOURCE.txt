@@ -1,0 +1,4 @@
+Synthetic format test data, not a live GeoLite database.
+Source: https://github.com/maxmind/MaxMind-DB/blob/c3ce82bec7835e41d91f1757d5ac50815328010c/test-data/GeoLite2-ASN-Test.mmdb
+SHA-256: 75901b98ed6e58d3bd41af9985044b747a7ec0be1369f930c24f5e044427181a
+License: MIT (LICENSE-MIT). Never use this fixture for real IP attribution.

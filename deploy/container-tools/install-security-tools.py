@@ -17,8 +17,13 @@ root = Path(sys.argv[2] if len(sys.argv) > 2 else "/")
 
 
 def download(item, target):
-    subprocess.run(["curl", "--fail", "--silent", "--show-error", "--location", "--retry", "3", "--retry-all-errors", "--connect-timeout", "30",
-                    "--max-time", "600", "--output", str(target), item["url"]], check=True)
+    print("Fetching pinned " + target.name, flush=True)
+    cached = Path(os.environ.get("ARTEX_TOOL_ARCHIVES", "/nonexistent")) / item["sha256"]
+    if cached.is_file():
+        shutil.copyfile(cached, target)
+    else:
+        subprocess.run(["curl", "--fail", "--silent", "--show-error", "--location", "--retry", "3", "--retry-all-errors", "--connect-timeout", "30",
+                        "--max-time", "180", "--output", str(target), item["url"]], check=True)
     with target.open("rb") as stream:
         actual = hashlib.file_digest(stream, "sha256").hexdigest()
     if actual != item["sha256"]:
@@ -60,3 +65,16 @@ with tempfile.TemporaryDirectory() as tmp:
     metadata = root / "opt/artex-tools/security-tools.lock.json"
     metadata.parent.mkdir(parents=True, exist_ok=True)
     metadata.write_text(json.dumps(lock, indent=2) + "\n")
+    for name, script in (("sqlmap", "sqlmap.py"), ("testssl", "testssl.sh")):
+        archive = tmp / (name + ".tar.gz")
+        download(lock[name], archive)
+        unpacked = tmp / name
+        with tarfile.open(archive) as tar:
+            tar.extractall(unpacked, filter="data")
+        directory, = unpacked.iterdir()
+        destination = root / "opt" / name
+        shutil.move(str(directory), destination)
+        wrapper = root / "usr/local/bin" / name
+        interpreter = "python3" if name == "sqlmap" else "bash"
+        wrapper.write_text(f'#!/bin/sh\nexec {interpreter} /opt/{name}/{script} "$@"\n')
+        wrapper.chmod(0o755)

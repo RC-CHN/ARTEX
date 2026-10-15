@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "release": "2026-10-15",
+  "sources": {
+    "ipv4": {
+      "filename": "ipv4.xdb",
+      "format": "raw",
+      "url": "https://raw.githubusercontent.com/lionsoul2014/ip2region/1bf6cabfb63c1a14af0971749c2120a3e5c77d72/data/ip2region_v4.xdb",
+      "sha256": "27ecba8c9a6d5e3b280aedbe7ee15c65372b179fbd0dad3845d8c608f2fcace1",
+      "size": 11122642,
+      "data_sha256": "27ecba8c9a6d5e3b280aedbe7ee15c65372b179fbd0dad3845d8c608f2fcace1",
+      "data_size": 11122642,
+      "date": "2026-10-14",
+      "provider": "ip2region",
+      "attribution_url": "https://github.com/lionsoul2014/ip2region",
+      "license": "Apache-2.0 OR MIT",
+      "revision": "1bf6cabfb63c1a14af0971749c2120a3e5c77d72"
+    },
+    "ipv6": {
+      "filename": "ipv6.xdb",
+      "format": "raw",
+      "url": "https://raw.githubusercontent.com/lionsoul2014/ip2region/1bf6cabfb63c1a14af0971749c2120a3e5c77d72/data/ip2region_v6.xdb",
+      "sha256": "939f6b46bd2b8bec3cf7c5ceb8ba782266ae9b1f35b5ba7916700dec0b7506ed",
+      "size": 37277813,
+      "data_sha256": "939f6b46bd2b8bec3cf7c5ceb8ba782266ae9b1f35b5ba7916700dec0b7506ed",
+      "data_size": 37277813,
+      "date": "2026-08-14",
+      "provider": "ip2region",
+      "attribution_url": "https://github.com/lionsoul2014/ip2region",
+      "license": "Apache-2.0 OR MIT",
+      "revision": "1bf6cabfb63c1a14af0971749c2120a3e5c77d72"
+    },
+    "asn": {
+      "filename": "asn.mmdb",
+      "format": "gz",
+      "url": "https://download.db-ip.com/free/dbip-asn-lite-2026-10.mmdb.gz",
+      "sha256": "6cdde02baa8c1bd619ab84c2e505ecd91d45288b5a87faadf1b7c41525a17a94",
+      "size": 5186202,
+      "data_sha256": "4384bfcfb594391bc4e0ab37751f44661eaf7cadbeee28a90a6b82dc935fec4c",
+      "data_size": 9566363,
+      "date": "2026-10-01",
+      "provider": "DB-IP ASN Lite",
+      "attribution_url": "https://db-ip.com",
+      "license": "CC-BY-4.0"
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "go_version": "go1.26.3",
+  "tools": {
+    "ffuf": {
+      "version": "2.3.0",
+      "url": "https://codeload.github.com/ffuf/ffuf/tar.gz/refs/tags/v2.3.0",
+      "sha256": "cdb2e58259f380862850eba587f71a9dc1738fb5edc1ea60414fae30fd0ed4f2",
+      "package": "."
+    },
+    "yq": {
+      "version": "4.54.1",
+      "url": "https://codeload.github.com/mikefarah/yq/tar.gz/refs/tags/v4.54.1",
+      "sha256": "0cec36e7035dd56c508bda56245cbd71e4495d2317bc2528165c4162bce79335",
+      "package": "."
+    },
+    "chisel": {
+      "version": "1.12.0",
+      "url": "https://codeload.github.com/jpillora/chisel/tar.gz/refs/tags/v1.12.0",
+      "sha256": "5c25f054b64814f770725593db525faa1999960aecf4eb15c86529dea573c431",
+      "package": "."
+    }
+  }
+}

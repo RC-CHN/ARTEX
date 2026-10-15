@@ -99,11 +99,11 @@ try:
     print('PostgreSQL schema, admin setup, authentication and management APIs: OK', flush=True)
     _, raw = request('/api/skills', token=token)
     shipped = {s['name']: s for s in json.loads(raw)['skills']}
-    for name in ('nuclei', 'vulnx'):
+    for name in ('nuclei', 'vulnx', 'protocol-check', 'ip-lookup'):
         assert name in shipped and shipped[name]['description'], shipped
         _, raw = request('/api/visibility/skill/' + name, token=token)
         assert len(json.loads(raw)['agents']) >= 4, raw
-    print('Bundled Nuclei/vulnx native skills and default visibility: OK', flush=True)
+    print('Bundled native skills and default visibility: OK', flush=True)
     browser = docker('run', '--rm', '--network', network, '--entrypoint', 'node',
                      '-v', str(Path(__file__).resolve().parent) + ':/smoke:ro',
                      '-e', 'BASE_URL=http://' + app_name + ':8787',
@@ -156,6 +156,16 @@ try:
         print(security.stdout + security.stderr, file=sys.stderr)
         raise RuntimeError('security tools smoke failed')
     print(security.stdout.strip(), flush=True)
+    toolkit = docker('run', '--rm', '--network', 'none', '--read-only', '--user', '10001:10001',
+                     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                     '--tmpfs', '/tmp:rw,mode=1777', '-e', 'HOME=/tmp/artex-toolkit-smoke',
+                     '-v', str(Path(__file__).resolve().parent) + ':/smoke:ro',
+                     '-v', str(Path(__file__).resolve().parents[1] / 'skills/api-recon/scripts') + ':/api-recon:ro',
+                     '--entrypoint', 'python3', image, '/smoke/toolkit-image-smoke.py', check=False)
+    if toolkit.returncode:
+        print(toolkit.stdout + toolkit.stderr, file=sys.stderr)
+        raise RuntimeError('toolkit image smoke failed')
+    print(toolkit.stdout.strip(), flush=True)
     print('IMAGE SMOKE PASSED', flush=True)
 except Exception:
     if app_name in created:

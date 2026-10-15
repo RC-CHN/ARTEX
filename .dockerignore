@@ -8,6 +8,11 @@
 config.json
 jwt.key
 **/node_modules
+**/__pycache__
+**/*.pyc
+*.core
+deploy/container-tools/download-cache/.partial-*
+deploy/container-tools/download-cache/.download-*
 web/.next
 web/out
 server/webui/dist

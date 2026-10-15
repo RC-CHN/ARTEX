@@ -15,8 +15,15 @@ type Tool struct {
 }
 
 type Inventory struct {
-	Vulnx  *Tool `json:"vulnx,omitempty"`
-	Nuclei *Tool `json:"nuclei,omitempty"`
+	Vulnx   *Tool            `json:"vulnx,omitempty"`
+	Nuclei  *Tool            `json:"nuclei,omitempty"`
+	Kit     *Tool            `json:"artex_kit,omitempty"`
+	HTTPX   *Tool            `json:"httpx,omitempty"`
+	Katana  *Tool            `json:"katana,omitempty"`
+	FFUF    *Tool            `json:"ffuf,omitempty"`
+	SQLMap  *Tool            `json:"sqlmap,omitempty"`
+	TestSSL *Tool            `json:"testssl,omitempty"`
+	Extras  map[string]*Tool `json:"extras,omitempty"`
 }
 
 var versionPattern = regexp.MustCompile(`^[a-zA-Z0-9.+_-]{1,64}$`)
@@ -65,7 +72,17 @@ func detect(searchPath string, manifest map[string]struct {
 		}
 		return nil
 	}
-	return Inventory{Vulnx: find("vulnx"), Nuclei: find("nuclei")}
+	i := Inventory{Vulnx: find("vulnx"), Nuclei: find("nuclei"), Kit: find("artex-kit"),
+		HTTPX: find("httpx"), Katana: find("katana"), FFUF: find("ffuf"), SQLMap: find("sqlmap"), TestSSL: find("testssl")}
+	for _, name := range []string{"subfinder", "dnsx", "naabu", "tlsx", "yq", "chisel", "grpcurl", "websocat", "ssh", "sshpass", "rsync", "socat", "tcpdump"} {
+		if t := find(name); t != nil {
+			if i.Extras == nil {
+				i.Extras = make(map[string]*Tool)
+			}
+			i.Extras[name] = t
+		}
+	}
+	return i
 }
 
 // Prompt uses fixed descriptions; a node cannot supply arbitrary instructions
@@ -81,6 +98,32 @@ func (i Inventory) Prompt() string {
 			line += "内置模板版本 " + version(i.Nuclei.Templates) + "。"
 		}
 		lines = append(lines, line)
+	}
+	for _, item := range []struct {
+		name, description string
+		tool              *Tool
+	}{
+		{"artex-kit", "多架构工具目录、分发和验证工作流；iplookup 离线查询 IP 地理归属/ASN，ipdb status 检查数据库；inventory 报告实际能力。", i.Kit},
+		{"httpx", "ProjectDiscovery Web 服务探测 CLI（Python httpx 包另行检查）。", i.HTTPX},
+		{"katana", "Web 与 JavaScript 接口爬取。", i.Katana},
+		{"ffuf", "目录、参数和虚拟主机发现。", i.FFUF},
+		{"sqlmap", "针对具体请求和参数的 SQL 注入验证。", i.SQLMap},
+		{"testssl", "TLS 协议与配置检查。", i.TestSSL},
+		{"grpcurl", "gRPC 调用与服务描述；支持反射或显式 proto/protoset。", i.Extras["grpcurl"]},
+		{"websocat", "WebSocket 文本/二进制消息交互，支持 ws/wss。", i.Extras["websocat"]},
+	} {
+		if item.tool != nil {
+			lines = append(lines, "- "+item.name+"（"+version(item.tool.Version)+"）："+item.description)
+		}
+	}
+	var extras []string
+	for _, name := range []string{"subfinder", "dnsx", "naabu", "tlsx", "yq", "chisel", "ssh", "sshpass", "rsync", "socat", "tcpdump"} {
+		if i.Extras[name] != nil {
+			extras = append(extras, name)
+		}
+	}
+	if len(extras) > 0 {
+		lines = append(lines, "- 其他可用命令："+strings.Join(extras, "、")+"。是否具备原始套接字等权限需按当前执行环境核验。")
 	}
 	if len(lines) == 0 {
 		return ""

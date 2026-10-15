@@ -1,0 +1,16 @@
+# Runtime scripting dependencies. Resolve with hashes for Python 3.12;
+# pip installs only wheels from the committed lock, never task-time downloads.
+paramiko
+requests
+httpx
+dnspython
+beautifulsoup4
+lxml
+PyYAML
+cryptography
+pycryptodome
+ldap3
+packaging
+# Offline IP data readers (no account or network needed for lookups).
+maxminddb==3.2.0
+py-ip2region==3.0.4

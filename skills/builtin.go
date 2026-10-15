@@ -10,8 +10,10 @@ import (
 	"os"
 )
 
-//go:embed nuclei/SKILL.md vulnx/SKILL.md
+//go:embed nuclei/SKILL.md vulnx/SKILL.md web-discovery/SKILL.md authenticated-verify/SKILL.md portable-tools/SKILL.md targeted-verify/SKILL.md protocol-check/SKILL.md ip-lookup/SKILL.md
 var bundled embed.FS
+
+var builtinNames = []string{"nuclei", "vulnx", "web-discovery", "authenticated-verify", "portable-tools", "targeted-verify", "protocol-check", "ip-lookup"}
 
 // SeedDefaults publishes missing files atomically without replacing user edits.
 // Visibility is seeded separately in PostgreSQL; a disabled skill stays disabled.
@@ -24,7 +26,7 @@ func SeedDefaults(dir string) error {
 		return err
 	}
 	defer root.Close()
-	for _, name := range []string{"nuclei", "vulnx"} {
+	for _, name := range builtinNames {
 		if err := seed(root, name); err != nil {
 			return fmt.Errorf("seed skill %s: %w", name, err)
 		}

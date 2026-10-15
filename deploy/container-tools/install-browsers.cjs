@@ -7,6 +7,7 @@ const tools = require('./package.json').dependencies;
 const installed = new Set();
 
 for (const name of Object.keys(tools)) {
+  if (name === 'puppeteer-core') continue; // Uses the root Playwright Chromium.
   const toolRequire = createRequire(path.join(__dirname, 'node_modules', name, 'package.json'));
   const manifest = toolRequire.resolve('playwright/package.json');
   const version = toolRequire(manifest).version;

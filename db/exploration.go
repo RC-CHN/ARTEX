@@ -325,7 +325,7 @@ WHERE exploration_id=$1 AND kind='intent' AND state='running'`, s.expID)
 // done/open/running are left untouched. Returns whether a row changed. Used by "重跑".
 func (s *ExplorationStore) ReopenIntent(id int64) (bool, error) {
 	res, err := s.db.Exec(`UPDATE exploration_nodes
-SET state='open', completed_at=NULL, blocked_reason=NULL
+SET state='open', completed_at=NULL, blocked_reason=NULL, payload=payload - 'cancellation', content_version=content_version+1
 WHERE id=$1 AND exploration_id=$2 AND kind='intent'
   AND state IN ('blocked','exhausted','stopped')`, id, s.expID)
 	if err != nil {
@@ -370,6 +370,46 @@ WHERE id=$2 AND exploration_id=$3 AND kind='intent' AND state=$4`, state, id, s.
 	}
 	n, err := res.RowsAffected()
 	return n == 1, err
+}
+
+// CancelPendingIntent closes an unclaimed queue entry without deleting its
+// history. The UPDATE competes atomically with ClaimIntent: once a worker has
+// claimed it, cancellation fails instead of interrupting execution. This also
+// covers work explicitly requeued for another attempt; earlier progress stays.
+func (s *ExplorationStore) CancelPendingIntent(id int64, reason, actor string) error {
+	reason = strings.TrimSpace(utf8Clean(reason))
+	actor = strings.TrimSpace(utf8Clean(actor))
+	if id <= 0 || reason == "" || len(reason) > 4096 || actor == "" || len(actor) > 128 {
+		return fmt.Errorf("intent_id, reason (1–4096 bytes), and actor are required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`UPDATE exploration_nodes
+SET state='stopped', completed_at=now(), blocked_reason=NULL,
+    content_version=content_version+1,
+    payload=payload || jsonb_build_object('cancellation', jsonb_build_object(
+        'reason', $3::text, 'actor', $4::text, 'at', now()))
+WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state='open'`, id, s.expID, reason, actor)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrIntentStateConflict
+	}
+	// Persist the decision in the same transaction as the state change. A replay
+	// loses the compare-and-set and cannot duplicate or overwrite this record.
+	if _, err := tx.Exec(`INSERT INTO activity(exploration_id, node_id, worker, kind, tool, summary, detail)
+VALUES ($1,$2,$3,'decision','cancel_pending_intent',$4,$4)`, s.expID, id, actor, reason); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // IntentCleanup summarizes the blackboard records removed when a user cancels
