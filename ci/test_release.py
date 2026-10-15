@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 from release_guard import require_mutable_release
+from release_images import publish, record, verified_refs
 
 
 ROOT = Path(__file__).resolve().parent
@@ -152,6 +153,93 @@ class PromotionTests(unittest.TestCase):
                 runpy.run_path(str(ROOT / "promote-release.py"), run_name="__main__")
             self.assertEqual(run.call_count, 1)
             self.assertEqual(run.call_args.args[0][0], "docker")
+
+
+class NativeImagePublicationTests(unittest.TestCase):
+    settings = {"image": "ghcr.io/rc-chn/artex", "commit": "a" * 40, "tag": "v0.9.1"}
+
+    def records(self, directory):
+        for arch, digit in [("amd64", "1"), ("arm64", "2")]:
+            (Path(directory) / (arch + ".json")).write_text(json.dumps({
+                "arch": arch, "commit": self.settings["commit"], "tag": self.settings["tag"],
+                "ref": self.settings["image"] + "@sha256:" + digit * 64}))
+
+    def test_record_uses_pushed_digest_instead_of_mutable_candidate(self):
+        ref = self.settings["image"] + "@sha256:" + "1" * 64
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch("subprocess.check_output", return_value=json.dumps([ref])):
+            record(self.settings["image"] + ":build-123-1-amd64", directory, arch="amd64", **self.settings)
+            result = json.loads((Path(directory) / "amd64.json").read_text())
+            self.assertEqual(result["ref"], ref)
+            self.assertEqual(result["commit"], self.settings["commit"])
+
+    def test_record_rejects_missing_or_wrong_repository_digest(self):
+        for digests in [[], ["ghcr.io/other/image@sha256:" + "1" * 64]]:
+            with self.subTest(digests=digests), tempfile.TemporaryDirectory() as directory, \
+                    mock.patch("subprocess.check_output", return_value=json.dumps(digests)):
+                with self.assertRaises(ValueError):
+                    record(self.settings["image"] + ":build-123-1-amd64", directory, arch="amd64", **self.settings)
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_incomplete_images_cannot_mutate_version_tags(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch("subprocess.run") as run:
+            self.records(directory)
+            (Path(directory) / "arm64.json").unlink()
+            with self.assertRaises(ValueError):
+                publish(directory, **self.settings)
+            run.assert_not_called()
+
+    def test_wrong_commit_tag_arch_or_mutable_reference_cannot_publish(self):
+        changes = [{"commit": "b" * 40}, {"tag": "v9.0.0"}, {"arch": "amd64"},
+                   {"ref": self.settings["image"] + ":build-123-1-arm64"},
+                   {"ref": "ghcr.io/other/image@sha256:" + "2" * 64},
+                   {"ref": self.settings["image"] + "@sha256:" + "1" * 64}]
+        for change in changes:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory, \
+                    mock.patch("subprocess.run") as run:
+                self.records(directory)
+                path = Path(directory) / "arm64.json"
+                item = json.loads(path.read_text())
+                item.update(change)
+                path.write_text(json.dumps(item))
+                with self.assertRaises(ValueError):
+                    publish(directory, **self.settings)
+                run.assert_not_called()
+
+    def test_previously_published_release_cannot_be_mutated(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": REPO}), \
+                mock.patch("release_images.require_mutable_release", side_effect=SystemExit("published")), \
+                mock.patch("subprocess.run") as run:
+            self.records(directory)
+            with self.assertRaises(SystemExit):
+                publish(directory, **self.settings)
+            run.assert_not_called()
+
+    def test_publication_uses_exact_verified_digests_and_never_promotes_latest(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": REPO}), \
+                mock.patch("release_images.require_mutable_release") as guard, \
+                mock.patch("subprocess.run") as run:
+            self.records(directory)
+            expected = verified_refs(directory, **self.settings)
+            publish(directory, **self.settings)
+            guard.assert_called_once_with(REPO, self.settings["tag"])
+            self.assertEqual(run.call_count, 3)
+            commands = [call.args[0] for call in run.call_args_list]
+            self.assertEqual(commands[-1][-2:], list(expected.values()))
+            self.assertFalse(any(":latest" in argument for command in commands for argument in command))
+            self.assertTrue(all(call.kwargs["check"] for call in run.call_args_list))
+
+    def test_failed_architecture_tag_prevents_multiarch_publication(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": REPO}), \
+                mock.patch("release_images.require_mutable_release"), \
+                mock.patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, ["docker"])) as run:
+            self.records(directory)
+            with self.assertRaises(subprocess.CalledProcessError):
+                publish(directory, **self.settings)
+            self.assertEqual(run.call_count, 1)
 
 
 if __name__ == "__main__":

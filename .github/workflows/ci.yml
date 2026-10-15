@@ -9,6 +9,14 @@ on:
       ref:
         type: string
         required: false
+      skip-frontend:
+        description: Release runs the same frontend workflow separately for early packaging.
+        type: boolean
+        default: false
+      skip-container:
+        description: Release verifies its final native images, including the manager smoke.
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -32,8 +40,42 @@ jobs:
             norma/go.sum
       - run: python3 ci/verify-source.py
       - run: python3 -m unittest discover -s ci -p 'test_*.py'
-      - run: bash -n build.sh install.sh update.sh start.sh deploy/container-tools/npx.sh
+      - run: bash -n build.sh install.sh update.sh start.sh deploy/container-tools/npx.sh ci/managed-runner-smoke.sh
       - run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
+  static:
+    name: Go modules and static analysis
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - run: |
+          go mod verify
+          go vet ./...
+          cd norma
+          go mod verify
+          go vet ./...
+
+  toolkit:
+    name: Tool catalog, sessions, budgets and SFTP regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - run: |
+          python3 -m venv /tmp/artex-kit-tests
+          /tmp/artex-kit-tests/bin/pip install --only-binary=:all: --require-hashes -r deploy/container-tools/requirements.lock
+          PYTHONPATH=toolkit /tmp/artex-kit-tests/bin/python -m unittest discover -s toolkit/tests -v
 
   backend:
     name: Go and PostgreSQL regression
@@ -64,18 +106,6 @@ jobs:
           cache-dependency-path: |
             go.sum
             norma/go.sum
-      - name: Verify modules and static analysis
-        run: |
-          go mod verify
-          go vet ./...
-          cd norma
-          go mod verify
-          go vet ./...
-      - name: Tool catalog, sessions, request budgets and real SFTP regressions
-        run: |
-          python3 -m venv /tmp/artex-kit-tests
-          /tmp/artex-kit-tests/bin/pip install --only-binary=:all: --require-hashes -r deploy/container-tools/requirements.lock
-          PYTHONPATH=toolkit /tmp/artex-kit-tests/bin/python -m unittest discover -s toolkit/tests -v
       - name: Two full integration runs
         run: go test ./... -count=2 -timeout=10m
       - name: Scheduling, cancellation, failover and shutdown races
@@ -88,6 +118,20 @@ jobs:
           CGO_ENABLED=0 go build -o "$ARTEX_RUNNER_BINARY" ./cmd/artex-runner
           docker pull "$ARTEX_RUNNER_DOCKER_IMAGE"
           go test -race ./integration -count=2 -timeout=5m
+
+  sdk:
+    name: Norma SDK regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: norma/go.mod
+          cache-dependency-path: norma/go.sum
       - name: Local Norma SDK regression
         working-directory: norma
         run: |
@@ -96,37 +140,14 @@ jobs:
           go test -race ./noaadapter -run 'Test(Reassemble|CompressReplay|Concurrent|SessionConcurrent|StateStoreConcurrent|ArchiverConcurrent|ChaosAgent|LongSessionViewStaysValid)' -count=1 -timeout=5m
 
   frontend:
-    name: Frontend cache regression and static export
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ inputs.ref || github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22.23.3
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci --ignore-scripts
-        working-directory: web
-      - run: npm run test:unit
-        working-directory: web
-      - run: npm run typecheck
-        working-directory: web
-      - run: npm run build:static
-        working-directory: web
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: web-dist
-          path: web/out
-          if-no-files-found: error
-          retention-days: 7
+    if: ${{ !inputs.skip-frontend }}
+    uses: ./.github/workflows/frontend.yml
+    with:
+      ref: ${{ inputs.ref || github.sha }}
 
   container:
     name: Container API and offline browser smoke
-    needs: [source, backend, frontend]
+    if: ${{ !inputs.skip-container }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -146,8 +167,11 @@ jobs:
             GOPROXY=https://proxy.golang.org,direct
             NPM_REGISTRY=https://registry.npmjs.org
             PLAYWRIGHT_DOWNLOAD_HOST=
-          cache-from: type=gha,scope=artex-linux-amd64
-          cache-to: type=gha,mode=max,scope=artex-linux-amd64
+          cache-from: |
+            type=gha,scope=artex-linux-amd64-ci
+            type=gha,scope=artex-linux-amd64-release
+            type=gha,scope=artex-linux-amd64
+          cache-to: type=gha,mode=max,scope=artex-linux-amd64-ci
       - run: python3 ci/image-smoke.py artex:ci ci
       - name: Runner executable included in the runtime image
         run: docker run --rm --entrypoint /usr/local/bin/artex-runner artex:ci -h
@@ -158,13 +182,4 @@ jobs:
             go.sum
             norma/go.sum
       - name: Containerized manager and clean execution environments
-        env:
-          ARTEX_RUNNER_MANAGER_IMAGE: artex:ci
-          ARTEX_RUNNER_DOCKER_IMAGE: python@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
-          ARTEX_RUNNER_BINARY: /tmp/artex-runner-integration
-        run: |
-          CGO_ENABLED=0 go build -o "$ARTEX_RUNNER_BINARY" ./cmd/artex-runner
-          docker pull "$ARTEX_RUNNER_DOCKER_IMAGE"
-          go test -race ./integration -run TestManagedRunnerEnvironments -count=1 -timeout=5m
-          POSTGRES_PASSWORD=ci-validation docker compose --profile runners config --quiet
-          docker run --rm --entrypoint kubectl -v "$PWD:/src:ro" artex:ci kustomize /src/deploy/runner/k8s > /tmp/runner-k8s.yaml
+        run: bash ci/managed-runner-smoke.sh artex:ci
