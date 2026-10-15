@@ -222,7 +222,11 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 	// auto-reconnect (see cursor precedence above).
 	sendSSE := func(a db.Activity) {
 		b, _ := json.Marshal(activityDTO(a))
-		fmt.Fprintf(w, "id: %d\ndata: %s\n\n", a.ID, b)
+		cursor := a.ID
+		if cursor < since {
+			cursor = since
+		} // late transactional notices must not regress Last-Event-ID
+		fmt.Fprintf(w, "id: %d\ndata: %s\n\n", cursor, b)
 		flusher.Flush()
 	}
 
@@ -263,13 +267,17 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			if a.ID <= since {
-				continue // already replayed
+			if a.ID <= since && a.Kind != "consultation" && a.Kind != "consultation_reply" {
+				continue // ordinary frames already replayed
 			}
+			// Consultation notices commit with their queue row and may be broadcast
+			// after newer worker events. Their stable seq lets clients deduplicate.
 			if intentPtr != nil && (a.NodeID == nil || *a.NodeID != *intentPtr) {
 				continue // scoped session: only this intent's steps
 			}
-			since = a.ID
+			if a.ID > since {
+				since = a.ID
+			}
 			sendSSE(a)
 		case <-ping.C:
 			fmt.Fprint(w, ": ping\n\n")

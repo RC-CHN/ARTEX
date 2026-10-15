@@ -562,6 +562,7 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
 	window := workerRuntime.CompactionWindow()
 	wk := agent.NewWorker(workerRuntime, "task-router", s.m.dir, tx, window, s.agentMaxTurns("worker"))
+	wk.SetMainRequestPublisher(func(a db.Activity) { s.engine.bc.Publish(t.ID, a) })
 	wk.SetFindingRecorder(s.evidenceStore())
 	wk.SetCompactionWindowResolver(workerRuntime.CompactionWindow)
 	wk.SetNonStreaming(workerRuntime.nonStreaming) // 按任务当前激活 profile 的流式开关(每轮读)

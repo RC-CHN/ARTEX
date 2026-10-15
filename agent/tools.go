@@ -55,12 +55,14 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[
 // ToolSet exposes the PG-backed dual graph (asset + exploration) to an LLM agent.
 // One ToolSet is created per planner/worker run; per-run signals live here.
 type ToolSet struct {
-	findingRecorder FindingRecorder
-	as              *db.AssetStore   // asset store (optional; nil = asset tools not available)
-	cs              *db.CompanyStore // company store (optional)
-	ts              *db.ExplorationStore
-	worker          string
-	taskID          int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
+	publishMainNotice func(db.Activity) // broadcast an already committed consultation notice
+	mainRequest       *db.MainRequest   // automatic consultation attempt, nil for human turns
+	findingRecorder   FindingRecorder
+	as                *db.AssetStore   // asset store (optional; nil = asset tools not available)
+	cs                *db.CompanyStore // company store (optional)
+	ts                *db.ExplorationStore
+	worker            string
+	taskID            int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
 	// coverageDisabled mirrors tasks.coverage_enabled=false. Stored inverted so the
 	// zero value (all existing ToolSet constructions) means ENABLED — matching the
 	// DB default (true). When true: graphOverviewData omits coverage metrics and
@@ -1450,7 +1452,11 @@ func (t *ToolSet) addOneHint(it hintItem) (int64, error) {
 	}
 	// 唤醒 planner 不在此处逐条做——由 addHint 在整批写完后统一触发一次（带上提示文本），
 	// 避免一次 add_hint 多条提示逐条刷屏 planner 的触发行。
-	return t.ts.AddNode(db.KindHint, payload, 0, "active", "human", anchors)
+	origin := t.worker
+	if origin == "" {
+		origin = "human"
+	}
+	return t.ts.AddNode(db.KindHint, payload, 0, "active", origin, anchors)
 }
 
 type goalItem struct {

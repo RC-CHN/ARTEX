@@ -1405,3 +1405,60 @@ BEGIN
         ALTER TABLE runner_state ALTER COLUMN payload TYPE JSON USING payload::json;
     END IF;
 END $$;
+
+-- Durable worker -> main-agent consultations. Lifecycle transitions invalidate
+-- outstanding answers atomically, including transitions through legacy APIs.
+CREATE TABLE IF NOT EXISTS main_requests (
+    id BIGSERIAL PRIMARY KEY,
+    exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+    intent_id BIGINT NOT NULL REFERENCES exploration_nodes(id) ON DELETE CASCADE,
+    call_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','processing','answered','delivered','cancelled')),
+    answer TEXT NOT NULL DEFAULT '',
+    answer_source TEXT NOT NULL DEFAULT '',
+    main_seg INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(intent_id, call_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_main_requests_active ON main_requests(intent_id)
+    WHERE state IN ('pending','processing');
+CREATE INDEX IF NOT EXISTS idx_main_requests_queue ON main_requests(exploration_id, available_at, id)
+    WHERE state='pending';
+CREATE OR REPLACE FUNCTION cancel_intent_main_requests() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.kind='intent' AND NEW.state IN ('done','blocked','exhausted','stopped','deleted') THEN
+        UPDATE main_requests SET state='cancelled', updated_at=now(), last_error='intent ' || NEW.state
+        WHERE intent_id=NEW.id AND state IN ('pending','processing','answered');
+    END IF;
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS trg_cancel_intent_main_requests ON exploration_nodes;
+CREATE TRIGGER trg_cancel_intent_main_requests AFTER UPDATE OF state ON exploration_nodes
+    FOR EACH ROW EXECUTE FUNCTION cancel_intent_main_requests();
+CREATE OR REPLACE FUNCTION cancel_task_main_requests() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.status IN ('done','failed','timeout') OR NEW.deleted_at IS NOT NULL THEN
+        UPDATE main_requests SET state='cancelled', updated_at=now(), last_error='task ended'
+        WHERE exploration_id=NEW.exploration_id AND state IN ('pending','processing','answered');
+    END IF;
+    RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS trg_cancel_task_main_requests ON tasks;
+CREATE TRIGGER trg_cancel_task_main_requests AFTER UPDATE OF status, deleted_at ON tasks
+    FOR EACH ROW EXECUTE FUNCTION cancel_task_main_requests();
+
+CREATE INDEX IF NOT EXISTS idx_activity_main_request ON activity(exploration_id, (metadata->>'request_id'), id)
+    WHERE kind IN ('consultation','consultation_reply');
+
+CREATE INDEX IF NOT EXISTS idx_main_requests_processing ON main_requests(updated_at,exploration_id)
+    WHERE state='processing';
+CREATE INDEX IF NOT EXISTS idx_main_requests_active_inbox ON main_requests(exploration_id,intent_id,id)
+    WHERE state IN ('pending','processing','answered');
+CREATE INDEX IF NOT EXISTS idx_main_requests_history ON main_requests(exploration_id,
+    (CASE WHEN state IN ('pending','processing','answered') THEN 0 ELSE 1 END),id DESC);

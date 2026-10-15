@@ -242,10 +242,14 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 	}
 	// Insert graph rows in foreign-key order. The archived stub has no graph rows,
 	// so an ID conflict signals external corruption and must stop the restore.
-	for _, table := range []string{"exploration_nodes", "exploration_edges", "exploration_anchors", "task_constraints", "activity"} {
+	for _, table := range []string{"exploration_nodes", "exploration_edges", "exploration_anchors", "task_constraints", "activity", "main_requests"} {
 		if err := insertArchiveRows(tx, table, remappedTables[table]); err != nil {
 			return nil, fmt.Errorf("restore %s: %w", table, err)
 		}
+	}
+	// An archived process no longer owns an in-flight main turn.
+	if _, err := tx.Exec(`UPDATE main_requests SET state='pending',updated_at=now() WHERE exploration_id=$1 AND state='processing'`, expID); err != nil {
+		return nil, err
 	}
 	if warning, err := restoreTaskRelations(tx, taskID, remappedTables["task_relations"]); err != nil {
 		return nil, err
@@ -388,7 +392,7 @@ func insertArchiveRows(tx *sql.Tx, table string, raw json.RawMessage) error {
 		"exploration_nodes": true, "exploration_edges": true, "exploration_anchors": true,
 		"task_constraints": true, "activity": true, "task_asset_links": true, "findings": true,
 		"llm_records": true, "llm_usage": true, "skill_usage": true, "tool_usage": true,
-		"side_question_sessions": true, "side_question_requests": true,
+		"side_question_sessions": true, "side_question_requests": true, "main_requests": true,
 	}
 	if !allowed[table] {
 		return fmt.Errorf("archive restore table %q is not allowed", table)

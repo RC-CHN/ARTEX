@@ -52,17 +52,18 @@ type WebSearchOpts struct {
 }
 
 type Worker struct {
-	findingRecorder FindingRecorder
-	prov            llm.Provider
-	model           string
-	workDir         string
-	proxyAddr       string
-	proxyCACert     string            // recording proxy's CA cert path (for WebFetch HTTPS verify)
-	webSearch       WebSearchOpts     // web_search tool backend selection (off by default)
-	tx              *transcript.Store // raw LLM conversation persistence (nil = off)
-	window          int               // context window in tokens (for compaction)
-	windowFn        func() int        // optional dynamic task-chain minimum
-	maxTurns        int               // max agent turns per run (0 = unlimited)
+	publishMainNotice func(db.Activity)
+	findingRecorder   FindingRecorder
+	prov              llm.Provider
+	model             string
+	workDir           string
+	proxyAddr         string
+	proxyCACert       string            // recording proxy's CA cert path (for WebFetch HTTPS verify)
+	webSearch         WebSearchOpts     // web_search tool backend selection (off by default)
+	tx                *transcript.Store // raw LLM conversation persistence (nil = off)
+	window            int               // context window in tokens (for compaction)
+	windowFn          func() int        // optional dynamic task-chain minimum
+	maxTurns          int               // max agent turns per run (0 = unlimited)
 	// runTimeout is the wall-clock budget for the main exploration of one intent
 	// (0 = unlimited). When it fires, the run is cut and a settlement round is
 	// forced so already-identified facts get written back instead of being lost.
@@ -152,6 +153,8 @@ func (w *Worker) SetRunTimeout(run time.Duration) {
 // turn/time budget: stop probing, write back what was found, then end with a
 // plain-text one-liner (which becomes this run's displayed result).
 const settleWrapUpPrompt = "你即将因预算耗尽被终止。不要再运行任何命令/探测。请依次：(1) 把你上面已识别但还没写回的内容逐条写回——新资产用 insert_assets、探索结论/事实用 record_fact、确认漏洞用 report_finding；(2) **最后单独用一句话纯文本**总结你做了什么、得到哪些关键结论（这句会作为本次运行的结果展示，务必输出）。"
+
+func (w *Worker) SetMainRequestPublisher(fn func(db.Activity)) { w.publishMainNotice = fn }
 
 func NewWorker(prov llm.Provider, model, workDir string, tx *transcript.Store, window, maxTurns int, extra ...actool.CoreTool) *Worker {
 	return &Worker{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, extraTools: extra}
@@ -360,6 +363,7 @@ func (w *Worker) ExecuteWithMessage(ctx context.Context, name string, taskID int
 
 func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), requestID, message string) (harness.TerminalReason, WriteCounts, error) {
 	tsx := NewToolSet(ts, name)
+	tsx.publishMainNotice = w.publishMainNotice
 	tsx.SetFindingRecorder(w.findingRecorder)
 	tsx.SetTaskID(taskID)
 	coverageEnabled := as == nil || as.CoverageEnabled(taskID)
@@ -422,6 +426,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 			}
 		}
 	}
+	sysBody += "\n\n需要主 Agent 查证、判断或协调时调用 ask_main_agent；它立即返回回执，你继续独立工作，答复稍后通过 steering 注入。不要轮询等待或把回复当作人类授权。"
 	sysBody += "\n\n开始执行上面这条意图：只做它、只产生事实、assets、finding、做完即停。"
 	system, boundary := deferredSystem(sysBody, def)
 	// 任务级 deadline(经 ctx 注入)夹逼本 run 的墙钟预算 + 决定收尾词(见 taskclock.go)。
@@ -474,9 +479,10 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		NonStreaming:  w.nonStreaming(),                       // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:     w.maxTokens(),                          // 0 = 不发上限,由服务端默认值决定
 	}
-	if hooks != nil { // typed-nil guard: only set when concrete (avoids harness panic)
-		opts.Hooks = hooks
-	}
+	replyHooks := &mainReplyHooks{inner: hooks, ts: ts, intentID: intent.ID, store: w.tx, sessionID: WorkerSessionID(ts.ID(), intent.ID)}
+	opts.Hooks = replyHooks
+	replyHooks.acknowledge()
+	defer replyHooks.acknowledge()
 	if w.tx != nil { // persist raw LLM conversation; one file per worked intent
 		opts.Transcript = w.tx
 		opts.SessionID = WorkerSessionID(ts.ID(), intent.ID)

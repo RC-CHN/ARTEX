@@ -1503,6 +1503,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const task = mockTasks.find((item) => item.id === seg[1]);
     return { id: seg[1], paused: Boolean(task?.paused), queued: Boolean(task?.queued), status: task?.status ?? "" };
   }
+  if (seg[0] === "tasks" && seg[2] === "main-requests" && m === "GET") return [];
   if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "status") return { running: false };
   if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "stop") return { status: "stopped" };
   if (path === "/active") {

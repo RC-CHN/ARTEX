@@ -110,7 +110,24 @@ func mainAgentSystem(goal, dataDir, workDir string) string {
 // text / result) so the main-agent session shows its work — exactly like the
 // worker/planner sessions — not just the final answer.
 func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal, notifyHint func([]string)) (string, error) {
-	tsx := NewToolSet(ts, "human")
+	return m.chat(ctx, taskID, mainSeg, as, ts, goal, message, emit, notify, resume, notifyGoal, notifyHint, nil)
+}
+
+// Consult runs a complete main-agent turn over the same visible transcript,
+// with an internal origin and no human task-revival callbacks.
+func (m *MainAgent) Consult(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal string, request *db.MainRequest, emit func(db.Activity), notify func()) (string, error) {
+	message := fmt.Sprintf("【Worker 异步请示 #%d，意图 #%d】\n%s\n\n上下文：\n%s\n\n请查证并调用 reply_to_worker 回答。", request.ID, request.IntentID, request.Question, request.Context)
+	return m.chat(ctx, taskID, request.MainSeg, as, ts, goal, message, emit, notify, nil, nil, nil, request)
+}
+
+func (m *MainAgent) chat(ctx context.Context, taskID int64, mainSeg int, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal, notifyHint func([]string), request *db.MainRequest) (string, error) {
+	automatic := request != nil
+	origin := "human"
+	if automatic {
+		origin = "mainagent"
+	}
+	tsx := NewToolSet(ts, origin)
+	tsx.mainRequest = request
 	tsx.SetFindingRecorder(m.findingRecorder)
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())
@@ -134,9 +151,24 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 	defer releaseExecution()
 	tools, def, cleanup := AugmentTools(ctx, "mainagent", base)
 	defer cleanup()
+	if automatic {
+		filtered := tools[:0:0]
+		for _, t := range tools {
+			switch t.Name() {
+			case "set_goals", "set_constraints", "add_task_scope", "add_company_scope":
+				continue
+			}
+			filtered = append(filtered, t)
+		}
+		tools = filtered
+	}
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
 	ctx = intercept.WithReviewWorkingDirectory(ctx, mainDir)
-	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir), def)
+	body := mainAgentSystem(goal, m.workDir, mainDir)
+	if automatic {
+		body += mainConsultationPrompt
+	}
+	system, boundary := deferredSystem(body, def)
 	opts := agentcore.Options{
 		Runtime:         runtime,
 		Provider:        m.prov,
@@ -169,6 +201,9 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, mainSeg int, as *db.
 		Settlement:   wrapupSettlement("mainagent", nil),
 		NonStreaming: m.nonStreaming(), // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:    m.maxTokens(),    // 0 = 不发上限,由服务端默认值决定
+	}
+	if automatic && (opts.MaxTurns == 0 || opts.MaxTurns > 24) {
+		opts.MaxTurns = 24
 	}
 	if m.tx != nil { // persist raw human↔AI conversation; one accumulating file per segment
 		opts.Transcript = m.tx

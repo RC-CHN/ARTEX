@@ -8,6 +8,7 @@ import { MOCK } from "@/lib/mock/enabled";
 import { mockHandle } from "@/lib/mock/handler";
 import { apiCache, clearApiCache, invalidateApiData, syncApiSession } from "@/lib/api-refresh";
 import type {
+  MainRequest,
   ActiveFindingRetest,
   Activity,
   Agent,
@@ -330,6 +331,9 @@ export const api = {
   deleteTask: (id: string, options: DeleteTaskOptions) => del<DeleteTaskResult>(`/tasks/${id}`, options),
   controlTask: (id: string, action: "pause" | "resume") =>
     post<{ id: string; paused: boolean; queued: boolean; status: string }>(`/tasks/${id}/control`, { action }),
+  mainRequests: (id: string) => get<MainRequest[]>(`/tasks/${id}/main-requests`),
+  answerMainRequest: (id: string, requestId: number, answer: string) =>
+    post<{ request_id: number; status: string }>(`/tasks/${id}/main-requests/${requestId}/reply`, { answer }),
   controlTasksBatch: (taskIds: string[], action: "pause" | "resume") =>
     post<{ items: BatchControlItem[] }>("/tasks/control/batch", { task_ids: taskIds, action }),
   taskArchives: (input?: { page?: number; size?: number; q?: string; state?: string }) => {

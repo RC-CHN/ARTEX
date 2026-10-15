@@ -105,7 +105,7 @@ function groupSteps(steps: Activity[], chat: boolean): Group[] {
     }
     // In a chat (main agent) the assistant's text/result IS the answer — render it
     // full (markdown), never collapsed. thinking still folds into a compact block.
-    if (s.kind === "result" || (chat && s.kind === "text")) {
+    if (s.kind === "consultation" || s.kind === "consultation_reply" || s.kind === "result" || (chat && s.kind === "text")) {
       out.push({ type: "answer", key: s.seq, step: s });
       continue;
     }
@@ -655,6 +655,12 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
   }, [inView, step.seq, getDetail, step.summary]);
   return (
     <div ref={ref} className="mb-2 mt-1 flex min-w-0 flex-col gap-1">
+      {(step.kind === "consultation" || step.kind === "consultation_reply") && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <MessageSquare className="size-3.5" />
+          <span>{step.kind === "consultation" ? "Worker 异步请示" : step.metadata?.source === "human" ? "人工回复" : step.metadata?.source === "system" ? "系统回执" : "主 Agent 回复"} #{step.metadata?.request_id} · 意图 #{step.metadata?.intent_id}</span>
+        </div>
+      )}
       <div
         className={
           "min-w-0 flex-1 break-words rounded-lg bg-muted px-3 py-2 " +

@@ -2,6 +2,7 @@
 
 import { notifyApiEvent, subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
+import { MainRequests } from "@/components/main-requests";
 
 import {
   ArrowUpIcon,
@@ -816,7 +817,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
           // activity remains a conservative fallback.
         });
     };
-    const timer = subscribeRefresh(load, { keys: [`/tasks/${taskId}/chat`] });
+    const timer = subscribeRefresh(load, { intervalMs: 5000, keys: [`/tasks/${taskId}/chat`] });
     return () => {
       alive = false;
       timer();
@@ -984,6 +985,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
           }
           // Transcript text is already applied below. Refresh other resources only
           // for state-bearing events, coalesced centrally across streaming bursts.
+          if (a.kind === "consultation" || a.kind === "consultation_reply") notifyApiEvent([`/tasks/${taskId}/main-requests`]);
           if (a.kind === "usage") notifyApiEvent(["/exploration/tokens", "/tokens"]);
           else if (a.kind === "llm_switch" || a.kind === "llm_failover") notifyApiEvent(["/llm", "/tasks", "/stats"]);
           else if (a.kind === "intercept_request") notifyApiEvent(["/intercept", "/stats"]);
@@ -1269,14 +1271,14 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   const activeKey = keyForSession(active);
   const activeState = store[activeKey];
   // A main turn is serialized per task (chat lock), so "busy" is task-wide: while any
-  // main segment is mid-turn the active composer is disabled. Clear it the moment the
-  // active session's terminal record (kind='result', or an error) lands, so the input
-  // re-enables immediately instead of waiting for the next chat-status poll.
+  // main segment is mid-turn the active composer is disabled. An older segment's
+  // terminal record must not override a positive authoritative running flag: an
+  // automatic consultation may be using a different segment in the background.
   const activeItems = activeState?.items ?? [];
   const activeLast = activeItems[activeItems.length - 1];
   const activeSettled =
     !!activeLast && (activeLast.kind === "result" || (activeLast.kind === "text" && activeLast.is_error));
-  const mainBusy = isMain && (sending || (!activeSettled && (mainChatRunning ?? recentLive(activeKey))));
+  const mainBusy = isMain && (sending || (mainChatRunning ?? (!activeSettled && recentLive(activeKey))));
   // 折叠态（手机端）标题栏要替代整张列表：显示当前会话名 + 其它会话的未读合计，
   // 否则收起后既不知道自己在看哪个会话，也看不到别处有新消息。
   const activeDisplayTitle = (active.role === "worker" ? sessionMeta.get(active.id)?.title : "") || active.title;
@@ -1850,6 +1852,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                 </div>
               );
             })()}
+            {isMain && <MainRequests key={taskId} taskId={taskId} onOpenWorker={(id) => { approvalFocus.close(); setActiveId(String(id)); }} />}
             <ApprovalExecutionFocus
               focus={{
                 ...approvalFocus,

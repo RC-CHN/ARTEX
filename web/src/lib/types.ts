@@ -615,7 +615,23 @@ export interface FindingAssetTree {
 export const FINDING_UNASSIGNED_ASSET = "__none__";
 
 // ---- Activity / sessions ----
+export interface MainRequest {
+  id: number;
+  intent_id: number;
+  question: string;
+  context: string;
+  state: "pending" | "processing" | "answered" | "delivered" | "cancelled";
+  answer: string;
+  answer_source: "" | "mainagent" | "human" | "system";
+  main_seg: number;
+  attempts: number;
+  last_error: string;
+  created_at: string;
+}
+
 export type ActivityKind =
+  | "consultation"
+  | "consultation_reply"
   | "tool_use"
   | "tool_result"
   | "text"
@@ -650,6 +666,9 @@ export interface Activity {
   detail?: string;
   metadata?: {
     llm_transition?: LLMTransition;
+    request_id?: number;
+    intent_id?: number;
+    source?: "worker" | "mainagent" | "human" | "system";
   };
   source_task_id?: string;
   inherited?: boolean;

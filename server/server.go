@@ -260,7 +260,15 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	} else {
 		log.Printf("[engine] no LLM provider configured — engine idle until set via /api/llm or env")
 	}
+	if m.pg != nil {
+		if err := m.pg.RecoverMainRequests(); err != nil {
+			log.Printf("[main requests] recovery: %v", err)
+		}
+	}
 	s.restoreTaskRuntimes()
+	if m.pg != nil {
+		s.background(s.mainRequestLoop)
+	}
 	s.background(s.reconcileConcurrency)
 	s.startTaskArchiveWorker()
 	s.wireInterceptReviewer() // LLM 兜底审批:未命中拦截规则的命令交给模型判定
