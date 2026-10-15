@@ -9,6 +9,8 @@
 #   --build-arg GOPROXY=https://goproxy.cn,direct
 #   --build-arg NPM_REGISTRY=https://registry.npmmirror.com
 
+ARG PORTABLE_TOOLS_SOURCE=portable-tools-build
+
 ########## 阶段 1：前端静态导出 ##########
 FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS web
 ARG NPM_REGISTRY=https://registry.npmmirror.com
@@ -108,6 +110,16 @@ RUN --mount=type=cache,target=/portable-work \
     ARTEX_TOOL_ARCHIVES=/tool-downloads python3 deploy/build-portable-tools.py \
       --work /portable-work --output /portable-tools --jobs 3
 
+# CI builds the architecture-independent bundle once in parallel shards. Local
+# Docker builds keep compiling from source unless this stage is explicitly selected.
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS portable-tools-prebuilt
+COPY deploy/container-tools/portable-cache/ /portable-tools/
+COPY deploy/portable_bundle.py /verify/portable_bundle.py
+COPY toolkit/portable-build.lock.json /verify/source.lock.json
+RUN python3 /verify/portable_bundle.py validate /portable-tools --lock /verify/source.lock.json
+
+FROM ${PORTABLE_TOOLS_SOURCE} AS portable-tools-selected
+
 ########## 固定版本的漏洞查询和检测工具 ##########
 FROM runtime-tools AS security-tools
 ARG TARGETARCH
@@ -120,7 +132,7 @@ COPY toolkit/artex_toolkit/ /opt/artex-kit/artex_toolkit/
 COPY toolkit/catalog.lock.json /opt/artex-kit/catalog.lock.json
 COPY toolkit/ip-data.lock.json /opt/artex-kit/ip-data.lock.json
 COPY toolkit/licenses/ /opt/artex-kit/licenses/
-COPY --from=portable-tools-build /portable-tools/ /opt/artex-kit/portable/
+COPY --from=portable-tools-selected /portable-tools/ /opt/artex-kit/portable/
 COPY deploy/container-tools/install-toolkit.py /tmp/install-toolkit.py
 RUN --mount=type=bind,source=deploy/container-tools/download-cache,target=/tool-downloads,readonly \
     ARTEX_TOOL_ARCHIVES=/tool-downloads python3 /tmp/install-toolkit.py "$TARGETARCH" && rm /tmp/install-toolkit.py

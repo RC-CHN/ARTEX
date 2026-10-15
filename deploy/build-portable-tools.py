@@ -28,6 +28,8 @@ def main():
     parser.add_argument("--work", default="/tmp/artex-portable-build")
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--platform", action="append", help="Subset for CI; default all supported Linux/Windows/macOS targets")
+    parser.add_argument("--shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
     args = parser.parse_args()
     lock = json.loads((ROOT / "toolkit/portable-build.lock.json").read_text())
     version = subprocess.check_output(["go", "env", "GOVERSION"], text=True).strip()
@@ -38,10 +40,16 @@ def main():
     for target in supported:
         if target.startswith(("linux/", "windows/", "darwin/")):
             targets.extend(["linux/armv5", "linux/armv6", "linux/armv7"] if target == "linux/arm" else [target])
+    if set(targets) != set(lock["platforms"]):
+        raise SystemExit("toolchain targets differ from locked platform list")
+    targets = lock["platforms"]
     if args.platform:
         if set(args.platform) - set(targets):
             raise SystemExit("requested platform is not supported by this toolchain")
         targets = args.platform
+    if not 1 <= args.shards <= len(targets) or not 0 <= args.shard_index < args.shards:
+        raise SystemExit("invalid shard count or index")
+    targets = targets[args.shard_index::args.shards]
     out, work = Path(args.output).resolve(), Path(args.work).resolve()
     (out / "archives").mkdir(parents=True, exist_ok=True)
     (out / "licenses").mkdir(exist_ok=True)
@@ -114,14 +122,20 @@ def main():
 
         catalog = {"schema": 1, "tools": {name: {"version": tool["version"], "platforms": {}} for name, tool in lock["tools"].items()}}
         report = {"toolchain": version, "platforms": targets, "results": {}}
+        def build_platform(target):
+            # One compiler per target primes its standard-library cache; other
+            # tools then reuse it. Independent targets run on separate workers.
+            return [build((name, target)) for name in lock["tools"]]
+
         with ThreadPoolExecutor(max_workers=max(1, min(args.jobs, 4))) as pool:
-            for name, target, entry, record in pool.map(build, [(n, t) for t in targets for n in lock["tools"]]):
-                if entry:
-                    catalog["tools"][name]["platforms"][target] = entry
-                report["results"][name + ":" + target] = record
-                print(name, target, record["state"], flush=True)
-                (out / "catalog.lock.json").write_text(json.dumps(catalog, indent=2) + "\n")
-                (out / "build-report.json").write_text(json.dumps(report, indent=2) + "\n")
+            for results in pool.map(build_platform, targets):
+                for name, target, entry, record in results:
+                    if entry:
+                        catalog["tools"][name]["platforms"][target] = entry
+                    report["results"][name + ":" + target] = record
+                    print(name, target, record["state"], flush=True)
+                    (out / "catalog.lock.json").write_text(json.dumps(catalog, indent=2) + "\n")
+                    (out / "build-report.json").write_text(json.dumps(report, indent=2) + "\n")
         shutil.copyfile(ROOT / "toolkit/portable-build.lock.json", out / "source.lock.json")
         if any(r["state"] != "built" for r in report["results"].values()):
             raise SystemExit("some targets failed; see build-report.json")
