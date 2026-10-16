@@ -331,6 +331,7 @@ var builtinSkillVisibility = map[string][]string{
 	"targeted-verify":      {"mainagent", "planner", "worker", "auto", "pentest"},
 	"protocol-check":       {"mainagent", "planner", "worker", "auto", "pentest"},
 	"ip-lookup":            {"mainagent", "planner", "worker", "auto", "pentest"},
+	"python-environment":   {"mainagent", "planner", "worker", "auto", "pentest"},
 }
 
 // seedBuiltinSkillVisibility binds the shipped built-in skills to their default

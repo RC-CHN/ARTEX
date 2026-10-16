@@ -1,8 +1,21 @@
-# Runtime scripting dependencies. Resolve with hashes for Python 3.12;
-# pip installs only wheels from the committed lock, never task-time downloads.
+# Runtime scripting dependencies. Resolve with hashes for Python 3.12.
+# Only arpy and mulpyplexer require source builds; the Docker build stage
+# installs those with pinned build dependencies, never at task runtime.
 paramiko
-requests
-httpx
+requests[socks]
+PySocks
+httpx[socks,http2]
+aiohttp
+aiohttp-socks
+websockets
+websocket-client
+requests-toolbelt
+asyncssh
+PyJWT[crypto]
+grpcio
+protobuf
+grpcio-reflection
+grpcio-tools
 dnspython
 beautifulsoup4
 lxml
@@ -11,6 +24,41 @@ cryptography
 pycryptodome
 ldap3
 packaging
+pip
+# Protocols, structured data and scripting helpers.
+scapy
+dpkt
+netaddr
+tldextract
+pyserial
+paho-mqtt
+pymodbus
+construct
+msgpack
+cbor2
+pyelftools
+pefile
+defusedxml
+jmespath
+jsonpath-ng
+jsonschema
+tenacity
+psutil
+rich
+tqdm
+# Database clients (no database servers).
+PyMySQL
+psycopg[binary]
+redis
+pymongo
+# Binary analysis: include the complete requested set in the default image.
+capstone
+unicorn
+pwntools>=4.15
+angr
+# Z3 5's ARM64 wheel requires glibc 2.38; the pinned Bookworm image has 2.36.
+# Resolve the matching angr family for both supported runtime architectures.
+z3-solver<5
 # Offline IP data readers (no account or network needed for lookups).
 maxminddb==3.2.0
 py-ip2region==3.0.4

@@ -1,0 +1,3 @@
+# Build tools for the two pure-Python sdist-only dependencies: arpy/mulpyplexer.
+setuptools==84.0.0
+wheel

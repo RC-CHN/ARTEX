@@ -64,18 +64,31 @@ jobs:
           go vet ./...
 
   toolkit:
-    name: Tool catalog, sessions, budgets and SFTP regression
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    name: Python environment and toolkit (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: amd64, runner: ubuntu-24.04}
+          - {arch: arm64, runner: ubuntu-24.04-arm}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
-      - run: |
-          python3 -m venv /tmp/artex-kit-tests
-          /tmp/artex-kit-tests/bin/pip install --only-binary=:all: --require-hashes -r deploy/container-tools/requirements.lock
-          PYTHONPATH=toolkit /tmp/artex-kit-tests/bin/python -m unittest discover -s toolkit/tests -v
+      - run: docker build --target python-runtime -t artex:python-test .
+      - name: Offline, non-root Python operations and toolkit regression
+        run: |
+          docker run --rm --network none --read-only --user 10001:10001 \
+            --cap-drop ALL --security-opt no-new-privileges --memory 2g \
+            --tmpfs /tmp:rw,mode=1777 -e HOME=/tmp/home -e PYTHONPATH=/src/toolkit \
+            -v "$PWD:/src:ro" artex:python-test python3 /src/ci/python-environment-smoke.py
+          docker run --rm --network none --read-only --user 10001:10001 \
+            --cap-drop ALL --security-opt no-new-privileges --tmpfs /tmp:rw,mode=1777 \
+            -e HOME=/tmp -e PYTHONPATH=/src/toolkit -v "$PWD:/src:ro" \
+            artex:python-test python3 -m unittest discover -s /src/toolkit/tests -v
 
   backend:
     name: Go and PostgreSQL regression

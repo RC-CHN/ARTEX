@@ -10,6 +10,7 @@ import urllib.request
 
 from . import __version__
 from .catalog import Catalog, atomic_json, clean_stage, host_platform
+from .environment import PYTHON_MODULES
 
 
 def rpc(endpoint, payload=None):
@@ -100,15 +101,17 @@ def main(argv=None):
     if args.command == "inventory":
         from .iplookup import describe, directory
         packages = {}
-        for name in ("paramiko", "requests", "httpx", "dnspython", "beautifulsoup4", "lxml", "PyYAML", "cryptography", "pycryptodome", "ldap3", "maxminddb", "py-ip2region"):
+        for name in PYTHON_MODULES:
             try:
                 packages[name] = importlib.metadata.version(name)
             except importlib.metadata.PackageNotFoundError:
                 pass
         return {"version": __version__, "platform": host_platform(), "python": packages,
+                "python_imports": {name: PYTHON_MODULES[name] for name in packages},
                 "tools": {name: shutil.which(name) for name in (
                     "httpx", "katana", "ffuf", "sqlmap", "testssl", "nuclei", "vulnx", "interactsh-client", "jq", "yq", "chisel",
-                    "subfinder", "dnsx", "naabu", "tlsx", "grpcurl", "websocat", "ssh", "sshpass", "rsync", "socat", "tcpdump", "busybox") if shutil.which(name)},
+                    "subfinder", "dnsx", "naabu", "tlsx", "grpcurl", "websocat", "ssh", "sshpass", "rsync", "socat", "tcpdump", "busybox",
+                    "python3", "node", "npm", "playwright-cli", "pwn", "readelf", "objdump", "as", "ld", "cpp") if shutil.which(name)},
                 "ip_database": describe(directory()),
                 "coordinator_configured": bool(os.environ.get("ARTEX_KIT_TOKEN_FILE"))}
     if args.command == "serve":

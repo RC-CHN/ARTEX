@@ -99,7 +99,7 @@ try:
     print('PostgreSQL schema, admin setup, authentication and management APIs: OK', flush=True)
     _, raw = request('/api/skills', token=token)
     shipped = {s['name']: s for s in json.loads(raw)['skills']}
-    for name in ('nuclei', 'vulnx', 'protocol-check', 'ip-lookup'):
+    for name in ('nuclei', 'vulnx', 'protocol-check', 'ip-lookup', 'python-environment'):
         assert name in shipped and shipped[name]['description'], shipped
         _, raw = request('/api/visibility/skill/' + name, token=token)
         assert len(json.loads(raw)['agents']) >= 4, raw
@@ -156,6 +156,16 @@ try:
         print(security.stdout + security.stderr, file=sys.stderr)
         raise RuntimeError('security tools smoke failed')
     print(security.stdout.strip(), flush=True)
+    python_env = docker('run', '--rm', '--network', 'none', '--read-only', '--user', '10001:10001',
+                        '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--memory', '2g',
+                        '--tmpfs', '/tmp:rw,mode=1777', '-e', 'HOME=/tmp/artex-python-smoke',
+                        '-e', 'PYTHONPATH=/opt/artex-kit',
+                        '-v', str(Path(__file__).resolve().parent) + ':/smoke:ro',
+                        '--entrypoint', 'python3', image, '/smoke/python-environment-smoke.py', check=False)
+    if python_env.returncode:
+        print(python_env.stdout + python_env.stderr, file=sys.stderr)
+        raise RuntimeError('Python environment smoke failed')
+    print(python_env.stdout.strip(), flush=True)
     toolkit = docker('run', '--rm', '--network', 'none', '--read-only', '--user', '10001:10001',
                      '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                      '--tmpfs', '/tmp:rw,mode=1777', '-e', 'HOME=/tmp/artex-toolkit-smoke',

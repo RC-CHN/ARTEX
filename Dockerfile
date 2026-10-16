@@ -45,8 +45,42 @@ RUN CGO_ENABLED=0 GOARCH="${TARGETARCH}" go build -trimpath \
 ########## 阶段 3：固定 Node 运行时（与 Python 同为 Debian Bookworm）##########
 FROM node:22.23.3-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS node-runtime
 
+########## Python 依赖：固定来源，源码包仅在隔离构建阶段生成 wheel ##########
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS python-packages
+ARG PIP_INDEX_URL=https://pypi.org/simple
+COPY deploy/container-tools/build-requirements.lock /build/build-requirements.lock
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --timeout=120 --retries=5 --only-binary=:all: --require-hashes -r /build/build-requirements.lock
+COPY deploy/container-tools/requirements.lock /build/requirements.lock
+# The exception is deliberately limited to two pure-Python source distributions.
+# --no-build-isolation prevents unpinned build dependencies being downloaded.
+# --ignore-installed includes every locked runtime dependency in the prefix.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --timeout=120 --retries=5 --ignore-installed --prefix=/install \
+      --no-build-isolation --only-binary=:all: --no-binary=arpy,mulpyplexer \
+      --require-hashes -r /build/requirements.lock
+
+# Independently testable, architecture-native Python environment; no build cache.
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS python-runtime
+ARG DEBIAN_MIRROR=https://deb.debian.org
+RUN sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 update \
+    && apt-get -o Acquire::Retries=3 -o Acquire::https::Timeout=30 install -y --no-install-recommends \
+      libatomic1 libstdc++6 binutils cpp \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m pip uninstall -y pip \
+    && groupadd --gid 10001 artex-runner \
+    && useradd --uid 10001 --gid 10001 --no-log-init --no-create-home \
+      --home-dir /tmp --shell /bin/sh artex-runner
+# Remove the base image's pip first, so copying the pinned runtime prefix does
+# not leave duplicate pip dist-info records reporting the old version.
+COPY --from=python-packages /install/ /usr/local/
+COPY deploy/container-tools/requirements.lock /opt/artex-tools/requirements.lock
+ENV PWNLIB_NOTERM=1 PWNLIB_UPDATE_CHECK=never
+RUN pip check
+
 ########## 阶段 4：运行工具（独立于应用源码和发布版本缓存）##########
-FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS runtime-tools
+FROM python-runtime AS runtime-tools
 ARG NPM_REGISTRY=https://registry.npmmirror.com
 ARG PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
 ARG DEBIAN_MIRROR=https://deb.debian.org
@@ -67,10 +101,6 @@ RUN sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/
       rsync tcpdump traceroute mtr-tiny psmisc strace lsof busybox-static \
       zip xz-utils zstd \
     && rm -rf /var/lib/apt/lists/*
-COPY deploy/container-tools/requirements.lock /opt/artex-tools/requirements.lock
-ARG PIP_INDEX_URL=https://pypi.org/simple
-RUN pip install --no-cache-dir --only-binary=:all: --require-hashes \
-      -r /opt/artex-tools/requirements.lock && pip check
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
@@ -92,9 +122,8 @@ RUN node install-browsers.cjs \
     && npm_config_offline=true npx --version \
     && rm -rf /var/lib/apt/lists/*
 
-# testssl and binary inspection need these small applets from bundled BusyBox.
-RUN ln -s /usr/bin/busybox /usr/local/bin/hexdump \
-    && ln -s /usr/bin/busybox /usr/local/bin/strings
+# testssl needs hexdump; binary inspection uses the native binutils above.
+RUN ln -s /usr/bin/busybox /usr/local/bin/hexdump
 
 ########## 固定工具链生成全平台便携包（编译器不进入运行镜像）##########
 FROM --platform=$BUILDPLATFORM golang:1.26.3-alpine@sha256:91eda9776261207ea25fd06b5b7fed8d397dd2c0a283e77f2ab6e91bfa71079d AS portable-go
