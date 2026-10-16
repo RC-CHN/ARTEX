@@ -65,10 +65,13 @@ const (
 
 // Terminal is the final state of a Query, delivered as the KindResult event.
 type Terminal struct {
-	Reason   TerminalReason
-	Err      error
-	Usage    llm.Usage
-	Turns    int
-	Messages []llm.Message // full conversation snapshot (non-destructive: retains history)
-	Text     string        // the assistant's final text, for convenience
+	// InterruptedToolInput was still being generated when the model stream
+	// failed or was cancelled. It was never submitted to the tool executor.
+	InterruptedToolInput *llm.ContentBlock
+	Reason               TerminalReason
+	Err                  error
+	Usage                llm.Usage
+	Turns                int
+	Messages             []llm.Message // full conversation snapshot (non-destructive: retains history)
+	Text                 string        // the assistant's final text, for convenience
 }

@@ -224,8 +224,9 @@ type budgetTracker struct {
 }
 
 type loop struct {
-	ctx       context.Context
-	cancelRun context.CancelCauseFunc
+	interruptedToolInput *llm.ContentBlock
+	ctx                  context.Context
+	cancelRun            context.CancelCauseFunc
 	// toolCtx bounds tool execution with the run's MaxDuration deadline, so a tool
 	// that overruns the wall-clock budget is interrupted mid-flight (the model call
 	// stays on ctx — streams are never cut mid-flight). Derived from ctx, so a parent
@@ -354,12 +355,13 @@ func countBoundaries(msgs []llm.Message) int {
 
 func (l *loop) finish(reason TerminalReason, err error, text string) {
 	l.yield(Event{Kind: KindResult, Terminal: &Terminal{
-		Reason:   reason,
-		Err:      err,
-		Usage:    l.usage,
-		Turns:    l.turnCount,
-		Messages: l.messages,
-		Text:     text,
+		InterruptedToolInput: l.interruptedToolInput,
+		Reason:               reason,
+		Err:                  err,
+		Usage:                l.usage,
+		Turns:                l.turnCount,
+		Messages:             l.messages,
+		Text:                 text,
 	}}, nil)
 }
 
@@ -440,12 +442,23 @@ func (l *loop) run() {
 			return
 		}
 		if streamErr != nil {
+			// Completed tool blocks can already have executed while streaming.
+			// Preserve their outcomes; never retry the model turn over those effects.
+			if len(asst.Content) > 0 {
+				l.messages = append(l.messages, asst)
+				l.record(asst, usageDelta(usageBefore, l.usage))
+			}
+			if exec != nil && exec.count() > 0 {
+				result := llm.Message{Role: llm.RoleUser, Content: exec.results()}
+				l.messages = append(l.messages, result)
+				l.record(result, llm.Usage{})
+			}
 			if l.ctx.Err() != nil {
 				l.finish(ReasonAbortedStreaming, l.ctx.Err(), "")
 				return
 			}
 			// Reactive recovery from prompt-too-long: one forced AutoCompact, then retry.
-			if l.in.Compactor != nil && l.in.Compactor.IsOverflow(streamErr) && !l.hasAttemptedReactiveCompact {
+			if (exec == nil || exec.count() == 0) && l.in.Compactor != nil && l.in.Compactor.IsOverflow(streamErr) && !l.hasAttemptedReactiveCompact {
 				l.hasAttemptedReactiveCompact = true
 				if msgs, ok := l.in.Compactor.Reactive(l.ctx, l.messages); ok {
 					l.messages = msgs
@@ -804,6 +817,7 @@ func (l *loop) requestMessages() []llm.Message {
 }
 
 func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exec *streamExec, stopReason string, err error, consumerStopped, aborted bool) {
+	l.interruptedToolInput = nil
 	l.maybeInjectTodoReminder()
 	msgs := l.requestMessages()
 	if l.in.SystemReminder != "" {
@@ -849,6 +863,10 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 			err = e
 			break
 		}
+		if l.ctx.Err() != nil {
+			err = l.ctx.Err()
+			break
+		}
 		if ev.Type == llm.SEToolInputJSON {
 			if building {
 				curInput.WriteString(ev.Text)
@@ -873,14 +891,33 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 		}
 		acc.Add(ev)
 	}
-	if !finalizeTool() {
+	if err == nil {
+		err = l.ctx.Err()
+	}
+	if err != nil && building {
+		// A stream error is not the end of a valid tool block. In particular,
+		// do not turn incomplete JSON into an empty, apparently running call.
+		l.interruptedToolInput = &llm.ContentBlock{Type: llm.BlockToolUse, ID: curID, Name: curName, Input: []byte(curInput.String())}
+	} else if err == nil && !finalizeTool() {
 		return asst, exec, "", nil, true, false
 	}
 	l.usage.Add(acc.Usage)
 	asst = acc.Message()
+	if pending := l.interruptedToolInput; pending != nil {
+		content := asst.Content[:0:0]
+		for _, b := range asst.Content {
+			if b.Type != llm.BlockToolUse || b.ID != pending.ID {
+				content = append(content, b)
+			}
+		}
+		asst.Content = content
+	}
 	stopReason = acc.StopReason
 	if err != nil {
-		return asst, exec, stopReason, err, false, false
+		// Close visible calls with their real result when available, otherwise
+		// an interrupted receipt. The failed stream must not leave a running UI.
+		cs := !exec.drainSynthetic("tool execution interrupted by model stream failure; outcome may be incomplete")
+		return asst, exec, stopReason, err, cs, l.ctx.Err() != nil
 	}
 	// Drain tools to completion (or synthesize on abort).
 	cs, ab := exec.finish()
