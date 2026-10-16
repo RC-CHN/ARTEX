@@ -3,8 +3,8 @@ package agent
 // 本文件把内置 agent 的「默认提示词正文」(段 [A]) 变成可枚举、可被服务端幂等
 // 播种进 agent_prompts 表的目录 —— 镜像 toolcatalog.go 的 BuiltinToolSeeds()。
 //
-// 只包含【可编辑正文】：段 [B] trafficTool 与段 [C] 中间产物输出规约 是代码固定
-// 注入(见 worker.go 的 workerTrafficBlock/artifactSpec)，不入库、不可编辑，因此
+// 只包含【可编辑正文】：流量工具、中间产物与 Worker 收尾规约是代码固定
+// 注入(见 worker.go 的 workerTrafficBlock/artifactSpec/workerCompletionSpec)，不入库、不可编辑，因此
 // 不在种子里。种子文本用 Go 模板占位({{.Goal}} 等)，渲染时按运行期变量填充。
 
 // autoDefaultTmpl is the built-in "Auto" platform-operator agent's prompt. Auto

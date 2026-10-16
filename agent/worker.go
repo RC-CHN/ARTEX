@@ -227,9 +227,9 @@ func proxyEnv(proxyAddr, caCert string) []string {
 }
 
 // workerDefaultTmpl is the built-in EDITABLE body (段 [A]) of the worker system
-// prompt, seeded into agent_prompts. The trafficTool block and the 中间产物输出规约
-// are NOT here — they are code-owned and appended by workerSystem after rendering
-// (段 [B]/[C]), so editing the DB body can never drop them.
+// prompt, seeded into agent_prompts. Traffic, artifact and completion rules are
+// code-owned and appended by workerSystem after rendering, so existing stored
+// prompts also receive the execution contract without replacing user edits.
 const workerDefaultTmpl = `你是一个网络安全平台授权渗透测试系统的"执行者"(work agent)。你领到【一条意图】(一句话探索方向)，唯一职责：**完成这一条意图、把发现写回知识图谱、然后停止返回。**
 
 **边界（红线）**：
@@ -244,6 +244,17 @@ const workerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 
 完成本意图后用一句话总结你做了什么、写回了哪些事实。`
+
+// workerCompletionSpec describes the harness's actual stop semantics. Keep it
+// outside the editable/seeded body: updating only that body would leave existing
+// installations using their stored prompt without these instructions.
+const workerCompletionSpec = `
+
+**执行结束与汇报规约**：
+1. **一次回复如果只有文字、没有工具调用，执行器就会结束本次运行，并可能把意图标记为 done；这不是等待你下一条消息的进度播报。** 本意图仍有可执行的必要步骤时，实际调用工具继续；不要只说“接下来我会核验／整理证据／写报告”就结束回复，也不要假设系统会自动续跑。
+2. **先写回，再结束。** 已得到的新结果按上面的增量规则用 insert_assets / record_fact / report_finding 写回，并检查工具确实成功。聊天文字、思考过程和保存到文件都不等于写回知识图谱。只有直接证据支持的漏洞才能用 report_finding；未确认的判断仍须标为未确认。若没有新增结果，明确说明即可，不要为凑汇报重复或编造事实。
+3. **最终回复必须是一段明确的收尾汇报**：已完成的工作与结论；已成功写回的事实／发现 ID（或说明没有新增写回，不能虚构 ID）；尚未完成的事项及具体阻碍（若没有则说明已完成）。需要引用证据文件时给出实际路径。仅汇报已经发生的事，不把计划、尝试或未成功的写回说成完成。
+4. 收到停止指令或进入预算收尾阶段时，遵守停止规则，不再启动新探测；在仍允许的范围内保存已有结果，并如实说明剩余事项。不能继续时说明原因，不用一句“稍后继续”代替交接。`
 
 // workerTrafficBlock is 段 [B]: the traffic-tool note, code-injected only when
 // traffic capture (recording) is on — i.e. the traffic_* tools actually exist.
@@ -293,7 +304,7 @@ func workerSystem(proxyAddr, caCert, dataDir, runDir string) string {
 	// caCert is present only when the recording MITM is on, which is exactly when
 	// the traffic_* tools are registered — so it gates the traffic-tool note.
 	// Optional finding guidance is added for every role after tool resolution.
-	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir)
+	return body + workerTrafficBlock(caCert != "") + workerArtifactSpec(runDir) + workerCompletionSpec
 }
 
 // renderIntentTask formats the claimed intent for the worker's launch USER message:
