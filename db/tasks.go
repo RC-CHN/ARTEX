@@ -144,6 +144,7 @@ func (d *DB) CreateTask(description, goal string, llmProfileID *int64, timeoutSe
 // TaskCreateOptions contains the task data that must be committed atomically
 // with the task/exploration row.
 type TaskCreateOptions struct {
+	Resources            []TaskResourceSelection
 	Name                 string // 可选任务名称;空=未命名
 	CategoryID           *int64
 	SourceTaskIDs        []int64
@@ -241,6 +242,9 @@ RETURNING id, status, paused, created_at`, opts.Name, opts.CategoryID, descripti
 		return nil, err
 	}
 	if err := insertTaskInterceptRules(tx, t.ID, opts.InterceptRules); err != nil {
+		return nil, err
+	}
+	if err := insertTaskResources(tx, t.ID, opts.Resources); err != nil {
 		return nil, err
 	}
 	if len(opts.LLMProfileIDs) == 0 {

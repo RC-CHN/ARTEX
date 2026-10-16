@@ -94,6 +94,32 @@ func TestSharedMountsPreserveScopeWithoutScanningHistory(t *testing.T) {
 	}
 }
 
+func TestSharedResourceMountIsImmutableVersionScoped(t *testing.T) {
+	k, spec, plan := sharedFixture(t)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "17"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	k.Config.SharedMounts = append(k.Config.SharedMounts, SharedMount{Source: "/app/data/.resource-library/versions", Path: root, PVC: "resources", ReadOnly: true})
+	plan.Mounts = append(plan.Mounts, runnerfiles.Mount{Name: "resource-17", Source: "/app/data/.resource-library/versions/17", Target: "/resources/v17"})
+	roots, err := k.sharedRoots(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod, err := k.Pod("resource", spec, plan, roots)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(pod)
+	if !strings.Contains(string(raw), `"subPath":"17"`) || !strings.Contains(string(raw), `"claimName":"resources"`) {
+		t.Fatal("resource not scoped to the selected version")
+	}
+	plan.Mounts[len(plan.Mounts)-1].Writable = []string{"."}
+	if _, err = k.sharedRoots(plan); err == nil {
+		t.Fatal("global resource write mount accepted")
+	}
+}
+
 func TestSharedRejectsUnmappedEscapedReadonlyAndReplacedRoots(t *testing.T) {
 	for _, kind := range []string{"unmapped", "traversal", "prefix", "source-link", "writable-link", "readonly", "wrong-root", "missing"} {
 		t.Run(kind, func(t *testing.T) {

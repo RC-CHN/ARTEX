@@ -30,7 +30,24 @@ func (s *Server) wsResolve(rel string) (string, bool) {
 	base := filepath.Clean(s.m.dir)
 	rel = strings.TrimPrefix(strings.TrimSpace(rel), "/")
 	clean := filepath.Clean("/" + rel) // e.g. "/a/../../etc" → "/etc" (still rooted at "/")
+	if clean == "/.resource-library" || strings.HasPrefix(clean, "/.resource-library/") {
+		return "", false
+	}
 	abs := filepath.Clean(filepath.Join(base, clean))
+	// Resolve the nearest existing parent too: creating through a symlink to
+	// the library must not bypass protection merely because the leaf is new.
+	for parent := abs; ; parent = filepath.Dir(parent) {
+		if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+			library := filepath.Join(base, ".resource-library")
+			if resolved == library || strings.HasPrefix(resolved, library+string(os.PathSeparator)) {
+				return "", false
+			}
+			break
+		}
+		if parent == base || filepath.Dir(parent) == parent {
+			break
+		}
+	}
 	if abs != base && !strings.HasPrefix(abs, base+string(os.PathSeparator)) {
 		return "", false
 	}
@@ -78,6 +95,9 @@ func (s *Server) wsList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]wsEntry, 0, len(ents))
 	for _, e := range ents {
+		if _, allowed := s.wsResolve(s.wsRel(filepath.Join(abs, e.Name()))); !allowed {
+			continue
+		}
 		info, err := e.Info()
 		if err != nil {
 			continue

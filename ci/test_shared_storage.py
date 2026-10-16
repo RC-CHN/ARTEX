@@ -11,7 +11,9 @@ class SharedStorageManifestTest(unittest.TestCase):
     def test_aliases_preserve_existing_subtrees_and_retain_data(self):
         source = {"spec": {"capacity": {"storage": "10Gi"}, "csi": {"driver": "nfs.csi.k8s.io", "volumeAttributes": {"server": "fixture", "share": "/export", "subdir": "existing-pvc"}}}}
         items = module.manifest(source, "runners")["items"]
-        self.assertEqual(len(items), 10)
+        self.assertEqual(len(items), 12)
+        resources = next(pv for pv in items if pv["kind"] == "PersistentVolume" and pv["metadata"]["name"].endswith("-resources"))
+        self.assertTrue(resources["spec"]["csi"]["volumeAttributes"]["share"].endswith("/.resource-library/versions"))
         for pv, pvc in zip(items[::2], items[1::2]):
             self.assertEqual(pv["spec"]["persistentVolumeReclaimPolicy"], "Retain")
             self.assertNotIn("nfs", pv["spec"])
@@ -29,7 +31,7 @@ class SharedStorageManifestTest(unittest.TestCase):
         first = module.manifest(source, "runners")["items"][::2]
         second = module.manifest(source, "other")["items"][::2]
         self.assertEqual(first[0]["spec"]["csi"]["volumeAttributes"]["share"], "/export/existing/tasks")
-        self.assertEqual(len({pv["spec"]["csi"]["volumeHandle"] for pv in first + second}), 10)
+        self.assertEqual(len({pv["spec"]["csi"]["volumeHandle"] for pv in first + second}), 12)
 
     def test_in_tree_source_migrates_to_csi_without_changing_data_path(self):
         source = {"spec": {"capacity": {"storage": "1Gi"}, "nfs": {"server": "fixture", "path": "/export/existing"}}}

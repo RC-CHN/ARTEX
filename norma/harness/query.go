@@ -417,6 +417,7 @@ func (l *loop) run() {
 			return
 		}
 
+		l.injectHostNotices()
 		// Non-destructive proactive compaction (MicroCompact → AutoCompact).
 		if l.in.Compactor != nil {
 			l.messages = l.in.Compactor.Pre(l.ctx, l.messages, l.lastInputTokens)
@@ -531,7 +532,7 @@ func (l *loop) run() {
 			l.stopHookActive = false
 			// Surface any background-task completions before ending the turn; if any
 			// landed, take another turn so the model can react to them.
-			if l.injectTaskNotifications() {
+			if l.injectTaskNotifications() || l.injectHostNotices() {
 				l.lastContinue = ContinueTaskNotification
 				continue
 			}

@@ -630,6 +630,7 @@ export interface MainRequest {
 }
 
 export type ActivityKind =
+	| "resource_update"
   | "consultation"
   | "consultation_reply"
   | "tool_use"

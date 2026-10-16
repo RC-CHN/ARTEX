@@ -20,6 +20,7 @@ import (
 	"github.com/RC-CHN/ARTEX/norma/permission"
 	"github.com/RC-CHN/ARTEX/norma/skill"
 	actool "github.com/RC-CHN/ARTEX/norma/tool"
+	"github.com/RC-CHN/ARTEX/resourcelib"
 	"github.com/RC-CHN/ARTEX/runner"
 	"github.com/RC-CHN/ARTEX/runnerfiles"
 )
@@ -45,6 +46,20 @@ func (r *remoteExecution) Call(ctx context.Context, name string, in json.RawMess
 func (s *Server) wireRunnerExecution() {
 	s.runnerFiles = runnerfiles.NewStore()
 	agent.PrepareExecution = func(ctx context.Context, key string, info agent.RunInfo, dir string) (context.Context, actool.ExecutionRuntime, func(), error) {
+		// Closed server instances can remain in the optional global hook in
+		// embedded/test hosts. Do not read their released DB for local runs.
+		if info.TaskID > 0 && s.m != nil && (s.ctx == nil || s.ctx.Err() == nil) {
+			snapshot, e := s.taskResourceSnapshot(ctx, info.TaskID)
+			if e != nil {
+				return ctx, nil, nil, e
+			}
+			if snapshot != "" {
+				ctx = agent.WithResourceSnapshot(ctx, snapshot)
+				ctx = agent.WithResourceUpdates(ctx, func(queryCtx context.Context) ([]resourcelib.UpdateState, error) {
+					return s.resourceLibrary().UpdateStates(queryCtx, info.TaskID)
+				})
+			}
+		}
 		cfg, hub, err := s.runnerSnapshot()
 		if err != nil {
 			return ctx, nil, nil, err
@@ -89,7 +104,12 @@ func (s *Server) wireRunnerExecution() {
 			return ctx, nil, nil, fmt.Errorf("远程执行环境分配失败（不会退回本机）: %w", err)
 		}
 		rt := &remoteExecution{Session: session, spec: spec, controllerMCP: localMCP, environmentPrompt: cfg.Environments[spec.Environment].EnvironmentPrompt}
-		return context.WithValue(ctx, remoteExecutionKey{}, rt), rt, cancel, nil
+		go func() {
+			if failure := session.WaitFailure(runCtx); failure != nil {
+				cancelCause(agent.ExecutionSessionLost(failure))
+			}
+		}()
+		return context.WithValue(runCtx, remoteExecutionKey{}, rt), rt, cancel, nil
 	}
 }
 
@@ -304,6 +324,19 @@ func (s *Server) runnerFilePlan(info agent.RunInfo, dir string, skills []string)
 				}
 				plan.Mounts = append(plan.Mounts, runnerfiles.Mount{Name: "draft-" + id, Source: p, Target: p})
 			}
+		}
+	}
+	if info.TaskID > 0 && s.m.pg != nil {
+		versions, err := s.resourceLibrary().TaskVersions(context.Background(), info.TaskID)
+		if err != nil {
+			return plan, fmt.Errorf("load pinned resources: %w", err)
+		}
+		for _, v := range versions {
+			source := s.resourceLibrary().VersionPath(v)
+			if fi, err := os.Stat(source); err != nil || !fi.IsDir() {
+				return plan, errors.New("pinned resource files unavailable")
+			}
+			plan.Mounts = append(plan.Mounts, runnerfiles.Mount{Name: fmt.Sprintf("resource-%d", v.ID), Source: source, Target: source})
 		}
 	}
 	for i, name := range skills {

@@ -92,6 +92,7 @@ WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
 		{`DELETE FROM task_asset_links WHERE task_id=$1`, []any{taskID}},
 		{`DELETE FROM task_llm_profiles WHERE task_id=$1`, []any{taskID}},
 		{`DELETE FROM task_scope WHERE task_id=$1`, []any{taskID}},
+		{`DELETE FROM task_owned_resources WHERE task_id=$1`, []any{taskID}},
 		{`DELETE FROM task_constraints WHERE exploration_id=$1`, []any{expID}},
 		{`DELETE FROM activity WHERE exploration_id=$1`, []any{expID}},
 		{`DELETE FROM exploration_nodes WHERE exploration_id=$1`, []any{expID}},
@@ -267,6 +268,11 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 		warnings = append(warnings, warning...)
 	}
 	if warning, err := restoreTaskLLMProfiles(tx, remappedTables["task_llm_profiles"]); err != nil {
+		return nil, err
+	} else {
+		warnings = append(warnings, warning...)
+	}
+	if warning, err := restoreTaskResources(tx, taskID, remappedTables["task_owned_resources"]); err != nil {
 		return nil, err
 	} else {
 		warnings = append(warnings, warning...)

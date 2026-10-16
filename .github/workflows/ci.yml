@@ -122,7 +122,7 @@ jobs:
       - name: Two full integration runs
         run: go test ./... -count=2 -timeout=10m
       - name: Scheduling, cancellation, failover and shutdown races
-        run: go test -race ./agent ./server ./db ./runner ./runnernode ./runnerfiles ./skills ./toolenv ./llmpool ./traffic ./enrich -count=1 -timeout=10m
+        run: go test -race ./agent ./server ./db ./runner ./runnernode ./runnerfiles ./resourcelib ./skills ./toolenv ./llmpool ./traffic ./enrich -count=1 -timeout=10m
       - name: Runner isolation and file transfer in real Docker containers
         env:
           ARTEX_RUNNER_DOCKER_IMAGE: python@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf

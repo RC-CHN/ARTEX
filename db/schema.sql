@@ -1391,6 +1391,13 @@ CREATE TABLE IF NOT EXISTS runner_state (
     revision BIGINT NOT NULL CHECK (revision > 0),
     payload JSON NOT NULL
 );
+-- Operational projection only: no task text, prompts, file paths or tool I/O.
+CREATE TABLE IF NOT EXISTS runner_diagnostics (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    revision BIGINT NOT NULL,
+    sessions JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 -- This is an opaque broker checkpoint, never queried with JSON operators.
 -- Tool results can contain escaped NUL bytes, which JSONB rejects. JSON keeps
 -- the original document (including tool-call inputs and deduplication data)
@@ -1462,3 +1469,46 @@ CREATE INDEX IF NOT EXISTS idx_main_requests_active_inbox ON main_requests(explo
     WHERE state IN ('pending','processing','answered');
 CREATE INDEX IF NOT EXISTS idx_main_requests_history ON main_requests(exploration_id,
     (CASE WHEN state IN ('pending','processing','answered') THEN 0 ELSE 1 END),id DESC);
+
+-- Operator-owned resources, independent of discovered target assets.
+CREATE TABLE IF NOT EXISTS owned_resources (
+ id BIGSERIAL PRIMARY KEY,
+ name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120),
+ kind TEXT NOT NULL CHECK(kind IN ('tool','file','dataset','proxy','host','beacon')),
+ description TEXT NOT NULL DEFAULT '', tags JSONB NOT NULL DEFAULT '[]',
+ access_mode TEXT NOT NULL DEFAULT 'global' CHECK(access_mode IN ('global','restricted')),
+ enabled BOOLEAN NOT NULL DEFAULT true, revision BIGINT NOT NULL DEFAULT 1,
+ creator_task_id BIGINT NOT NULL DEFAULT 0,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS owned_resource_versions (
+ id BIGSERIAL PRIMARY KEY, resource_id BIGINT NOT NULL REFERENCES owned_resources(id),
+ version INTEGER NOT NULL, size BIGINT NOT NULL CHECK(size>=0),
+ manifest JSONB NOT NULL, secret_cipher BYTEA,
+ note TEXT NOT NULL DEFAULT '', validation TEXT NOT NULL DEFAULT '', actor JSONB NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ UNIQUE(resource_id,version), UNIQUE(resource_id,id)
+);
+CREATE TABLE IF NOT EXISTS owned_resource_drafts (
+ id BIGSERIAL PRIMARY KEY, resource_id BIGINT NOT NULL REFERENCES owned_resources(id),
+ base_version_id BIGINT NOT NULL DEFAULT 0, revision BIGINT NOT NULL DEFAULT 1,
+ state TEXT NOT NULL DEFAULT 'editing' CHECK(state IN ('editing','published','discarded')),
+ published_version_id BIGINT REFERENCES owned_resource_versions(id),
+ size BIGINT NOT NULL DEFAULT 0 CHECK(size>=0), manifest JSONB NOT NULL,
+ secret_cipher BYTEA, actor JSONB NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS task_owned_resources (
+ task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ resource_id BIGINT NOT NULL REFERENCES owned_resources(id), version_id BIGINT NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(task_id,resource_id),
+ FOREIGN KEY(resource_id,version_id) REFERENCES owned_resource_versions(resource_id,id)
+);
+CREATE TABLE IF NOT EXISTS owned_resource_events (
+ id BIGSERIAL PRIMARY KEY, resource_id BIGINT NOT NULL REFERENCES owned_resources(id),
+ version_id BIGINT NOT NULL DEFAULT 0, kind TEXT NOT NULL,
+ actor JSONB NOT NULL, detail TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_owned_resource_versions ON owned_resource_versions(resource_id,id DESC);
+CREATE INDEX IF NOT EXISTS idx_owned_resource_drafts ON owned_resource_drafts(resource_id,id DESC);
+CREATE INDEX IF NOT EXISTS idx_owned_resource_events ON owned_resource_events(resource_id,id DESC);

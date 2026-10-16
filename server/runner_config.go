@@ -161,12 +161,19 @@ func (p runnerPGStore) Load(ctx context.Context) (runner.Snapshot, error) {
 	return s, err
 }
 func (p runnerPGStore) Save(ctx context.Context, revision uint64, data json.RawMessage) (uint64, error) {
+	return p.SaveDiagnostic(ctx, revision, data, nil)
+}
+func (p runnerPGStore) SaveDiagnostic(ctx context.Context, revision uint64, data json.RawMessage, statuses []runner.SessionStatus) (uint64, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
 	var next uint64
-	var err error
 	if revision == 0 {
-		err = p.db.QueryRowContext(ctx, "INSERT INTO runner_state(id, revision, payload) VALUES(1,1,$1) ON CONFLICT DO NOTHING RETURNING revision", string(data)).Scan(&next)
+		err = tx.QueryRowContext(ctx, "INSERT INTO runner_state(id, revision, payload) VALUES(1,1,$1) ON CONFLICT DO NOTHING RETURNING revision", string(data)).Scan(&next)
 	} else {
-		err = p.db.QueryRowContext(ctx, "UPDATE runner_state SET revision=revision+1,payload=$1 WHERE id=1 AND revision=$2 RETURNING revision", string(data), revision).Scan(&next)
+		err = tx.QueryRowContext(ctx, "UPDATE runner_state SET revision=revision+1,payload=$1 WHERE id=1 AND revision=$2 RETURNING revision", string(data), revision).Scan(&next)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		err = runner.ErrStoreConflict
@@ -175,7 +182,20 @@ func (p runnerPGStore) Save(ctx context.Context, revision uint64, data json.RawM
 		// and runner configuration. Result delivery must not fail silently.
 		log.Printf("[runner] persist broker checkpoint failed: %v", err)
 	}
-	return next, err
+	if err != nil {
+		return 0, err
+	}
+	if statuses != nil {
+		projection, e := json.Marshal(statuses)
+		if e != nil {
+			return 0, e
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO runner_diagnostics(id,revision,sessions) VALUES(1,$1,$2) ON CONFLICT(id) DO UPDATE SET revision=EXCLUDED.revision,sessions=EXCLUDED.sessions,updated_at=now()`, next, string(projection))
+		if err != nil {
+			return 0, err
+		}
+	}
+	return next, tx.Commit()
 }
 func (s *Server) initRunners() {
 	cfg := defaultRunnerConfig()

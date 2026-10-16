@@ -38,6 +38,7 @@ func captureRun(ctx context.Context, opts agentcore.Options, input string, emit 
 // cannot confirm that those artifacts were saved. Keep the original error too,
 // especially cancellation, while preventing model-error retry of this run.
 func captureFinalSession(ctx context.Context, s *agentcore.Session, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+	input = resourceSnapshotInput(ctx, s.Messages(), input)
 	text, reason, err := captureRunSession(ctx, s, input, emit)
 	if closeErr := s.Close(); closeErr != nil {
 		closeErr = fmt.Errorf("close execution environment: %w", closeErr)
@@ -54,6 +55,7 @@ func captureFinalSession(ctx context.Context, s *agentcore.Session, input string
 // multiple prompts on the SAME conversation (e.g. a settlement round that reuses
 // the worker's accumulated context after the main run hit max_turns).
 func captureRunSession(ctx context.Context, s *agentcore.Session, input string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
+	ctx = resourceNoticeContext(ctx, emit)
 	ctx, auditTrace := intercept.WithTrace(ctx, input, approvalHistory(s.Messages()))
 	defer auditTrace.Finish()
 	var reason harness.TerminalReason

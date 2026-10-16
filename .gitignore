@@ -28,6 +28,7 @@ web/next-env.d.ts
 /docs/*
 !/docs/experimental-runners.md
 !/docs/worker-main-consultation.md
+!/docs/owned-resources.md
 !/docs/工具仓库与验证工作流.md
 
 # os

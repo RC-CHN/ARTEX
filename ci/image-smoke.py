@@ -99,7 +99,7 @@ try:
     print('PostgreSQL schema, admin setup, authentication and management APIs: OK', flush=True)
     _, raw = request('/api/skills', token=token)
     shipped = {s['name']: s for s in json.loads(raw)['skills']}
-    for name in ('nuclei', 'vulnx', 'protocol-check', 'ip-lookup', 'python-environment'):
+    for name in ('nuclei', 'vulnx', 'protocol-check', 'ip-lookup', 'python-environment', 'resource-creator'):
         assert name in shipped and shipped[name]['description'], shipped
         _, raw = request('/api/visibility/skill/' + name, token=token)
         assert len(json.loads(raw)['agents']) >= 4, raw
@@ -127,6 +127,14 @@ try:
         print((runners.stdout + runners.stderr).replace(token, '[redacted]'), file=sys.stderr)
         raise RuntimeError('runner UI smoke failed')
     print(runners.stdout.strip(), flush=True)
+    resources = docker('run', '--rm', '--network', network, '--entrypoint', 'node',
+                       '-v', str(Path(__file__).resolve().parent) + ':/smoke:ro',
+                       '-e', 'BASE_URL=http://' + app_name + ':8787', '-e', 'AUTH_TOKEN=' + token,
+                       image, '/smoke/resource-ui-smoke.cjs', check=False)
+    if resources.returncode:
+        print((resources.stdout + resources.stderr).replace(token, '[redacted]'), file=sys.stderr)
+        raise RuntimeError('resource UI smoke failed')
+    print(resources.stdout.strip(), flush=True)
     # Record a local request through the capture proxy, then read and search it.
     docker('exec', app_name, 'curl', '-fsS', '--noproxy', '', '--proxy', 'http://127.0.0.1:8788', 'http://127.0.0.1:8787/api/health?smoke=postgres-capture')
     for _ in range(40):

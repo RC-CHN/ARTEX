@@ -2,6 +2,7 @@
 
 import { subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
+import { ResourcePicker } from "@/components/resource-picker";
 
 import Link from "next/link";
 
@@ -3095,6 +3096,8 @@ function CreateTaskSheet({
   onCategoriesChanged: () => void;
 }) {
   const [open, setOpen] = React.useState(false);
+ const [resourceLoading,setResourceLoading]=React.useState(false);
+ const [resources,setResources]=React.useState<{resource_id:number;version_id:number}[]>([]);
   const [name, setName] = React.useState("");
   const [categoryID, setCategoryID] = React.useState<number | undefined>(undefined);
   const [description, setDescription] = React.useState("");
@@ -3153,6 +3156,7 @@ function CreateTaskSheet({
   }
 
   async function createTask() {
+    if(resourceLoading)return;
     if (!description.trim() || !goal.trim()) {
       toast.error("请填写描述与目标");
       return;
@@ -3173,6 +3177,7 @@ function CreateTaskSheet({
         llmProfileIds: llmProfileIDs.map(Number),
         sourceTaskIds: sourceTaskIDs,
         companyIds: companyIDs,
+        resources,
         timeoutSeconds: timeoutSec,
         seedFirstIntent,
         planHeartbeatSeconds: heartbeatSec,
@@ -3189,6 +3194,7 @@ function CreateTaskSheet({
       setSelectedTemplateID(null);
       setSourceTaskIDs([]);
       setCompanyIDs([]);
+      setResources([]);
       setLLMProfileIDs([]);
       setTimeoutMin("");
       setHeartbeatMin("10");
@@ -3308,6 +3314,7 @@ function CreateTaskSheet({
                 onChange={(e) => setGoal(e.target.value)}
               />
             </div>
+            <Field><FieldLabel>自有资源（可选）</FieldLabel><ResourcePicker value={resources} onChange={setResources} active={open} onPendingChange={setResourceLoading} /><FieldDescription>所选资源在创建时固定版本，只将名称与摘要加入任务上下文；正文和文件按需读取。全局更新不影响当前任务。</FieldDescription></Field>
             <Field>
               <FieldLabel htmlFor="source-tasks">关联任务</FieldLabel>
               <SourceTaskPicker
@@ -3429,7 +3436,7 @@ function CreateTaskSheet({
           <SheetClose asChild>
             <Button variant="outline">取消</Button>
           </SheetClose>
-          <Button onClick={createTask} disabled={creating || uploading}>
+          <Button onClick={createTask} disabled={creating || uploading || resourceLoading}>
             {creating && <Spinner data-icon="inline-start" />}
             {creating ? "创建中" : "创建"}
           </Button>

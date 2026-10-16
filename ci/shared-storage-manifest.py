@@ -11,7 +11,7 @@ import posixpath
 import re
 import sys
 
-SCOPES = ("tasks", "sessions", "skills", "drafts", "runner-inputs")
+SCOPES = ("tasks", "sessions", "skills", "drafts", "runner-inputs", ".resource-library/versions")
 
 
 def manifest(pv, namespace):
@@ -34,7 +34,7 @@ def manifest(pv, namespace):
         raise ValueError("invalid NFS export path")
     items = []
     for scope in SCOPES:
-        name = "artex-shared-" + ("inputs" if scope == "runner-inputs" else scope)
+        name = "artex-shared-" + ({"runner-inputs": "inputs", ".resource-library/versions": "resources"}.get(scope, scope))
         volume = namespace + "-" + name
         items.append({"apiVersion": "v1", "kind": "PersistentVolume", "metadata": {"name": volume, "labels": {"app.kubernetes.io/part-of": "artex-shared-storage"}}, "spec": {
             "capacity": spec["capacity"], "accessModes": ["ReadWriteMany"], "persistentVolumeReclaimPolicy": "Retain", "storageClassName": "", "mountOptions": spec.get("mountOptions", ["nfsvers=4.2"]),

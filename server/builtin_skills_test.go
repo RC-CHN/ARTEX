@@ -41,7 +41,7 @@ func TestBuiltinSecuritySkillAssemblyAndVisibility(t *testing.T) {
 		if native == nil {
 			t.Fatalf("missing native Skill for %s", key)
 		}
-		for _, name := range []string{"nuclei", "vulnx", "python-environment"} {
+		for _, name := range []string{"nuclei", "vulnx", "python-environment", "resource-creator"} {
 			raw, _ := json.Marshal(map[string]string{"name": name})
 			result, err := native.Call(context.Background(), raw, nil)
 			if err != nil || result.IsError || len(result.Extra) != 1 {

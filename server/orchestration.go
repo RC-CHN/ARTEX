@@ -40,6 +40,7 @@ func jsonResult(v any) (actool.Result, error) {
 func (s *Server) hostTools() ([]actool.CoreTool, map[string][]string) {
 	tools := append(s.m.HostTools(), s.orchestrationTools()...)
 	tools = append(tools, s.runnerTools()...)
+	tools = append(tools, s.resourceTools()...)
 	tools = append(tools, s.findingRetestTools()...)
 	tools = append(tools, s.platformTools()...) // 平台操作工具(建改 skill/工具/MCP，给 Auto 用)
 	custom, err := s.customTools()
@@ -486,6 +487,10 @@ func (s *Server) seedOrchestrationTools() {
 	for _, t := range s.platformTools() {
 		schema, _ := json.Marshal(t.InputSchema())
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, autoAgents)
+	}
+	for _, t := range s.resourceTools() {
+		schema, _ := json.Marshal(t.InputSchema())
+		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, json.RawMessage(`["worker","planner","mainagent","auto","pentest"]`))
 	}
 	s.refreshBuiltinToolSchemas()
 	s.seedAutoDefaultBindings()

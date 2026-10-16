@@ -232,7 +232,8 @@ CI 已包含主模块回归、Runner 与 SDK 关键模块竞态检查，以及�
     {"source":"/app/data/sessions","path":"/var/lib/artex-shared/sessions","pvc":"artex-shared-sessions","sub_path":""},
     {"source":"/app/data/skills","path":"/var/lib/artex-shared/skills","pvc":"artex-shared-skills","read_only":true},
     {"source":"/app/data/drafts","path":"/var/lib/artex-shared/drafts","pvc":"artex-shared-drafts","read_only":true},
-    {"source":"/app/data/runner-inputs","path":"/var/lib/artex-shared/runner-inputs","pvc":"artex-shared-inputs","read_only":true}
+    {"source":"/app/data/runner-inputs","path":"/var/lib/artex-shared/runner-inputs","pvc":"artex-shared-inputs","read_only":true},
+    {"source":"/app/data/.resource-library/versions","path":"/var/lib/artex-shared/resources","pvc":"artex-shared-resources","read_only":true}
   ],
   "shared_min_free_bytes": 1073741824,
   "shared_min_free_inodes": 10000

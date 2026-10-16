@@ -109,7 +109,7 @@ function groupSteps(steps: Activity[], chat: boolean): Group[] {
     }
     // In a chat (main agent) the assistant's text/result IS the answer — render it
     // full (markdown), never collapsed. thinking still folds into a compact block.
-    if (s.kind === "consultation" || s.kind === "consultation_reply" || s.kind === "result" || (chat && s.kind === "text")) {
+    if (s.kind === "resource_update" || s.kind === "consultation" || s.kind === "consultation_reply" || s.kind === "result" || (chat && s.kind === "text")) {
       out.push({ type: "answer", key: s.seq, step: s });
       continue;
     }
@@ -664,6 +664,7 @@ function AnswerBlock({ step, getDetail }: { step: Activity; getDetail: (seq: num
   }, [inView, step.seq, getDetail, step.summary]);
   return (
     <div ref={ref} className="mb-2 mt-1 flex min-w-0 flex-col gap-1">
+      {step.kind === "resource_update" && <div className="text-xs text-muted-foreground">资源库通知 · 旧文件路径保持可用</div>}
       {(step.kind === "consultation" || step.kind === "consultation_reply") && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <MessageSquare className="size-3.5" />
