@@ -23,6 +23,7 @@ import (
 )
 
 type mainRequestTestProvider struct {
+	stream    func(context.Context, func(llm.StreamEvent, error) bool)
 	entered   chan struct{}
 	release   chan struct{}
 	requestID int64
@@ -212,7 +213,10 @@ func TestMainRequestRecoversExhaustedAttemptWithoutModel(t *testing.T) {
 	}
 }
 
-func (p *mainRequestTestProvider) Stream(context.Context, llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+func (p *mainRequestTestProvider) Stream(ctx context.Context, _ llm.CompletionRequest) iter.Seq2[llm.StreamEvent, error] {
+	if p.stream != nil {
+		return func(y func(llm.StreamEvent, error) bool) { p.stream(ctx, y) }
+	}
 	return func(y func(llm.StreamEvent, error) bool) { y(llm.StreamEvent{}, context.Canceled) }
 }
 func (p *mainRequestTestProvider) Complete(ctx context.Context, _ llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {

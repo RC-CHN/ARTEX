@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -71,7 +72,11 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 		case harness.ReasonAbortedTools:
 			stage = "工具执行阶段"
 		}
-		sum = "（运行被中断：" + short + "；停在" + stage + progressSuffix(term, tr) + "，未完成）"
+		if expectedMainRequestStop(ctx) {
+			sum = "（本轮自动处理已结束：" + short + progressSuffix(term, tr) + "）"
+		} else {
+			sum = "（运行被中断：" + short + "；停在" + stage + progressSuffix(term, tr) + "，未完成）"
+		}
 	} else if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
 		sum = "（达到运行预算上限(" + string(reason) + ")，已收尾写回事实" + progressSuffix(term, tr) + "；本次无文字总结）"
 	} else {
@@ -110,17 +115,28 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 		fmt.Fprintf(&b, "- **累计 token**: 输入 %d / 输出 %d / 缓存读 %d / 缓存写 %d\n",
 			u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens)
 	}
-	if tr.name == "" {
+	if call := term.InterruptedToolInput; call != nil {
+		fmt.Fprintf(&b, "- **工具调用生成中断**: `%s`，尚未提交执行；不能据此认定工具已运行或回复已送达\n", call.Name)
+	}
+	if tr.name == "" && term.InterruptedToolInput == nil {
 		b.WriteString("- **工具调用**: 本次运行还没有发出工具调用就结束了\n")
 	} else if tr.pending {
 		fmt.Fprintf(&b, "- **中断时正在执行的工具**: `%s`（已运行 %s，**未返回结果**）\n\n  ```json\n  %s\n  ```\n",
 			tr.name, roundDur(time.Since(tr.at)), firstLine(tr.input, 300))
-	} else if tr.failed {
+	} else if tr.name != "" && tr.failed {
 		fmt.Fprintf(&b, "- **中断前最后一个工具**: `%s`（返回错误；执行是否完成需核对记录）\n", tr.name)
-	} else {
+	} else if tr.name != "" {
 		fmt.Fprintf(&b, "- **中断前最后一个工具**: `%s`（已正常返回）\n", tr.name)
 	}
 	return sum, b.String()
+}
+
+func terminalIsError(ctx context.Context, term *harness.Terminal) bool {
+	if term.Err == nil {
+		return false
+	}
+	return !(expectedMainRequestStop(ctx) && errors.Is(term.Err, context.Canceled) &&
+		(term.Reason == "" || term.Reason == harness.ReasonAbortedStreaming || term.Reason == harness.ReasonAbortedTools))
 }
 
 func terminalReasonLabel(reason harness.TerminalReason) string {

@@ -59,6 +59,16 @@ var (
 		"用户暂停任务时，正在运行的主 Agent 对话也被同步取消。已经产生的活动记录会保留；恢复任务后不会自动重放本轮消息")
 	AbortChatTurnFinished = cause("chat_turn_finished", "本轮对话已正常结束并释放 context",
 		"本轮对话已正常结束，服务端正在释放该轮 context 资源。这不是运行中断；若它出现在中断消息中，说明取消与收场事件发生了竞态")
+	AbortMainRequestWorkerFinished = cause("main_request_worker_finished", "Worker 已完成，请示自动取消",
+		"提问的 Worker 已完成本条意图，请示随之作废，主 Agent 停止继续处理。未提交的回复不会送达，也不会自动重试该请示")
+	AbortMainRequestCancelled = cause("main_request_cancelled", "请示已取消，停止自动处理",
+		"请示因意图终止、删除或任务结束而取消，主 Agent 停止继续处理。未提交的回复不会送达，也不会恢复已结束的意图")
+	AbortMainRequestDelivered = cause("main_request_delivered", "回复已送达，结束自动处理",
+		"该请示的回复已经写入 Worker 的对话并确认送达，主 Agent 结束本轮自动处理。已送达的回复保留，不再重复提交")
+	AbortMainRequestHumanAnswered = cause("main_request_human_answered", "人类已答复，停止自动处理",
+		"人类已经答复这条请示，主 Agent 停止生成自动回复，保留人工答复并通过 steering 送达 Worker")
+	AbortMainRequestTimeout = cause("main_request_timeout", "自动处理请示超过 10 分钟",
+		"主 Agent 本轮自动处理请示超过 10 分钟，已停止本轮运行；请求仍有效时按有界重试策略处理，不会据此取消 Worker")
 
 	// Process-level and per-run hard backstop.
 	AbortShutdown = cause("shutdown", "后端进程正在关闭",
@@ -66,6 +76,16 @@ var (
 	AbortRunHardTimeout = cause("run_hard_timeout", "单次运行的硬超时兜底已触发",
 		"单次运行超过软墙钟预算及额外宽限，说明模型请求或某个工具长时间没有返回，导致正常的回合边界收尾无法执行。请重点检查中断前最后一个未返回的工具调用")
 )
+
+// expectedMainRequestStop is a lifecycle settlement, not a failed model call.
+// Keep timeouts, user stops and unrelated execution failures distinguishable.
+func expectedMainRequestStop(ctx context.Context) bool {
+	switch context.Cause(ctx) {
+	case AbortMainRequestWorkerFinished, AbortMainRequestCancelled, AbortMainRequestDelivered, AbortMainRequestHumanAnswered:
+		return true
+	}
+	return false
+}
 
 // AbortReason resolves the named cause attached to a cancelled run context.
 func AbortReason(ctx context.Context) (code, short, text string, ok bool) {

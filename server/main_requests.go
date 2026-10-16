@@ -106,8 +106,10 @@ func (s *Server) runMainRequest(parent context.Context, t *Task, r *db.MainReque
 		s.failMainRequest(t, r, "处理轮次已用尽，恢复失败回执")
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
-	defer cancel()
+	deadlineCtx, stopDeadline := context.WithTimeoutCause(parent, 10*time.Minute, agent.AbortMainRequestTimeout)
+	defer stopDeadline()
+	ctx, cancel := context.WithCancelCause(deadlineCtx)
+	defer cancel(agent.AbortChatTurnFinished)
 	s.publishMainRequest(t, r.ID)
 	emit := func(a db.Activity) { a.MainSeg = &r.MainSeg; s.engine.emitActivity(t, a) }
 	emit(db.Activity{Worker: "mainagent", Kind: "round", Summary: fmt.Sprintf("自动处理 Worker #%d 的请示 #%d（第 %d 次）", r.IntentID, r.ID, r.Attempts)})
@@ -124,9 +126,11 @@ func (s *Server) runMainRequest(parent context.Context, t *Task, r *db.MainReque
 				return
 			case <-tick.C:
 				current, err := t.Store.MainRequestContext(ctx, r.ID)
-				if err == nil && (current.State == "cancelled" || current.State == "delivered" || (current.State == "answered" && current.AnswerSource == "human")) {
-					cancel()
-					return
+				if err == nil {
+					if cause := mainRequestStopCause(current); cause != nil {
+						cancel(cause)
+						return
+					}
 				}
 			}
 		}
@@ -136,7 +140,7 @@ func (s *Server) runMainRequest(parent context.Context, t *Task, r *db.MainReque
 	s.engine.BeginLLMCall(t.ID)
 	_, err := ma.Consult(ctx, id, s.m.Assets(), t.Store, t.Goal, r, emit, t.Notify)
 	s.engine.EndLLMCall(t.ID)
-	cancel()
+	cancel(agent.AbortChatTurnFinished)
 	<-watchDone
 	s.publishMainRequest(t, r.ID)
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -162,6 +166,24 @@ func (s *Server) runMainRequest(parent context.Context, t *Task, r *db.MainReque
 	if err := t.Store.RetryMainRequest(cleanupCtx, r.ID, r.Attempts, detail); err != nil {
 		log.Printf("[main requests] retry: %v", err)
 	}
+}
+
+func mainRequestStopCause(r *db.MainRequest) error {
+	// Human answers retain their origin after delivery; do not label them as an
+	// automatic answer merely because the worker acknowledged before the poll.
+	if (r.State == "answered" || r.State == "delivered") && r.AnswerSource == "human" {
+		return agent.AbortMainRequestHumanAnswered
+	}
+	switch r.State {
+	case "cancelled":
+		if r.LastError == "intent done" {
+			return agent.AbortMainRequestWorkerFinished
+		}
+		return agent.AbortMainRequestCancelled
+	case "delivered":
+		return agent.AbortMainRequestDelivered
+	}
+	return nil
 }
 
 func (s *Server) failMainRequest(t *Task, r *db.MainRequest, detail string) {

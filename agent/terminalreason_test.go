@@ -158,6 +158,8 @@ func TestAbortCausesAreWellFormed(t *testing.T) {
 		AbortGoalMet, AbortSettleDrainTimeout, AbortKilledByPlanner, AbortWorkPausedByUser,
 		AbortWorkCancelledByUser, AbortWorkFinished, AbortPausedRaceGuard,
 		AbortChatStoppedByUser, AbortChatPausedWithTask, AbortChatTurnFinished,
+		AbortMainRequestWorkerFinished, AbortMainRequestCancelled, AbortMainRequestDelivered,
+		AbortMainRequestHumanAnswered, AbortMainRequestTimeout,
 		AbortShutdown, AbortRunHardTimeout,
 	}
 	seen := map[string]bool{}
@@ -171,6 +173,34 @@ func TestAbortCausesAreWellFormed(t *testing.T) {
 			t.Errorf("%s detail must be longer than short text", abort.Code)
 		}
 		seen[abort.Code] = true
+	}
+}
+
+func TestConsultationSettlementHasNamedNeutralResult(t *testing.T) {
+	for _, cause := range []*AbortCause{AbortMainRequestWorkerFinished, AbortMainRequestCancelled, AbortMainRequestDelivered, AbortMainRequestHumanAnswered, AbortMainRequestTimeout, AbortShutdown} {
+		t.Run(cause.Code, func(t *testing.T) {
+			ctx, cancel := context.WithCancelCause(t.Context())
+			cancel(cause)
+			term := &harness.Terminal{Reason: harness.ReasonAbortedStreaming, Err: context.Canceled, Turns: 3,
+				InterruptedToolInput: &llm.ContentBlock{Name: "reply_to_worker", Input: []byte(`{"answer":"partial`)}}
+			summary, detail := terminalText(ctx, term, &runTrace{startedAt: time.Now()})
+			settled := cause != AbortMainRequestTimeout && cause != AbortShutdown
+			if terminalIsError(ctx, term) == settled || strings.Contains(summary, "本轮自动处理已结束") != settled {
+				t.Fatalf("incorrect settlement classification: %q error=%v", summary, terminalIsError(ctx, term))
+			}
+			for _, want := range []string{cause.Code, "reply_to_worker", "尚未提交执行"} {
+				if !strings.Contains(detail, want) {
+					t.Fatalf("missing %q: %s", want, detail)
+				}
+			}
+			if strings.Contains(detail, "正在执行的工具") || strings.Contains(detail, "未返回结果") || strings.Contains(detail, "canceled_no_cause") {
+				t.Fatalf("unsubmitted tool misreported: %s", detail)
+			}
+			term.Reason = harness.ReasonExecutionError
+			if !terminalIsError(ctx, term) {
+				t.Fatal("execution failure hidden by expected cancellation")
+			}
+		})
 	}
 }
 
