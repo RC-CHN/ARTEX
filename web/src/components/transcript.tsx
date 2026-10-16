@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+
 import {
   CheckIcon,
   ChevronDown,
@@ -16,12 +17,14 @@ import {
   XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+
+import { ApprovalDetail } from "@/components/approval-records";
 import { Markdown } from "@/components/markdown";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ApprovalDetail } from "@/components/approval-records";
+import { api } from "@/lib/api";
+import { endedToolCalls } from "@/lib/ended-tool-calls";
 import type { Activity, InterceptPending } from "@/lib/types";
 
 // ---- per-agent lane color (planner + work#1/#2/#3 …) ---------------------------
@@ -80,13 +83,14 @@ type Group =
   | { type: "user"; key: number; step: Activity; intent?: boolean }
   | { type: "answer"; key: number; step: Activity }
   | { type: "round"; key: number; label: string }
-  | { type: "tool"; key: number; worker: string; use?: Activity; result?: Activity }
+  | { type: "tool"; key: number; worker: string; use?: Activity; result?: Activity; ended?: boolean }
   | { type: "msg"; key: number; worker: string; steps: Activity[] }
   | { type: "intercept"; key: number; step: Activity };
 
 function groupSteps(steps: Activity[], chat: boolean): Group[] {
   const out: Group[] = [];
   const byToolId = new Map<string, Extract<Group, { type: "tool" }>>();
+  const ended = endedToolCalls(steps);
   for (const s of steps) {
     if (s.kind === "usage") continue; // live token-usage marker — not a rendered step
     if (s.kind === "round") {
@@ -110,7 +114,9 @@ function groupSteps(steps: Activity[], chat: boolean): Group[] {
       continue;
     }
     if (s.kind === "tool_use") {
-      const g: Extract<Group, { type: "tool" }> = { type: "tool", key: s.seq, worker: s.worker, use: s };
+      const g: Extract<Group, { type: "tool" }> = {
+        type: "tool", key: s.seq, worker: s.worker, use: s, ended: ended.has(s.seq),
+      };
       if (s.tool_use_id) byToolId.set(s.tool_use_id, g);
       out.push(g);
       continue;
@@ -372,9 +378,10 @@ function ToolBlock({
   const { use, result } = group;
   const toolName = use?.tool || result?.tool || "工具";
   const ToolIcon = toolName === "Bash" ? Terminal : Wrench;
-  const running = !result;
+  const endedWithoutResult = !result && group.ended;
+  const running = !result && !endedWithoutResult;
   const ok = !!result && !result.is_error;
-  const statusTone = running
+  const statusTone = running || endedWithoutResult
     ? "text-muted-foreground"
     : ok
       ? "text-emerald-600 dark:text-emerald-400"
@@ -383,7 +390,9 @@ function ToolBlock({
     use && use.summary.startsWith(toolName) ? use.summary.slice(toolName.length).trimStart() : (use?.summary ?? "");
   const cmd = toolInputText(toolName, rawCmd);
   // status only — the full result lives behind the expand (【输出】), not previewed inline
-  const statusText = running ? "执行中…" : ok ? "✓" : "✕ 失败";
+  let statusText = ok ? "✓" : "✕ 失败";
+  if (running) statusText = "执行中…";
+  if (endedWithoutResult) statusText = "本轮已结束，未收到结果";
 
   // key over the seqs we'd load; changes when the result (or command) arrives.
   const detailKey = `${use?.seq ?? ""}:${result?.seq ?? ""}`;
