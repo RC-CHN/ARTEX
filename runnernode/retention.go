@@ -23,7 +23,10 @@ func (n *Node) collectRetired(now time.Time) {
 			continue
 		}
 		s.mu.Lock()
-		if s.stopped && !s.cleanupRunning {
+		// Keep a stopped receipt long enough for the independent heartbeat to
+		// report a local expiry, even when its conservative local lease expired.
+		pendingStop := n.heartbeatEnabled.Load() && s.stopReason != "" && leased && l.AttemptID == s.attempt && l.Epoch == s.epoch && now.Before(l.Until.Add(2*time.Minute))
+		if s.stopped && !s.cleanupRunning && !pendingStop {
 			delete(n.sessions, id)
 			if (!s.opened && s.syncErr == nil) || s.storageCheck != nil {
 				emptyCaches = append(emptyCaches, s.dir)

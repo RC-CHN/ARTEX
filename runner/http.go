@@ -21,6 +21,7 @@ func (h *Hub) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /register", h.handleRegister)
 	mux.HandleFunc("POST /poll", h.handlePoll)
+	mux.HandleFunc("POST /heartbeat", h.handleHeartbeat)
 	mux.HandleFunc("POST /results", h.handleResult)
 	return mux
 }
@@ -191,6 +192,10 @@ func (h *Hub) WithSessionWrite(r *http.Request, sessionID string, commit func() 
 }
 
 func (h *Hub) poll(req PollRequest, authenticated string) (PollResponse, <-chan struct{}, error) {
+	return h.pollMode(req, authenticated, false)
+}
+
+func (h *Hub) pollMode(req PollRequest, authenticated string, heartbeat bool) (PollResponse, <-chan struct{}, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
@@ -246,8 +251,8 @@ func (h *Hub) poll(req PollRequest, authenticated string) (PollResponse, <-chan 
 		n.LastSeen = now
 		changed = true
 	}
-	out := PollResponse{Epoch: h.state.Epoch, ServerTime: now, Leases: []Lease{}, Commands: []Command{}}
-	if n.Capabilities.Executor == "kubernetes" {
+	out := PollResponse{Heartbeat: true, Epoch: h.state.Epoch, ServerTime: now, Leases: []Lease{}, Commands: []Command{}}
+	if !heartbeat && n.Capabilities.Executor == "kubernetes" {
 		out.Pool = h.poolPolicyLocked(n)
 		if req.PoolStatus != nil {
 			if req.PoolStatus.Idle < 0 || req.PoolStatus.Preparing < 0 || req.PoolStatus.Pods < 0 || len(req.PoolStatus.Error) > 2048 {
@@ -288,6 +293,9 @@ func (h *Hub) poll(req PollRequest, authenticated string) (PollResponse, <-chan 
 			out.Leases = append(out.Leases, Lease{SessionID: s.ID, AttemptID: s.AttemptID, Epoch: s.Epoch, Until: s.LeaseUntil})
 		}
 		for _, c := range s.Commands {
+			if heartbeat {
+				break
+			}
 			if c.Result != nil {
 				continue
 			}
@@ -457,6 +465,8 @@ func (h *Hub) acceptResult(req ResultRequest, authenticated string) error {
 		}
 		if req.UnknownOutcome {
 			h.fenceLocked(s, "remote tool outcome unknown: "+req.Error, false)
+		} else if req.Error == "session stopped" || req.Error == "unknown session or missing tool call" {
+			h.fenceLocked(s, "execution_session_lost: runner rejected call before execution", false)
 		}
 	case CommandClose:
 		if s.State != "draining" && s.State != "fenced" {

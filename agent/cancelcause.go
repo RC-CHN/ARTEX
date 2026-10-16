@@ -14,7 +14,8 @@ type AbortCause struct {
 	Text  string
 }
 
-func (c *AbortCause) Error() string { return c.Text }
+func (c *AbortCause) Error() string        { return c.Text }
+func (c *AbortCause) FatalExecution() bool { return c.Code == "execution_session_lost" }
 
 func cause(code, short, text string) *AbortCause {
 	return &AbortCause{Code: code, Short: short, Text: text}
@@ -107,4 +108,10 @@ func AbortReason(ctx context.Context) (code, short, text string, ok bool) {
 	default:
 		return "other", firstLine(c.Error(), 80), c.Error(), true
 	}
+}
+
+// ExecutionSessionLost identifies an infrastructure abort without implying that
+// an in-flight tool was never executed or can be automatically replayed.
+func ExecutionSessionLost(err error) *AbortCause {
+	return Causef("execution_session_lost", "Runner 执行会话已失效", "执行环境已停止：%v。已保存的对话和持久化文件保留；恢复时创建新环境，先核对中断操作，不能自动重放结果未知的命令。", err)
 }

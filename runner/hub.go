@@ -127,7 +127,12 @@ func (h *Hub) saveLocked() error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	rev, err := h.opts.Store.Save(ctx, h.revision, raw)
+	var rev uint64
+	if store, ok := h.opts.Store.(DiagnosticStore); ok {
+		rev, err = store.SaveDiagnostic(ctx, h.revision, raw, h.sessionStatusesLocked())
+	} else {
+		rev, err = h.opts.Store.Save(ctx, h.revision, raw)
+	}
 	if err != nil {
 		if len(h.lastSaved) > 0 {
 			var restored persistedState

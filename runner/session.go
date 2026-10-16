@@ -38,6 +38,54 @@ func (e *OutcomeError) Unwrap() error        { return e.Cause }
 func (e *OutcomeError) Is(target error) bool { return target == ErrUnknownOutcome }
 func (e *OutcomeError) FatalExecution() bool { return true }
 
+// SessionLostError means this rejected call did not start. Earlier in-flight
+// calls may still have unknown outcomes; replacing the session never replays them.
+type SessionLostError struct{ Cause error }
+
+func (e *SessionLostError) Error() string {
+	return "execution_session_lost: call not started; reopen execution before continuing: " + e.Cause.Error()
+}
+func (e *SessionLostError) Unwrap() error        { return e.Cause }
+func (e *SessionLostError) FatalExecution() bool { return true }
+
+// WaitFailure lets the owner interrupt model generation when its sandbox dies,
+// even if no further execution tool is called. Normal close is not a failure.
+func (s *Session) WaitFailure(ctx context.Context) error {
+	for {
+		h := s.hub
+		h.mu.Lock()
+		r := h.state.Sessions[s.id]
+		var err error
+		done := false
+		switch {
+		case h.closed:
+			err = ErrClosed
+		case r == nil:
+			err = ErrFenced
+		case r.State == "fenced" || r.State == "expired":
+			err = errors.New(r.Reason)
+		case r.State == "closed":
+			if r.Reason != "" {
+				err = errors.New(r.Reason)
+			} else {
+				done = true
+			}
+		case r.State == "draining":
+			done = true
+		}
+		wake := h.wake
+		h.mu.Unlock()
+		if err != nil || done {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-wake:
+		}
+	}
+}
+
 func validateSpec(spec RunSpec) error {
 	if strings.TrimSpace(spec.ThreadID) == "" || len(spec.ThreadID) > 256 {
 		return errors.New("thread ID is required (maximum 256 bytes)")
@@ -318,6 +366,9 @@ func (s *Session) Call(ctx context.Context, name string, input json.RawMessage, 
 				return tool.Result{}, &OutcomeError{Cause: errors.New(out.Error)}
 			}
 			if out.Error != "" {
+				if out.Error == "session stopped" || out.Error == "unknown session or missing tool call" {
+					return tool.Result{}, &SessionLostError{Cause: errors.New(out.Error)}
+				}
 				return tool.Result{}, errors.New(out.Error)
 			}
 			return out.Result, nil

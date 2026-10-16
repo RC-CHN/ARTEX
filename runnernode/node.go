@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RC-CHN/ARTEX/norma/tool"
@@ -43,6 +44,7 @@ type nodeSession struct {
 	mu                 sync.Mutex
 	stopMu             sync.Mutex // serialize and confirm process cleanup
 	ended              bool
+	stopReason         string
 	stopped            bool
 	cleanupRunning     bool
 	cleanupAfter       time.Time
@@ -58,21 +60,23 @@ type nodeSession struct {
 // Node holds only transport/lifecycle state. Tool code runs in Executor's isolated
 // subprocess. HTTP is injectable for TLS-pinned deployments and protocol tests.
 type Node struct {
-	Config        Config
-	HTTP          *http.Client
-	Executor      Executor
-	Log           *log.Logger
-	identity      identity
-	bootID        string
-	mu            sync.Mutex
-	epoch         string
-	serverTime    time.Time
-	pollSent      time.Time
-	sessions      map[string]*nodeSession
-	leases        map[string]runner.Lease
-	commands      map[string]*commandState
-	notifications map[string]runner.NotificationEnvelope
-	commandsWG    sync.WaitGroup
+	Config           Config
+	HTTP             *http.Client
+	Executor         Executor
+	Log              *log.Logger
+	identity         identity
+	bootID           string
+	mu               sync.Mutex
+	epoch            string
+	serverTime       time.Time
+	pollSent         time.Time
+	sessions         map[string]*nodeSession
+	leases           map[string]runner.Lease
+	commands         map[string]*commandState
+	notifications    map[string]runner.NotificationEnvelope
+	commandsWG       sync.WaitGroup
+	heartbeatEnabled atomic.Bool
+	responseMu       sync.Mutex
 }
 type httpStatusError struct {
 	route  string
@@ -263,6 +267,7 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 		defer func() { stopPool(); <-poolDone }()
 	}
 	go n.watchdog(ctx)
+	go n.heartbeats(ctx)
 	go n.sendResults(ctx)
 	go n.checkpoints(ctx)
 	failures := 0
@@ -303,6 +308,7 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 			continue
 		}
 		failures = 0
+		n.heartbeatEnabled.Store(poll.Heartbeat)
 		poolSupported = poll.Pool != nil
 		n.applyPoll(ctx, poll, sent)
 		// Also bound repeated outstanding commands from older controllers.
@@ -316,6 +322,12 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 	return ctx.Err()
 }
 func (n *Node) applyPoll(ctx context.Context, poll runner.PollResponse, sent time.Time) {
+	n.responseMu.Lock()
+	defer n.responseMu.Unlock()
+	if !n.applyLeases(poll, sent) {
+		return
+	}
+
 	if k, ok := n.Executor.(*KubernetesExecutor); ok && poll.Pool == nil {
 		k.poolMu.Lock()
 		k.policy, k.policyAt = runner.PoolPolicy{}, time.Time{}
@@ -337,28 +349,41 @@ func (n *Node) applyPoll(ctx context.Context, poll runner.PollResponse, sent tim
 		}
 		k.UpdatePool(policy)
 	}
+	for _, cmd := range poll.Commands {
+		n.acceptCommand(ctx, cmd)
+	}
+}
+
+// Caller serializes response handling. A late command poll cannot revoke a
+// session admitted by a newer heartbeat, nor shorten a previously safe deadline.
+func (n *Node) applyLeases(poll runner.PollResponse, sent time.Time) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if (!n.serverTime.IsZero() && poll.Epoch == n.epoch && poll.ServerTime.Before(n.serverTime)) || (poll.Epoch != n.epoch && sent.Before(n.pollSent)) {
+		return false
+	}
 	valid := map[string]runner.Lease{}
 	for _, l := range poll.Leases {
 		ttl := l.Until.Sub(poll.ServerTime)
-		if l.Epoch == poll.Epoch && ttl > 0 && ttl <= 2*time.Minute {
-			// Subtract the complete round trip, including long polling. Local
-			// expiry must never trail controller expiry due to network delay.
-			l.Until = sent.Add(ttl)
-			valid[l.SessionID] = l
+		if l.Epoch != poll.Epoch || ttl <= 0 || ttl > 2*time.Minute {
+			continue
 		}
-	}
-	n.mu.Lock()
-	old := []*nodeSession{}
-	for id, s := range n.sessions {
-		l, ok := valid[id]
-		if !ok || s.epoch != poll.Epoch || l.AttemptID != s.attempt {
-			old = append(old, s)
+		l.Until = sent.Add(ttl)
+		if previous, ok := n.leases[l.SessionID]; ok && previous.AttemptID == l.AttemptID && previous.Epoch == l.Epoch && previous.Until.After(l.Until) {
+			l.Until = previous.Until
 		}
+		valid[l.SessionID] = l
 	}
 	n.epoch = poll.Epoch
 	n.serverTime = poll.ServerTime
 	n.pollSent = sent
 	n.leases = valid
+	for id, s := range n.sessions {
+		l, ok := valid[id]
+		if !ok || s.epoch != poll.Epoch || l.AttemptID != s.attempt {
+			n.scheduleAbortReason(s, "lease_revoked")
+		}
+	}
 	for _, id := range poll.AcknowledgedNotifications {
 		delete(n.notifications, id)
 	}
@@ -367,14 +392,9 @@ func (n *Node) applyPoll(ctx context.Context, poll runner.PollResponse, sent tim
 			delete(n.notifications, id)
 		}
 	}
-	n.mu.Unlock()
-	for _, s := range old {
-		n.scheduleAbort(s)
-	}
-	for _, cmd := range poll.Commands {
-		n.acceptCommand(ctx, cmd)
-	}
+	return true
 }
+
 func commandHash(cmd runner.Command) [32]byte {
 	cmd.LeaseUntil = time.Time{}
 	b, _ := json.Marshal(cmd)
@@ -829,10 +849,14 @@ func (n *Node) stopSession(s *nodeSession) error {
 
 // A slow/unavailable container runtime must not create another blocked Stop
 // goroutine on every poll/watchdog tick. Explicit close still waits for proof.
-func (n *Node) scheduleAbort(s *nodeSession) {
+func (n *Node) scheduleAbort(s *nodeSession) { n.scheduleAbortReason(s, "session_aborted") }
+func (n *Node) scheduleAbortReason(s *nodeSession, reason string) {
 	s.cancel()
 	s.mu.Lock()
 	s.ended = true
+	if s.stopReason == "" {
+		s.stopReason = reason
+	}
 	if s.stopped || s.cleanupRunning || time.Now().Before(s.cleanupAfter) {
 		s.mu.Unlock()
 		return
@@ -885,17 +909,13 @@ func (n *Node) watchdog(ctx context.Context) {
 		case now := <-ticker.C:
 			n.collectRetired(now)
 			n.mu.Lock()
-			expired := []*nodeSession{}
 			for id, s := range n.sessions {
 				l, ok := n.leases[id]
 				if !ok || !now.Before(l.Until) || l.AttemptID != s.attempt || l.Epoch != s.epoch {
-					expired = append(expired, s)
+					n.scheduleAbortReason(s, "lease_expired")
 				}
 			}
 			n.mu.Unlock()
-			for _, s := range expired {
-				n.scheduleAbort(s)
-			}
 		}
 	}
 }

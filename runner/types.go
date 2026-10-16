@@ -34,6 +34,12 @@ type StateStore interface {
 	Save(context.Context, uint64, json.RawMessage) (uint64, error)
 }
 
+// DiagnosticStore commits a small content-free projection alongside the opaque
+// checkpoint. Operators never need to expand tool transcripts to inspect leases.
+type DiagnosticStore interface {
+	SaveDiagnostic(context.Context, uint64, json.RawMessage, []SessionStatus) (uint64, error)
+}
+
 // StateGuard serializes a short artifact commit against a controller takeover.
 // Persistent stores should implement this in the same transactional lock domain
 // as Save. Without it, file commit fencing is limited to this Hub instance.
@@ -163,12 +169,28 @@ type Lease struct {
 }
 
 type PollResponse struct {
+	Heartbeat                 bool        `json:"heartbeat,omitempty"`
 	Pool                      *PoolPolicy `json:"pool,omitempty"`
 	Epoch                     string      `json:"epoch"`
 	ServerTime                time.Time   `json:"server_time"`
 	Leases                    []Lease     `json:"leases"`   // complete live set for this boot; absent/expired sessions must stop
 	Commands                  []Command   `json:"commands"` // redelivered until acknowledged; node must deduplicate ID
 	AcknowledgedNotifications []string    `json:"acknowledged_notifications,omitempty"`
+}
+
+// Heartbeats carry lifecycle metadata only, independently of command delivery.
+// Nodes negotiate support through PollResponse before using this endpoint.
+type HeartbeatRequest struct {
+	NodeID   string           `json:"node_id"`
+	BootID   string           `json:"boot_id"`
+	Protocol int              `json:"protocol"`
+	Stopped  []StoppedSession `json:"stopped,omitempty"`
+}
+type StoppedSession struct {
+	SessionID string `json:"session_id"`
+	AttemptID string `json:"attempt_id"`
+	Epoch     string `json:"epoch"`
+	Reason    string `json:"reason"`
 }
 
 const (
