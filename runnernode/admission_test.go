@@ -2,6 +2,7 @@ package runnernode
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -180,6 +181,10 @@ func TestQuotaDiagnosticParserExcludesUnstructuredText(t *testing.T) {
 
 func TestQuotaHeartbeatReachesControllerBeforeAcquireDeadline(t *testing.T) {
 	k := kubeFixture(t)
+	// The fake kubectl runs the sandbox on the test host, so give it an
+	// explicitly mapped temporary directory instead of requiring /workspace.
+	workspace := t.TempDir()
+	k.Config.SharedMounts = []SharedMount{{Source: workspace, Path: workspace, PVC: "synthetic-workspace"}}
 	marker := admissionMarker(t, "quota-block")
 	h, err := runner.New(runner.Options{Store: &runner.MemoryStore{}, LeaseDuration: 10 * time.Second, PollWait: 4 * time.Second})
 	if err != nil {
@@ -214,7 +219,11 @@ func TestQuotaHeartbeatReachesControllerBeforeAcquireDeadline(t *testing.T) {
 		}
 	}()
 	admissionEventually(t, func() bool { return len(h.ListNodes()) == 1 && n.admissionEnabled.Load() })
-	sp := baseSpec("/workspace")
+	sp := baseSpec(workspace)
+	sp.Files, err = json.Marshal(runnerfiles.Plan{Mode: runnerfiles.SharedMode, Mounts: []runnerfiles.Mount{{Name: "workspace", Source: workspace, Target: workspace}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	sp.ThreadID = "synthetic-quota"
 	sp.TaskID = "synthetic"
 	acquireCtx, stop := context.WithTimeout(ctx, 1500*time.Millisecond)
