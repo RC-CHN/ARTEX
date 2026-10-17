@@ -23,6 +23,14 @@ function node(id, name, executor) {
       gpus: executor === 'docker' ? [{ id: '0', model: 'Example GPU', memory_mib: 24576 }] : [] } };
 }
 const state = { config, nodes: [node('pool', 'kubernetes-pool', 'kubernetes'), node('gpu', 'external-gpu', 'docker')], experimental: true };
+state.nodes[0].pool_status.admission = {
+  observed_at: new Date().toISOString(), quota_rejections: 3,
+  waiting: [{ session_id: 'synthetic-wait', stage: 'quota', since: new Date(Date.now() - 30000).toISOString(), attempts: 3 }],
+  last_quota_rejection: { at: new Date().toISOString(), name: 'fixture-pool',
+    requested: { 'count/pods': '1', 'limits.cpu': '4' },
+    used: { 'count/pods': '5', 'limits.cpu': '17' },
+    hard: { 'count/pods': '5', 'limits.cpu': '17' } },
+};
 const settings = { environment_prompt: '', workers: 5 };
 const agents = ['mainagent', 'planner', 'worker', 'goals'].map((key) => ({ id: key, key, name: key, builtin: true, enabled: true, llm_profile_id: null }));
 const profiles = [
@@ -119,6 +127,10 @@ async function main() {
     await page.getByRole('heading', { name: '集群动态执行池' }).waitFor();
     await page.getByRole('heading', { name: '独立注册节点' }).waitFor();
     await page.getByTestId('runner-gpu').getByText(/Example GPU/).waitFor();
+    const admission = page.getByTestId('runner-pool').getByTestId('runner-admission');
+    await admission.getByText(/等待 Kubernetes 配额 1/).waitFor();
+    await admission.getByText(/命名空间配额拒绝 3 次/).waitFor();
+    assert.equal(await admission.getByRole('row').filter({ hasText: 'CPU limit' }).textContent(), 'CPU limit41717');
     if (process.env.SCREENSHOT_DIR) await page.screenshot({ path: process.env.SCREENSHOT_DIR + '/runners-desktop.png', fullPage: true });
 
     await page.getByTestId('runner-pool').getByRole('button', { name: '管理', exact: true }).click();

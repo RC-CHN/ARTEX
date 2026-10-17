@@ -221,6 +221,9 @@ func (h *Hub) pollMode(req PollRequest, authenticated string, heartbeat bool) (P
 			return PollResponse{}, nil, errors.New("runner capability changes require a new boot ID")
 		}
 	}
+	if err := validatePoolStatus(req.PoolStatus); err != nil {
+		return PollResponse{}, nil, err
+	}
 	for _, env := range req.Notifications {
 		if env.ID == "" || len(env.ID) > 512 || len(env.Items) > 1000 {
 			return PollResponse{}, nil, errors.New("invalid notification envelope")
@@ -230,6 +233,7 @@ func (h *Hub) pollMode(req PollRequest, authenticated string, heartbeat bool) (P
 	changed := h.expireLocked()
 	bootChanged := n.BootID != req.BootID
 	if bootChanged {
+		delete(h.poolStatus, n.ID)
 		for _, s := range h.state.Sessions {
 			if s.NodeID == n.ID && s.reserved(now) {
 				h.fenceLocked(s, "runner boot changed; previous process outcome may be unknown", true)
@@ -251,18 +255,12 @@ func (h *Hub) pollMode(req PollRequest, authenticated string, heartbeat bool) (P
 		n.LastSeen = now
 		changed = true
 	}
-	out := PollResponse{Heartbeat: true, Epoch: h.state.Epoch, ServerTime: now, Leases: []Lease{}, Commands: []Command{}}
-	if !heartbeat && n.Capabilities.Executor == "kubernetes" {
-		out.Pool = h.poolPolicyLocked(n)
-		if req.PoolStatus != nil {
-			if req.PoolStatus.Idle < 0 || req.PoolStatus.Preparing < 0 || req.PoolStatus.Pods < 0 || len(req.PoolStatus.Error) > 2048 {
-				return PollResponse{}, nil, errors.New("invalid pool status")
-			}
-			if h.poolStatus == nil {
-				h.poolStatus = map[string]PoolStatus{}
-			}
-			h.poolStatus[n.ID] = *req.PoolStatus
+	out := PollResponse{Heartbeat: true, AdmissionDiagnostics: true, Epoch: h.state.Epoch, ServerTime: now, Leases: []Lease{}, Commands: []Command{}}
+	if n.Capabilities.Executor == "kubernetes" {
+		if !heartbeat {
+			out.Pool = h.poolPolicyLocked(n)
 		}
+		h.recordPoolStatusLocked(n, req.PoolStatus, now)
 	}
 	for _, env := range req.Notifications {
 		s := h.state.Sessions[env.SessionID]

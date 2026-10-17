@@ -242,12 +242,16 @@ export function ExecutionSettings({
                 <Label htmlFor="runner-timeout">分配等待上限（秒）</Label>
                 <Input
                   id="runner-timeout"
+                  aria-describedby="runner-timeout-help"
                   type="number"
                   min={1}
                   max={3600}
                   value={config.acquire_timeout_seconds}
                   onChange={(e) => patch({ acquire_timeout_seconds: Number(e.target.value) })}
                 />
+                <p id="runner-timeout-help" className="text-xs text-muted-foreground">
+                  限制每次分配尝试。Worker 遇到容量不足会保留当前意图继续等待，可随时暂停。
+                </p>
               </div>
             </div>
             <div className="space-y-3">

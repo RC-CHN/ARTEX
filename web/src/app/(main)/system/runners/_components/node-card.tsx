@@ -33,6 +33,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useUnsavedChanges } from "@/hooks/use-unsaved-changes";
 import { http } from "@/lib/api";
 import { formatMemory, isPool, runnerError, type NodeLimits, type RunnerNode } from "@/lib/runners";
+import { AdmissionStatus } from "./admission-status";
 
 function Meter({
   label,
@@ -120,7 +121,7 @@ export function NodeCard({
         </div>
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
           <Meter
-            label={pool ? "执行 Pod" : "执行环境"}
+            label="执行槽预留"
             icon={Activity}
             used={node.active_sessions}
             total={node.effective_slots}
@@ -145,8 +146,8 @@ export function NodeCard({
           {pool && node.pool_status && (
             <div className="w-full rounded-lg border bg-muted/25 p-3 text-xs space-y-1">
               <p>
-                预热就绪 {node.pool_status.idle} · 准备中 {node.pool_status.preparing} · 总 Pod {node.pool_status.pods}{" "}
-                / {node.effective_slots}
+                预热就绪 {node.pool_status.idle} · 准备中 {node.pool_status.preparing} · 执行池 Pod{" "}
+                {node.pool_status.pods} / {node.effective_slots}
               </p>
               <p className="text-muted-foreground">
                 包含预热的实际预留：{node.pool_status.cpu_millis / 1000} 核 ·{" "}
@@ -157,6 +158,7 @@ export function NodeCard({
                   预热池：{node.pool_status.error}
                 </p>
               )}
+              {node.pool_status.admission && <AdmissionStatus value={node.pool_status.admission} />}
             </div>
           )}
           {(node.capabilities.environments ?? []).map((env) => (

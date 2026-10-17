@@ -76,6 +76,7 @@ type Node struct {
 	notifications    map[string]runner.NotificationEnvelope
 	commandsWG       sync.WaitGroup
 	heartbeatEnabled atomic.Bool
+	admissionEnabled atomic.Bool
 	responseMu       sync.Mutex
 }
 type httpStatusError struct {
@@ -283,6 +284,9 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 		var poolStatus *runner.PoolStatus
 		if k, ok := n.Executor.(*KubernetesExecutor); ok && poolSupported {
 			value := k.PoolStatus()
+			if !n.admissionEnabled.Load() {
+				value.Admission = nil
+			}
 			poolStatus = &value
 		}
 		sent := time.Now()
@@ -291,6 +295,7 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 			var status *httpStatusError
 			if errors.As(err, &status) && status.status == http.StatusBadRequest {
 				poolSupported = false // Controller may have been rolled back.
+				n.admissionEnabled.Store(false)
 			}
 			if errors.As(err, &status) && (status.status == http.StatusUnauthorized || status.status == http.StatusForbidden || status.status == http.StatusGone) {
 				return fmt.Errorf("runner identity rejected; stopping local executions: %w", err)
@@ -309,6 +314,7 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 		}
 		failures = 0
 		n.heartbeatEnabled.Store(poll.Heartbeat)
+		n.admissionEnabled.Store(poll.AdmissionDiagnostics)
 		poolSupported = poll.Pool != nil
 		n.applyPoll(ctx, poll, sent)
 		// Also bound repeated outstanding commands from older controllers.

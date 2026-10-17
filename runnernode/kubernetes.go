@@ -76,7 +76,14 @@ type KubernetesExecutor struct {
 	WorkspaceDir, NodeID, SandboxBinary string
 	MaxPods                             int
 	Log                                 io.Writer
-	createMu                            sync.Mutex // list + create must not race concurrent admissions
+	createOnce                          sync.Once
+	createGate                          chan struct{}
+	admissionMu                         sync.Mutex
+	admission                           runner.AdmissionStatus
+	admissionWaiting                    map[string]runner.AdmissionWait
+	quotaFailures                       int
+	admissionLogAt                      time.Time
+	admissionEvents                     chan struct{}
 	poolMu                              sync.Mutex
 	policy                              runner.PoolPolicy
 	policyAt                            time.Time
@@ -117,7 +124,7 @@ func (k *KubernetesExecutor) output(ctx context.Context, timeout time.Duration, 
 	cmd.Stderr = &stderr
 	b, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("Kubernetes %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("Kubernetes %s: %w: %s", args[0], errors.Join(err, ctx.Err()), strings.TrimSpace(stderr.String()))
 	}
 	return b, nil
 }
@@ -373,8 +380,20 @@ func (k *KubernetesExecutor) startPod(ctx context.Context, id string, spec runne
 	}
 	// Include Pending and Terminating Pods. A fenced lease is not evidence that
 	// an unreachable kubelet has killed a process. Wait for actual removal.
+	k.admissionStage(id, "pod_capacity", false)
+	defer k.finishAdmission(id)
 	for {
-		k.createMu.Lock()
+		if err := k.lockCreate(ctx); err != nil {
+			return nil, err
+		}
+		if delay := k.admissionDelay(); delay > 0 {
+			k.admissionStage(id, "quota", false)
+			k.unlockCreate()
+			if err := waitAdmission(ctx, delay); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		admission := spec
 		currentLimit := limit
 		k.poolMu.Lock()
@@ -390,25 +409,37 @@ func (k *KubernetesExecutor) startPod(ctx context.Context, id string, spec runne
 		k.poolMu.Unlock()
 		pods, err := k.pods(ctx)
 		if err != nil {
-			k.createMu.Unlock()
+			k.unlockCreate()
 			return nil, err
 		}
 		if len(pods) < currentLimit && podBudgetAvailable(pods, admission) {
 			data, _ := json.Marshal(pod)
+			k.admissionStage(id, "pod_create", true)
 			_, err = k.output(ctx, 15*time.Second, data, "create", "-f", "-", "-o", "name")
-			k.createMu.Unlock()
+			if q := parseQuotaRejection(err); q != nil && ctx.Err() == nil {
+				k.recordQuotaRejection(q)
+				k.admissionStage(id, "quota", false)
+				k.unlockCreate()
+				continue
+			}
+			if err == nil {
+				k.recordPodCreated()
+			}
+			k.unlockCreate()
 			if err != nil {
 				return fail(err)
 			}
 			break
 		}
-		k.createMu.Unlock()
+		k.admissionStage(id, "pod_capacity", false)
+		k.unlockCreate()
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+	k.admissionStage(id, "pod_ready", false)
 	if _, err = k.output(ctx, 125*time.Second, nil, "wait", "--for=condition=Ready", "pod/"+name, "--timeout=120s"); err != nil {
 		return fail(err)
 	}

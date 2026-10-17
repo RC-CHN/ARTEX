@@ -170,6 +170,7 @@ func (k *KubernetesExecutor) PoolStatus() runner.PoolStatus {
 			out.Preparing++
 		}
 	}
+	out.Admission = k.admissionStatus()
 	return out
 }
 func (k *KubernetesExecutor) policySnapshot() runner.PoolPolicy {
@@ -416,7 +417,7 @@ func (k *KubernetesExecutor) reconcilePool(ctx context.Context) error {
 			return err
 		}
 	}
-	if len(retiring) > 0 || preparing || policy.Slots < 1 {
+	if len(retiring) > 0 || preparing || policy.Slots < 1 || k.admissionDelay() > 0 {
 		return nil
 	}
 	keys := []string{}

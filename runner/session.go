@@ -141,8 +141,12 @@ func (h *Hub) Acquire(ctx context.Context, spec RunSpec) (*Session, error) {
 		return nil, err
 	}
 	spec = detachedSpec
+	waitingCapacity := false
 	for {
 		if err := ctx.Err(); err != nil {
+			if waitingCapacity {
+				return nil, capacityDeadline(ctx)
+			}
 			return nil, err
 		}
 		h.mu.Lock()
@@ -156,23 +160,32 @@ func (h *Hub) Acquire(ctx context.Context, spec RunSpec) (*Session, error) {
 				return nil, err
 			}
 		}
+		pendingCleanup := false
 		for _, s := range h.state.Sessions {
 			if s.reserved(h.opts.Clock()) && incompatibleFileModes(spec.Files, s.Spec.Files) {
 				h.mu.Unlock()
 				return nil, errors.New("overlapping workspace has an active snapshot/shared execution; wait for cleanup before switching file mode")
 			}
 			if s.Spec.ThreadID == spec.ThreadID && s.reserved(h.opts.Clock()) {
+				if s.State == "fenced" && strings.Contains(s.Reason, ErrCapacityUnavailable.Error()) {
+					pendingCleanup = true
+					continue
+				}
 				h.mu.Unlock()
 				return nil, ErrThreadBusy
 			}
 		}
 		n, gpus := h.chooseNodeLocked(spec)
+		if pendingCleanup {
+			n = nil
+		}
 		if n == nil {
+			waitingCapacity = true
 			wake := h.wake
 			h.mu.Unlock()
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, capacityDeadline(ctx)
 			case <-wake:
 				continue
 			}
@@ -181,6 +194,7 @@ func (h *Hub) Acquire(ctx context.Context, spec RunSpec) (*Session, error) {
 		spec.ConcurrencyLimit = n.effectiveSlots()
 		spec.PoolCPUMillis, spec.PoolMemoryMiB = n.effectiveCPU(), n.effectiveMemory()
 		r := &sessionRecord{ID: id, AttemptID: attempt, NodeID: n.ID, BootID: n.BootID, Epoch: h.state.Epoch, State: "opening", Spec: spec, GPUIds: gpus, LeaseUntil: h.opts.Clock().Add(h.opts.LeaseDuration), Commands: map[string]*commandRecord{}, CallIDs: map[string]string{}, NotificationIDs: map[string]bool{}}
+		r.CreatedAt = h.opts.Clock()
 		r.Commands[commandID] = &commandRecord{Command: Command{ID: commandID, Kind: CommandOpen, SessionID: id, AttemptID: attempt, Epoch: r.Epoch, LeaseUntil: r.LeaseUntil, Spec: &r.Spec, GPUIds: gpus}}
 		h.state.Sessions[id] = r
 		if err := h.saveLocked(); err != nil {
@@ -222,8 +236,7 @@ func (s *Session) waitOpen(ctx context.Context) error {
 		h.mu.Unlock()
 		select {
 		case <-ctx.Done():
-			_ = h.abort(s.id, "acquire cancelled")
-			return ctx.Err()
+			return s.cancelOpen(ctx)
 		case <-wake:
 		}
 	}

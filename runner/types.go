@@ -16,14 +16,15 @@ import (
 const ProtocolVersion = 1
 
 var (
-	ErrStoreConflict  = errors.New("runner state revision conflict")
-	ErrThreadBusy     = errors.New("agent thread already has an active attempt")
-	ErrSessionsActive = errors.New("runner has reserved sessions; wait for cleanup or lease expiry before disabling")
-	ErrFenced         = errors.New("remote attempt is fenced")
-	ErrClosed         = errors.New("runner broker is closed")
-	ErrUnauthorized   = errors.New("runner authentication failed")
-	ErrUnknownOutcome = errors.New("remote execution outcome is unknown; do not automatically replay")
-	ErrCallConflict   = errors.New("tool call ID was reused with different input")
+	ErrStoreConflict       = errors.New("runner state revision conflict")
+	ErrThreadBusy          = errors.New("agent thread already has an active attempt")
+	ErrSessionsActive      = errors.New("runner has reserved sessions; wait for cleanup or lease expiry before disabling")
+	ErrFenced              = errors.New("remote attempt is fenced")
+	ErrClosed              = errors.New("runner broker is closed")
+	ErrUnauthorized        = errors.New("runner authentication failed")
+	ErrUnknownOutcome      = errors.New("remote execution outcome is unknown; do not automatically replay")
+	ErrCallConflict        = errors.New("tool call ID was reused with different input")
+	ErrCapacityUnavailable = errors.New("runner_capacity_unavailable")
 )
 
 // StateStore must atomically compare and replace its revision. Only one broker
@@ -169,6 +170,7 @@ type Lease struct {
 }
 
 type PollResponse struct {
+	AdmissionDiagnostics      bool        `json:"admission_diagnostics,omitempty"`
 	Heartbeat                 bool        `json:"heartbeat,omitempty"`
 	Pool                      *PoolPolicy `json:"pool,omitempty"`
 	Epoch                     string      `json:"epoch"`
@@ -181,10 +183,11 @@ type PollResponse struct {
 // Heartbeats carry lifecycle metadata only, independently of command delivery.
 // Nodes negotiate support through PollResponse before using this endpoint.
 type HeartbeatRequest struct {
-	NodeID   string           `json:"node_id"`
-	BootID   string           `json:"boot_id"`
-	Protocol int              `json:"protocol"`
-	Stopped  []StoppedSession `json:"stopped,omitempty"`
+	PoolStatus *PoolStatus      `json:"pool_status,omitempty"`
+	NodeID     string           `json:"node_id"`
+	BootID     string           `json:"boot_id"`
+	Protocol   int              `json:"protocol"`
+	Stopped    []StoppedSession `json:"stopped,omitempty"`
 }
 type StoppedSession struct {
 	SessionID string `json:"session_id"`
@@ -285,10 +288,35 @@ type PoolPolicy struct {
 	Profiles  []WarmProfile `json:"profiles"`
 }
 type PoolStatus struct {
-	Idle      int    `json:"idle"`
-	Preparing int    `json:"preparing"`
-	Pods      int    `json:"pods"`
-	CPUMillis int64  `json:"cpu_millis"`
-	MemoryMiB int64  `json:"memory_mib"`
-	Error     string `json:"error,omitempty"`
+	Admission *AdmissionStatus `json:"admission,omitempty"`
+	Idle      int              `json:"idle"`
+	Preparing int              `json:"preparing"`
+	Pods      int              `json:"pods"`
+	CPUMillis int64            `json:"cpu_millis"`
+	MemoryMiB int64            `json:"memory_mib"`
+	Error     string           `json:"error,omitempty"`
+}
+
+// Admission diagnostics contain only lifecycle IDs and numeric quota metadata.
+// Quota values are a snapshot of the last rejection, not live namespace usage.
+type AdmissionStatus struct {
+	ObservedAt         time.Time       `json:"observed_at"`
+	Waiting            []AdmissionWait `json:"waiting"`
+	QuotaRejections    uint64          `json:"quota_rejections"`
+	LastQuotaRejection *QuotaRejection `json:"last_quota_rejection,omitempty"`
+	LastCreateAt       time.Time       `json:"last_create_at,omitempty"`
+	RetryAt            time.Time       `json:"retry_at,omitempty"`
+}
+type AdmissionWait struct {
+	SessionID string    `json:"session_id"`
+	Stage     string    `json:"stage"`
+	Since     time.Time `json:"since"`
+	Attempts  int       `json:"attempts"`
+}
+type QuotaRejection struct {
+	At        time.Time         `json:"at"`
+	Name      string            `json:"name"`
+	Requested map[string]string `json:"requested"`
+	Used      map[string]string `json:"used"`
+	Hard      map[string]string `json:"hard"`
 }

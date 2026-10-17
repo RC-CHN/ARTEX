@@ -20,6 +20,7 @@ export type RunnerConfig = {
 };
 export type RunnerNode = {
   pool_status?: {
+    admission?: RunnerAdmission;
     idle: number;
     preparing: number;
     pods: number;
@@ -51,6 +52,20 @@ export type RunnerNode = {
     environments?: string[];
     labels?: Record<string, string>;
     gpus?: { id: string; model?: string; memory_mib?: number }[];
+  };
+};
+export type RunnerAdmission = {
+  observed_at: string;
+  waiting: { session_id: string; stage: string; since: string; attempts: number }[];
+  quota_rejections: number;
+  retry_at?: string;
+  last_create_at?: string;
+  last_quota_rejection?: {
+    at: string;
+    name: string;
+    requested: Record<string, string>;
+    used: Record<string, string>;
+    hard: Record<string, string>;
   };
 };
 export type RunnerSnapshot = { config: RunnerConfig; nodes: RunnerNode[]; experimental: boolean; error?: string };

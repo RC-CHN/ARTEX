@@ -98,7 +98,11 @@ func (s *Server) wireRunnerExecution() {
 		}
 		if err != nil {
 			if errors.Is(context.Cause(runCtx), context.DeadlineExceeded) {
-				err = fmt.Errorf("等待 Runner 或准备执行环境超过 %d 秒（包括文件同步与 Pod 启动）: %w", cfg.AcquireTimeoutSeconds, context.DeadlineExceeded)
+				cause := error(context.DeadlineExceeded)
+				if errors.Is(err, runner.ErrCapacityUnavailable) {
+					cause = errors.Join(runner.ErrCapacityUnavailable, cause)
+				}
+				err = fmt.Errorf("等待 Runner 或准备执行环境超过 %d 秒（包括文件同步与 Pod 启动）: %w", cfg.AcquireTimeoutSeconds, cause)
 			}
 			cancel()
 			return ctx, nil, nil, fmt.Errorf("远程执行环境分配失败（不会退回本机）: %w", err)

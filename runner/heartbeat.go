@@ -20,11 +20,15 @@ func (h *Hub) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		protocolError(w, ErrUnauthorized)
 		return
 	}
+	if err = validatePoolStatus(req.PoolStatus); err != nil {
+		protocolError(w, err)
+		return
+	}
 	if err = h.recordStopped(req, id); err != nil {
 		protocolError(w, err)
 		return
 	}
-	out, _, err := h.pollMode(PollRequest{NodeID: req.NodeID, BootID: req.BootID, Protocol: req.Protocol}, id, true)
+	out, _, err := h.pollMode(PollRequest{NodeID: req.NodeID, BootID: req.BootID, Protocol: req.Protocol, PoolStatus: req.PoolStatus}, id, true)
 	if err != nil {
 		protocolError(w, err)
 		return

@@ -1044,16 +1044,25 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		label:  label,
 	}
 	wTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
-	e.BeginLLMCall(t.ID)
 	var reason harness.TerminalReason
 	var wrote agent.WriteCounts
 	var err error
-	if hasChatMessage {
-		reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
-	} else {
-		reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
+	execute := func() {
+		err = waitWorkerCapacity(workCtx, 5*time.Second, func() error {
+			e.BeginLLMCall(t.ID)
+			defer e.EndLLMCall(t.ID)
+			if hasChatMessage {
+				reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
+			} else {
+				reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
+			}
+			return err
+		}, func(attempt int, elapsed time.Duration) {
+			log.Printf("[worker %s] task %s intent %d: runner_capacity_wait retry=%d elapsed_seconds=%d", name, t.ID, intent.ID, attempt, int(elapsed.Seconds()))
+			taskEmit(db.Activity{Kind: "text", Summary: fmt.Sprintf("等待 Runner 执行容量，保留当前意图，5 秒后继续尝试（第 %d 次，已等待 %s）；可随时暂停或取消。", attempt, elapsed.Round(time.Second))})
+		})
 	}
-	e.EndLLMCall(t.ID)
+	execute()
 	// model_error 收场 → 额外重跑几次（退避后再试）。仅在意图仍属本 work、任务
 	// 未暂停/未终止/未取消【且未进入收尾】时重试；否则让位给对应分支处理(收尾期不
 	// 再重试,避免退避挤占其他 worker 的优雅收尾窗口)。
@@ -1066,13 +1075,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 		if sleepCtx(workCtx, retryBackoff) {
 			break // 退避期间被取消（终止/暂停）→ 交给下方分支处理
 		}
-		e.BeginLLMCall(t.ID)
-		if hasChatMessage {
-			reason, wrote, err = worker.ExecuteWithMessage(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding, requestID, message)
-		} else {
-			reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
-		}
-		e.EndLLMCall(t.ID)
+		execute()
 	}
 	// Capture kill state before detachWork cancels workCtx. kill = this work's
 	// ctx was cancelled (planner kill_work) while the TASK ctx kept running; a

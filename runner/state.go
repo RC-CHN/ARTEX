@@ -75,23 +75,26 @@ type nodeRecord struct {
 }
 
 type sessionRecord struct {
-	ID              string                    `json:"id"`
-	AttemptID       string                    `json:"attempt_id"`
-	NodeID          string                    `json:"node_id"`
-	BootID          string                    `json:"boot_id"`
-	Epoch           string                    `json:"epoch"`
-	State           string                    `json:"state"`
-	Spec            RunSpec                   `json:"spec"`
-	GPUIds          []string                  `json:"gpu_ids,omitempty"`
-	LeaseUntil      time.Time                 `json:"lease_until"`
-	Reason          string                    `json:"reason,omitempty"`
-	HoldUntilExpiry bool                      `json:"hold_until_expiry,omitempty"`
-	Commands        map[string]*commandRecord `json:"commands"`
-	CallIDs         map[string]string         `json:"call_ids"`
-	MCPTools        []ToolDefinition          `json:"mcp_tools,omitempty"`
-	Notifications   []tool.Notification       `json:"notifications,omitempty"`
-	NotificationIDs map[string]bool           `json:"notification_ids,omitempty"`
-	FinishedAt      time.Time                 `json:"finished_at,omitempty"`
+	ID                    string                    `json:"id"`
+	AttemptID             string                    `json:"attempt_id"`
+	NodeID                string                    `json:"node_id"`
+	BootID                string                    `json:"boot_id"`
+	Epoch                 string                    `json:"epoch"`
+	State                 string                    `json:"state"`
+	Spec                  RunSpec                   `json:"spec"`
+	GPUIds                []string                  `json:"gpu_ids,omitempty"`
+	LeaseUntil            time.Time                 `json:"lease_until"`
+	Reason                string                    `json:"reason,omitempty"`
+	HoldUntilExpiry       bool                      `json:"hold_until_expiry,omitempty"`
+	Commands              map[string]*commandRecord `json:"commands"`
+	CallIDs               map[string]string         `json:"call_ids"`
+	MCPTools              []ToolDefinition          `json:"mcp_tools,omitempty"`
+	Notifications         []tool.Notification       `json:"notifications,omitempty"`
+	NotificationIDs       map[string]bool           `json:"notification_ids,omitempty"`
+	FinishedAt            time.Time                 `json:"finished_at,omitempty"`
+	CreatedAt             time.Time                 `json:"created_at,omitempty"`
+	Preparation           *AdmissionWait            `json:"preparation,omitempty"`
+	PreparationReportedAt time.Time                 `json:"preparation_reported_at,omitempty"`
 }
 
 type commandRecord struct {

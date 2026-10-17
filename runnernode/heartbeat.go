@@ -2,13 +2,19 @@ package runnernode
 
 import (
 	"context"
+	"errors"
 	"github.com/RC-CHN/ARTEX/runner"
+	"net/http"
 	"time"
 )
 
 // Independent of long polls and tool results. Stopped reports are retried until
 // the controller removes their leases; they never include tool inputs/output.
 func (n *Node) heartbeats(ctx context.Context) {
+	var admissionChanges <-chan struct{}
+	if k, ok := n.Executor.(*KubernetesExecutor); ok {
+		admissionChanges = k.admissionChanges()
+	}
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -16,11 +22,16 @@ func (n *Node) heartbeats(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-admissionChanges:
 		}
 		if !n.heartbeatEnabled.Load() {
 			continue
 		}
 		req := runner.HeartbeatRequest{NodeID: n.identity.NodeID, BootID: n.bootID, Protocol: runner.ProtocolVersion}
+		if k, ok := n.Executor.(*KubernetesExecutor); ok && n.admissionEnabled.Load() {
+			status := k.PoolStatus()
+			req.PoolStatus = &status
+		}
 		n.mu.Lock()
 		for _, s := range n.sessions {
 			s.mu.Lock()
@@ -40,6 +51,10 @@ func (n *Node) heartbeats(ctx context.Context) {
 		err := n.request(requestCtx, "heartbeat", req, &response)
 		cancel()
 		if err != nil {
+			var status *httpStatusError
+			if errors.As(err, &status) && status.status == http.StatusBadRequest {
+				n.admissionEnabled.Store(false)
+			}
 			continue
 		}
 		n.responseMu.Lock()

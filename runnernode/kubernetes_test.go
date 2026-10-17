@@ -103,6 +103,21 @@ func TestKubeCLIHelper(t *testing.T) {
 		if err := json.Unmarshal(b, &p); err != nil {
 			exit(err)
 		}
+		log, err := os.OpenFile(filepath.Join(dir, "create-attempts"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			exit(err)
+		}
+		fmt.Fprintln(log, p.Metadata.Name)
+		log.Close()
+		for exists("hold-create") {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if exists("quota-block") {
+			exit(fmt.Errorf(`Error from server (Forbidden): error when creating "STDIN": pods "%s" is forbidden: exceeded quota: pool, requested: count/pods=1,limits.cpu=1,requests.cpu=1, used: count/pods=5,limits.cpu=17,requests.cpu=16100m, limited: count/pods=5,limits.cpu=17,requests.cpu=16500m`, p.Metadata.Name))
+		}
+		if exists("rbac-denied") {
+			exit(fmt.Errorf(`Error from server (Forbidden): pods "%s" is forbidden: User "synthetic" cannot create resource "pods"`, p.Metadata.Name))
+		}
 		f, err := os.OpenFile(filepath.Join(dir, p.Metadata.Name+".pod.json"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 		if err != nil {
 			exit(err)

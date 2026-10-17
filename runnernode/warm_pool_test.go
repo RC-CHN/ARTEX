@@ -286,7 +286,7 @@ func TestOptionalPoolProtocolNegotiationAndControllerRollback(t *testing.T) {
 				}
 				i := polls.Add(1)
 				if rollback && i == 2 {
-					if req.PoolStatus == nil {
+					if req.PoolStatus == nil || req.PoolStatus.Admission == nil {
 						t.Error("new controller never received negotiated status")
 					}
 					http.Error(w, "unknown field pool_status", http.StatusBadRequest)
@@ -298,6 +298,7 @@ func TestOptionalPoolProtocolNegotiationAndControllerRollback(t *testing.T) {
 				response := runner.PollResponse{Epoch: "e", ServerTime: time.Now()}
 				if rollback && i == 1 {
 					response.Pool = &runner.PoolPolicy{Slots: 2}
+					response.AdmissionDiagnostics = true
 				}
 				_ = json.NewEncoder(w).Encode(response)
 				if i == 4 {
