@@ -53,11 +53,24 @@ func main() {
 
 func run() int {
 	var (
-		addr    = flag.String("addr", ":8787", "HTTP listen address")
-		dataDir = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for traffic files, transcripts and skills (default: data/ next to the executable)")
-		proxy   = flag.String("proxy", "127.0.0.1:8788", "traffic recording proxy address (empty to disable)")
+		addr             = flag.String("addr", ":8787", "HTTP listen address")
+		dataDir          = flag.String("data", filepath.Join(config.BaseDir(), "data"), "data directory for traffic files, transcripts and skills (default: data/ next to the executable)")
+		proxy            = flag.String("proxy", "127.0.0.1:8788", "traffic recording proxy address (empty to disable)")
+		legacyCheckpoint = flag.Bool("runner-checkpoint-legacy", false, "offline: restore legacy runner checkpoint format before downgrading; requires idle cluster and stopped controller/manager")
 	)
 	flag.Parse()
+	if *legacyCheckpoint {
+		dsn, _, err := config.PostgresDSN()
+		if err == nil {
+			err = server.RestoreLegacyRunnerCheckpoint(context.Background(), dsn)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "runner checkpoint conversion failed; details suppressed to protect private data")
+			return 1
+		}
+		fmt.Println("runner checkpoint converted; task progress preserved")
+		return 0
+	}
 
 	// hand the build version to the server package so GET /api/health can report it
 	// to the frontend top bar.

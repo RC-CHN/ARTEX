@@ -1,8 +1,6 @@
 package server
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -131,80 +129,6 @@ func decodeRunnerConfig(r io.Reader) (runnerConfig, error) {
 	return cfg, cfg.validate()
 }
 
-type runnerPGStore struct{ db *sql.DB }
-
-func (p runnerPGStore) Guard(ctx context.Context, revision uint64, commit func() error) error {
-	tx, err := p.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var current uint64
-	if err = tx.QueryRowContext(ctx, "SELECT revision FROM runner_state WHERE id=1 FOR UPDATE").Scan(&current); err != nil {
-		return err
-	}
-	if current != revision {
-		return runner.ErrStoreConflict
-	}
-	if err = commit(); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (p runnerPGStore) Load(ctx context.Context) (runner.Snapshot, error) {
-	var s runner.Snapshot
-	err := p.db.QueryRowContext(ctx, "SELECT revision, payload FROM runner_state WHERE id=1").Scan(&s.Revision, &s.Data)
-	if errors.Is(err, sql.ErrNoRows) {
-		err = nil
-	}
-	return s, err
-}
-func (p runnerPGStore) Save(ctx context.Context, revision uint64, data json.RawMessage) (uint64, error) {
-	return p.SaveDiagnostic(ctx, revision, data, nil)
-}
-func (p runnerPGStore) SaveDiagnostic(ctx context.Context, revision uint64, data json.RawMessage, statuses []runner.SessionStatus) (next uint64, err error) {
-	start, phase := time.Now(), "begin"
-	defer func() {
-		if err != nil || time.Since(start) >= time.Second {
-			classified := err
-			if err != nil {
-				classified = errors.Join(runner.ErrStoreUnavailable, err)
-			}
-			log.Printf("runner_store phase=%s code=%s sqlstate=%s duration_ms=%d bytes=%d revision=%d", phase, runner.FailureCode(classified), runner.SQLState(err), time.Since(start).Milliseconds(), len(data), revision)
-		}
-	}()
-	tx, err := p.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	phase = "checkpoint"
-	if revision == 0 {
-		err = tx.QueryRowContext(ctx, "INSERT INTO runner_state(id, revision, payload) VALUES(1,1,$1) ON CONFLICT DO NOTHING RETURNING revision", string(data)).Scan(&next)
-	} else {
-		err = tx.QueryRowContext(ctx, "UPDATE runner_state SET revision=revision+1,payload=$1 WHERE id=1 AND revision=$2 RETURNING revision", string(data), revision).Scan(&next)
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		err = runner.ErrStoreConflict
-	}
-	if err != nil {
-		return 0, err
-	}
-	if statuses != nil {
-		phase = "diagnostics"
-		projection, e := json.Marshal(statuses)
-		if e != nil {
-			return 0, e
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO runner_diagnostics(id,revision,sessions) VALUES(1,$1,$2) ON CONFLICT(id) DO UPDATE SET revision=EXCLUDED.revision,sessions=EXCLUDED.sessions,updated_at=now()`, next, string(projection))
-		if err != nil {
-			return 0, err
-		}
-	}
-	phase = "commit"
-	return next, tx.Commit()
-}
 func (s *Server) initRunners() {
 	cfg := defaultRunnerConfig()
 	raw, ok, err := s.m.pg.GetSetting(runnerConfigKey)

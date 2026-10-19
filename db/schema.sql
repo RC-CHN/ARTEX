@@ -1391,6 +1391,15 @@ CREATE TABLE IF NOT EXISTS runner_state (
     revision BIGINT NOT NULL CHECK (revision > 0),
     payload JSON NOT NULL
 );
+-- Atomic delta checkpoints. An explicit marker in runner_state.payload makes
+-- older binaries fail closed instead of loading an incomplete execution history.
+CREATE TABLE IF NOT EXISTS runner_state_parts (
+    checkpoint_id INTEGER NOT NULL REFERENCES runner_state(id) ON DELETE CASCADE,
+    part_key TEXT NOT NULL,
+    payload BYTEA NOT NULL,
+    digest BYTEA NOT NULL CHECK(octet_length(digest)=32),
+    PRIMARY KEY(checkpoint_id, part_key)
+);
 -- Operational projection only: no task text, prompts, file paths or tool I/O.
 CREATE TABLE IF NOT EXISTS runner_diagnostics (
     id INTEGER PRIMARY KEY CHECK(id=1),

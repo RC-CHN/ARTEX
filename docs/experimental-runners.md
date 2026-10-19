@@ -87,14 +87,24 @@ Runner 状态快照以 PostgreSQL `JSON` 原样保存，升级时自动将旧 `J
 
 - `runner_transport`：管理器的 heartbeat/poll/results 请求耗时、HTTP 状态、错误分类、距上次成功的时间和恢复事件。同类持续异常每 30 秒汇报一次，首次失败、错误类别变化及恢复立即汇报；长轮询低于 15 秒不作为慢请求。
 - `runner_broker`：控制器的锁等待、序列化/保存/回滚耗时、状态大小与租约过期事件。会话 ID、节点 ID 是运行元数据。
-- `runner_store`：保存失败或超过 1 秒时，记录事务所在阶段（begin/checkpoint/diagnostics/commit）、SQLSTATE、耗时和字节数；阶段耗时是本次事务开始以来的累计值。
+- `runner_store`：保存失败或超过 1 秒时，记录事务阶段（diff/begin/checkpoint_lock/manifest/write_parts/delete_parts/diagnostics/commit）、SQLSTATE、耗时、总字节数及实际写入块数/字节数。慢写入每秒至多报告一次已完成批次；阶段耗时是本次保存开始以来的累计值，不记录块名或内容。
 - `runner_lease`：管理器停止会话时记录固定原因码，以及心跳、轮询最近成功时间和失败状态。
 
 数据库不可用或超时返回 HTTP 503（`store_unavailable` / `store_timeout`），不会再被当作 HTTP 400 协议不兼容而关闭诊断字段。控制器仍兼容旧 Runner，Runner 也保留对旧控制器 400 响应的可选字段回退。HTTP 请求取消后，尚未获得锁的认证、心跳、轮询、结果提交及文件授权请求退出队列，不再补做过时的续租；已开始的状态变更仍必须完成持久化或回滚。结果回执继续重传去重，不重放工具。真正租约过期、控制器接管、停止与取消的隔离语义保持不变。
 
+状态加载和保存失败后的回滚统一重建可写 map，保留通知与工具调用的去重记录；空 map 被 JSON 省略后也能继续接收通知和调用。会话续租同时检查自身到期时间，不只依赖节点最近活跃时间，避免未完成的轮询让后续心跳误判为已续租。轮询/心跳状态操作发生 panic 时，在释放状态锁前恢复最后确认保存的状态，返回 HTTP 500（`internal_panic`），并记录 `operation_panic` 及独立 `incident_id`。记录不包含 panic 原文或请求内容；`recovered` 表示本次内存回滚成功，不表示工具已重跑。恢复失败或涉及未完成的旧进程隔离时关闭 Broker，保留人工处理要求；保存结果不确定时仍通过 revision 校验防止继续使用陈旧状态。
+
 `GET /api/runners/sessions` 的 `reason_codes` 按原始故障出现顺序返回固定原因码，`reason_code` 是其中最早的原因；后续清理失败或租约过期不再覆盖起因。两者均不返回原始错误文本。
 
-排查成批租约过期时，应对照同一时间窗的 `runner_transport` 和 `runner_broker`：较高的 `authenticate`/`heartbeat` 锁等待伴随 `checkpoint_store` 超时支持数据库保存阻塞的判断；较高的 `checkpoint_marshal`/`checkpoint_rollback` 耗时支持历史状态处理开销的判断；管理器网络错误而控制器无对应操作则应检查网络路径。频繁 PostgreSQL WAL 检查点本身不能证明心跳中断的最终根因。本轮仍保留完整状态持久化设计，尚未将租约拆为独立存储。
+排查成批租约过期时，应对照同一时间窗的 `runner_transport` 和 `runner_broker`：较高的 `authenticate`/`heartbeat` 锁等待伴随 `checkpoint_store` 超时支持数据库保存阻塞的判断；较高的 `checkpoint_marshal`/`checkpoint_rollback` 耗时支持历史状态处理开销的判断；管理器网络错误而控制器无对应操作时，应同时检查 HTTP handler panic 和网络路径。频繁 PostgreSQL WAL 检查点本身不能证明心跳中断的最终根因。
+
+### 增量检查点与写入预算
+
+v0.12.4 起，节点、会话元数据、执行配置、通知和每条命令回执分别保存为 `runner_state_parts` 中的不透明字节块；超过 1 MiB 的单项继续拆块。保存时对比 SHA-256 清单，只传输、更新有变化的块并删除过期块。租约心跳不再重写完整的工具输出历史；内存中的完整状态序列化和差异扫描仍然存在。二进制转义与大整数不经 JSONB 或浮点数转换。
+
+块变更、revision CAS 与内容脱敏的诊断投影仍在同一 PostgreSQL 事务提交，读取采用一致性快照；失败整笔回滚，提交结果不明时通过后续 CAS 检出，不自动重放工具。连接、锁等待、写入或提交连续 **5 秒没有完成进展**就取消；每个已完成批次刷新该预算，整个保存最多 **2 分钟**。有活跃会话时，总预算进一步限制为最早已提交租约的剩余时间减去续租余量（默认 5 秒），即将到期时仅允许短尝试；待提交的新租约不能扩大这个预算。调用方取消/截止时间优先。Runner 心跳请求允许最多等待 15 秒，租约 watchdog 保持独立。
+
+旧完整 JSON 在下一次保存时原子转为分块格式，无需重跑任务。主记录使用不受旧版本支持的版本标记，旧二进制会拒绝不完整的执行历史。**降级到 v0.12.3 或更早版本前**，须等待任务和租约空闲、停止控制器和管理器，使用新版本二进制及原数据库连接配置执行 `artex -runner-checkpoint-legacy`；成功后再启动旧版本。转换只改变 Runner 检查点表示、推进 revision 并清理分块，不恢复旧任务备份、不输出任务内容；忙碌集群会拒绝转换。
 
 ### Broker 故障与恢复
 
