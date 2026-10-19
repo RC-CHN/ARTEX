@@ -1,0 +1,24 @@
+goos: linux
+goarch: amd64
+pkg: github.com/RC-CHN/ARTEX/norma/tool
+cpu: Intel(R) Xeon(R) CPU Max 9470C
+BenchmarkStreamingCommandCapture-104     	     927	   1457162 ns/op	23025.13 MB/s	  115402 B/op	       7 allocs/op
+BenchmarkStreamingCommandCapture-104     	     766	   1605197 ns/op	20901.71 MB/s	  115375 B/op	       7 allocs/op
+BenchmarkStreamingCommandCapture-104     	     835	   1585812 ns/op	21157.21 MB/s	  115389 B/op	       7 allocs/op
+BenchmarkToolPrimitives/EditRead8MiB-104 	     756	   1736546 ns/op	 8388803 B/op	       4 allocs/op
+BenchmarkToolPrimitives/EditRead8MiB-104 	     832	   1561836 ns/op	 8388791 B/op	       4 allocs/op
+BenchmarkToolPrimitives/EditRead8MiB-104 	     726	   1499726 ns/op	 8388778 B/op	       4 allocs/op
+BenchmarkToolPrimitives/CapResult24KiB-104         	   55356	     21728 ns/op	     128 B/op	       2 allocs/op
+BenchmarkToolPrimitives/CapResult24KiB-104         	   55411	     21739 ns/op	     128 B/op	       2 allocs/op
+BenchmarkToolPrimitives/CapResult24KiB-104         	   57194	     21112 ns/op	     128 B/op	       2 allocs/op
+BenchmarkToolPrimitives/PTYAppend4KiB-104          	 4344823	       277.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkToolPrimitives/PTYAppend4KiB-104          	 4274869	       278.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkToolPrimitives/PTYAppend4KiB-104          	 4310608	       275.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkToolPrimitives/GrepCountMultiline=false-104         	    1357	    792781 ns/op	   33453 B/op	       5 allocs/op
+BenchmarkToolPrimitives/GrepCountMultiline=false-104         	    1633	    803240 ns/op	   33455 B/op	       5 allocs/op
+BenchmarkToolPrimitives/GrepCountMultiline=false-104         	    1819	    800801 ns/op	   33484 B/op	       5 allocs/op
+BenchmarkToolPrimitives/GrepCountMultiline=true-104          	     387	   3148276 ns/op	 1114285 B/op	    5042 allocs/op
+BenchmarkToolPrimitives/GrepCountMultiline=true-104          	     418	   2666653 ns/op	 1113329 B/op	    5040 allocs/op
+BenchmarkToolPrimitives/GrepCountMultiline=true-104          	     454	   2624514 ns/op	 1113443 B/op	    5040 allocs/op
+PASS
+ok  	github.com/RC-CHN/ARTEX/norma/tool	22.244s

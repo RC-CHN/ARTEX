@@ -1,0 +1,12 @@
+goos: linux
+goarch: amd64
+pkg: github.com/RC-CHN/ARTEX/runner
+cpu: Intel(R) Xeon(R) CPU Max 9470C
+BenchmarkLeaseMetadata/empty-104         	  228028	      4874 ns/op	    1335 B/op	      18 allocs/op
+BenchmarkLeaseMetadata/empty-104         	  249435	      4895 ns/op	    1335 B/op	      18 allocs/op
+BenchmarkLeaseMetadata/empty-104         	  242833	      5271 ns/op	    1335 B/op	      18 allocs/op
+BenchmarkLeaseMetadata/37MiB-history-104 	  309106	      4052 ns/op	    1320 B/op	      18 allocs/op
+BenchmarkLeaseMetadata/37MiB-history-104 	  300615	      3877 ns/op	    1321 B/op	      18 allocs/op
+BenchmarkLeaseMetadata/37MiB-history-104 	  345692	      3656 ns/op	    1320 B/op	      18 allocs/op
+PASS
+ok  	github.com/RC-CHN/ARTEX/runner	7.348s

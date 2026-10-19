@@ -1,0 +1,21 @@
+goos: linux
+goarch: amd64
+pkg: github.com/RC-CHN/ARTEX/norma/tool
+cpu: Intel(R) Xeon(R) CPU Max 9470C
+BenchmarkToolPrimitives/EditRead8MiB-104         	      93	  12848733 ns/op	50577852 B/op	      23 allocs/op
+BenchmarkToolPrimitives/EditRead8MiB-104         	      80	  13566271 ns/op	50577607 B/op	      23 allocs/op
+BenchmarkToolPrimitives/EditRead8MiB-104         	      88	  13305033 ns/op	50577600 B/op	      23 allocs/op
+BenchmarkToolPrimitives/CapResult24KiB-104       	   16314	     73340 ns/op	   74409 B/op	      10 allocs/op
+BenchmarkToolPrimitives/CapResult24KiB-104       	   16683	     73185 ns/op	   74408 B/op	      10 allocs/op
+BenchmarkToolPrimitives/CapResult24KiB-104       	   16549	     72306 ns/op	   74410 B/op	      10 allocs/op
+BenchmarkToolPrimitives/PTYAppend4KiB-104        	  269653	      4549 ns/op	   18659 B/op	       0 allocs/op
+BenchmarkToolPrimitives/PTYAppend4KiB-104        	  287066	      4311 ns/op	   18660 B/op	       0 allocs/op
+BenchmarkToolPrimitives/PTYAppend4KiB-104        	  273248	      4285 ns/op	   18660 B/op	       0 allocs/op
+BenchmarkToolPrimitives/GrepCountMultiline=false-104         	    1249	    942054 ns/op	  431118 B/op	      24 allocs/op
+BenchmarkToolPrimitives/GrepCountMultiline=false-104         	    1310	    949802 ns/op	  430795 B/op	      24 allocs/op
+BenchmarkToolPrimitives/GrepCountMultiline=false-104         	    1255	    943383 ns/op	  430788 B/op	      24 allocs/op
+BenchmarkToolPrimitives/GrepCountMultiline=true-104          	      25	  46304059 ns/op	 1113892 B/op	    5040 allocs/op
+BenchmarkToolPrimitives/GrepCountMultiline=true-104          	      26	  47024315 ns/op	 1112660 B/op	    5038 allocs/op
+BenchmarkToolPrimitives/GrepCountMultiline=true-104          	      24	  46647359 ns/op	 1113471 B/op	    5039 allocs/op
+PASS
+ok  	github.com/RC-CHN/ARTEX/norma/tool	17.869s
