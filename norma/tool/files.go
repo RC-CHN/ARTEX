@@ -1,9 +1,12 @@
 package tool
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,9 +22,11 @@ func NewRead() CoreTool {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "description": "Path to the file to read."},
-				"offset":    map[string]any{"type": "integer", "description": "1-based line to start from."},
-				"limit":     map[string]any{"type": "integer", "description": "Max lines to read (default 2000)."},
+				"expected_version": map[string]any{"type": "string", "description": "Version returned by Read; rejects stale file updates. Use missing to require a new file."},
+				"file_path":        map[string]any{"type": "string", "description": "Path to the file to read."},
+				"byte_offset":      map[string]any{"type": "integer", "description": "Continuation byte offset returned by Read; pass offset and expected_version from the same page."},
+				"offset":           map[string]any{"type": "integer", "description": "1-based line to start from."},
+				"limit":            map[string]any{"type": "integer", "description": "Max lines to read (default 2000)."},
 			},
 			"required": []any{"file_path"},
 		},
@@ -34,61 +39,146 @@ func NewRead() CoreTool {
 
 const maxLineLen = 2000
 
-func runRead(_ context.Context, input json.RawMessage, tc *ToolContext) (Result, error) {
+const maxReadScanBytes = 64 << 20
+
+func runRead(ctx context.Context, input json.RawMessage, tc *ToolContext) (Result, error) {
 	var in struct {
-		FilePath string `json:"file_path"`
-		Offset   int    `json:"offset"`
-		Limit    int    `json:"limit"`
+		FilePath        string `json:"file_path"`
+		Offset          int    `json:"offset"`
+		Limit           int    `json:"limit"`
+		ByteOffset      int64  `json:"byte_offset"`
+		ExpectedVersion string `json:"expected_version"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return Result{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	if in.Offset < 0 || in.Limit < 0 || in.ByteOffset < 0 {
+		return Fail("invalid_range", "offset, limit and byte_offset must be nonnegative", "Use the cursor returned by Read."), nil
+	}
 	path := resolvePath(tc, in.FilePath)
-	info, err := os.Stat(path)
+	version, info, err := currentFileVersion(path)
 	if err != nil {
-		return Errorf(fmt.Sprintf("Error reading %s: %v", in.FilePath, err)), nil
+		return fileFailure(ctx, err)
 	}
-	if info.IsDir() {
-		return Errorf(fmt.Sprintf("Error: %s is a directory, not a file. Use LS or Glob to list its contents.", in.FilePath)), nil
+	if info == nil {
+		return Fail("file_not_found", in.FilePath, "Check the path with LS or Glob."), nil
 	}
-	data, err := os.ReadFile(path)
+	if in.ExpectedVersion != "" && in.ExpectedVersion != version {
+		return fileFailure(ctx, errFileChanged)
+	}
+	if in.ByteOffset > 0 && in.ExpectedVersion == "" {
+		return Fail("version_required", "byte_offset requires expected_version", "Pass the version and continuation cursor returned by the previous Read."), nil
+	}
+	f, err := os.Open(path)
 	if err != nil {
-		return Errorf(fmt.Sprintf("Error reading %s: %v", in.FilePath, err)), nil
+		return fileFailure(ctx, err)
 	}
-	if isBinary(data) {
-		return Text(fmt.Sprintf("[binary file %s not shown — %d bytes]", in.FilePath, len(data))), nil
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return fileFailure(ctx, err)
 	}
-	lines := strings.Split(string(data), "\n")
-	start := 0
-	if in.Offset > 0 {
-		start = in.Offset - 1
+	if fileVersion(opened) != version {
+		return fileFailure(ctx, errFileChanged)
 	}
-	if start > len(lines) {
-		start = len(lines)
+	sample := make([]byte, 8000)
+	n, err := f.Read(sample)
+	if err != nil && err != io.EOF {
+		return fileFailure(ctx, err)
+	}
+	if isBinary(sample[:n]) {
+		return Text(fmt.Sprintf("[binary file %s not shown — %d bytes; version=%s]", in.FilePath, info.Size(), version)), nil
+	}
+	if _, err = f.Seek(in.ByteOffset, io.SeekStart); err != nil {
+		return fileFailure(ctx, err)
 	}
 	limit := in.Limit
-	if limit <= 0 {
+	if limit == 0 {
 		limit = 2000
 	}
-	end := start + limit
-	if end > len(lines) {
-		end = len(lines)
+	limit = min(limit, 10000)
+	start := max(in.Offset-1, 0)
+	lineNo := 0
+	if in.ByteOffset > 0 {
+		lineNo = start
 	}
-	var b strings.Builder
-	for i := start; i < end; i++ {
-		line := lines[i]
-		if len(line) > maxLineLen {
-			line = line[:maxLineLen] + "… [line truncated]"
+	reader := bufio.NewReaderSize(f, 32<<10)
+	scanned := int64(0)
+	emitted := 0
+	var out strings.Builder
+	for emitted < limit {
+		line := make([]byte, 0, maxLineLen)
+		lineBytes := 0
+		eof := false
+		for {
+			if err = ctx.Err(); err != nil {
+				return Result{}, err
+			}
+			part, e := reader.ReadSlice('\n')
+			scanned += int64(len(part))
+			lineBytes += len(part)
+			if scanned > maxReadScanBytes {
+				return Fail("read_scan_limit", "Read reached its 64 MiB scan budget", "Use the byte_offset/version cursor from an earlier page, Grep, or a bounded streaming script for huge lines or distant offsets."), nil
+			}
+			if lineNo >= start && len(line) < maxLineLen {
+				line = append(line, part[:min(len(part), maxLineLen-len(line))]...)
+			}
+			if e == bufio.ErrBufferFull {
+				continue
+			}
+			if e != nil && !errors.Is(e, io.EOF) {
+				return fileFailure(ctx, e)
+			}
+			eof = e == io.EOF
+			break
 		}
-		fmt.Fprintf(&b, "%6d\t%s\n", i+1, line)
-	}
-	if b.Len() == 0 {
-		if len(data) == 0 {
-			return Text("(file is empty)"), nil
+		if lineBytes == 0 && eof {
+			break
 		}
-		return Text("(no lines in the requested range)"), nil
+		if lineNo >= start {
+			text := strings.TrimSuffix(string(line), "\n")
+			if lineBytes > maxLineLen && !(lineBytes == maxLineLen+1 && len(line) == maxLineLen) {
+				text += "… [line truncated]"
+			}
+			fmt.Fprintf(&out, "%6d\t%s\n", lineNo+1, text)
+			emitted++
+		}
+		lineNo++
+		if eof || out.Len() >= maxOut(tc)+readOutputBonus {
+			break
+		}
 	}
-	return Text(readCapture(tc, b.String(), start)), nil
+	current, _, err := currentFileVersion(path)
+	if err != nil {
+		return fileFailure(ctx, err)
+	}
+	if current != version {
+		return fileFailure(ctx, errFileChanged)
+	}
+	if err = ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	if out.Len() == 0 {
+		if info.Size() == 0 {
+			out.WriteString("(file is empty)\n")
+		} else {
+			out.WriteString("(no lines in the requested range)\n")
+		}
+	}
+	body := readCapture(tc, out.String(), start)
+	// If the output cap cut the last line, resume at that line, not past it.
+	_, returned := headWithinBudget(out.String(), maxOut(tc)+readOutputBonus)
+	if returned < emitted {
+		return Text(fmt.Sprintf("[version=%s]\n%s", version, body)), nil
+	}
+	cursor := in.ByteOffset + scanned
+	if cursor < info.Size() {
+		body += fmt.Sprintf("\n[Continue reading with Read offset=%d, byte_offset=%d, expected_version=%s.]", lineNo+1, cursor, version)
+	}
+	return Text(fmt.Sprintf("[version=%s]\n%s", version, body)), nil
 }
 
 // readOutputBonus lifts the Read tool's output budget above the shared default
@@ -151,8 +241,9 @@ func NewWrite() CoreTool {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "description": "Path of the file to write."},
-				"content":   map[string]any{"type": "string", "description": "Full contents to write."},
+				"expected_version": map[string]any{"type": "string", "description": "Version returned by Read; rejects stale file updates. Use missing to require a new file."},
+				"file_path":        map[string]any{"type": "string", "description": "Path of the file to write."},
+				"content":          map[string]any{"type": "string", "description": "Full contents to write."},
 			},
 			"required": []any{"file_path", "content"},
 		},
@@ -160,33 +251,42 @@ func NewWrite() CoreTool {
 	})
 }
 
-func runWrite(_ context.Context, input json.RawMessage, tc *ToolContext) (Result, error) {
+func runWrite(ctx context.Context, input json.RawMessage, tc *ToolContext) (Result, error) {
 	var in struct {
-		FilePath string `json:"file_path"`
-		Content  string `json:"content"`
+		FilePath        string `json:"file_path"`
+		Content         string `json:"content"`
+		ExpectedVersion string `json:"expected_version"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return Result{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	path := resolvePath(tc, in.FilePath)
-	existed := false
-	if info, err := os.Stat(path); err == nil {
-		if info.IsDir() {
-			return Errorf(fmt.Sprintf("Error: %s is an existing directory, not a file.", in.FilePath)), nil
-		}
-		existed = true
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return fileFailure(ctx, err)
 	}
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return Errorf(fmt.Sprintf("Error creating directory: %v", err)), nil
-		}
+	path, unlock, err := lockFile(ctx, path)
+	if err != nil {
+		return fileFailure(ctx, err)
 	}
-	if err := os.WriteFile(path, []byte(in.Content), 0o644); err != nil {
-		return Errorf(fmt.Sprintf("Error writing %s: %v", in.FilePath, err)), nil
+	defer unlock()
+	version, info, err := currentFileVersion(path)
+	if err != nil {
+		return fileFailure(ctx, err)
 	}
+	if in.ExpectedVersion != "" && in.ExpectedVersion != version {
+		return fileFailure(ctx, errFileChanged)
+	}
+	mode := os.FileMode(0644)
 	verb := "Created"
-	if existed {
+	if info != nil {
+		mode = info.Mode()
 		verb = "Overwrote"
+	}
+	if err = commitFile(ctx, path, version, in.Content, mode); err != nil {
+		return fileFailure(ctx, err)
 	}
 	return Text(fmt.Sprintf("%s %s (%d bytes)", verb, in.FilePath, len(in.Content))), nil
 }
@@ -200,10 +300,11 @@ func NewEdit() CoreTool {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"file_path":   map[string]any{"type": "string", "description": "Path of the file to edit."},
-				"old_string":  map[string]any{"type": "string", "description": "Exact text to replace."},
-				"new_string":  map[string]any{"type": "string", "description": "Replacement text."},
-				"replace_all": map[string]any{"type": "boolean", "description": "Replace all occurrences."},
+				"expected_version": map[string]any{"type": "string", "description": "Version returned by Read; rejects stale file updates. Use missing to require a new file."},
+				"file_path":        map[string]any{"type": "string", "description": "Path of the file to edit."},
+				"old_string":       map[string]any{"type": "string", "description": "Exact text to replace."},
+				"new_string":       map[string]any{"type": "string", "description": "Replacement text."},
+				"replace_all":      map[string]any{"type": "boolean", "description": "Replace all occurrences."},
 			},
 			"required": []any{"file_path", "old_string", "new_string"},
 		},
@@ -211,12 +312,13 @@ func NewEdit() CoreTool {
 	})
 }
 
-func runEdit(_ context.Context, input json.RawMessage, tc *ToolContext) (Result, error) {
+func runEdit(ctx context.Context, input json.RawMessage, tc *ToolContext) (Result, error) {
 	var in struct {
-		FilePath   string `json:"file_path"`
-		OldString  string `json:"old_string"`
-		NewString  string `json:"new_string"`
-		ReplaceAll bool   `json:"replace_all"`
+		FilePath        string `json:"file_path"`
+		OldString       string `json:"old_string"`
+		NewString       string `json:"new_string"`
+		ReplaceAll      bool   `json:"replace_all"`
+		ExpectedVersion string `json:"expected_version"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return Result{}, err
@@ -224,18 +326,35 @@ func runEdit(_ context.Context, input json.RawMessage, tc *ToolContext) (Result,
 	if in.OldString == in.NewString {
 		return Errorf("Error: old_string and new_string are identical"), nil
 	}
-	path := resolvePath(tc, in.FilePath)
-	data, err := os.ReadFile(path)
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	if in.OldString == "" {
+		return Fail("empty_match", "old_string must not be empty", "Read the file and provide a nonempty exact match."), nil
+	}
+	path, unlock, err := lockFile(ctx, resolvePath(tc, in.FilePath))
+	if err != nil {
+		return fileFailure(ctx, err)
+	}
+	defer unlock()
+	version, info, err := currentFileVersion(path)
+	if err != nil {
+		return fileFailure(ctx, err)
+	}
+	if in.ExpectedVersion != "" && in.ExpectedVersion != version {
+		return fileFailure(ctx, errFileChanged)
+	}
+	data, err := readEditFile(ctx, path, info)
 	if err != nil {
 		return Errorf(fmt.Sprintf("Error reading %s: %v", in.FilePath, err)), nil
 	}
 	content := string(data)
 	count := strings.Count(content, in.OldString)
 	if count == 0 {
-		return Errorf(fmt.Sprintf("Error: old_string not found in %s", in.FilePath)), nil
+		return Fail("match_not_found", fmt.Sprintf("old_string not found in %s", in.FilePath), "Read the current file; copy exact text including whitespace and rebuild the edit."), nil
 	}
 	if count > 1 && !in.ReplaceAll {
-		return Errorf(fmt.Sprintf("Error: old_string is not unique in %s (%d matches); add context or set replace_all", in.FilePath, count)), nil
+		return Fail("ambiguous_match", fmt.Sprintf("old_string is not unique in %s (%d matches)", in.FilePath, count), "Add surrounding lines to old_string; use replace_all only if every occurrence should change."), nil
 	}
 	var updated string
 	if in.ReplaceAll {
@@ -243,8 +362,8 @@ func runEdit(_ context.Context, input json.RawMessage, tc *ToolContext) (Result,
 	} else {
 		updated = strings.Replace(content, in.OldString, in.NewString, 1)
 	}
-	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
-		return Errorf(fmt.Sprintf("Error writing %s: %v", in.FilePath, err)), nil
+	if err := commitFile(ctx, path, version, updated, info.Mode()); err != nil {
+		return fileFailure(ctx, err)
 	}
 	return Text(fmt.Sprintf("Edited %s (%d replacement(s))", in.FilePath, count)), nil
 }

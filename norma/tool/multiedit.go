@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -19,7 +18,8 @@ func NewMultiEdit() CoreTool {
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string", "description": "Path of the file to edit."},
+				"expected_version": map[string]any{"type": "string", "description": "Version returned by Read; rejects changes since reading."},
+				"file_path":        map[string]any{"type": "string", "description": "Path of the file to edit."},
 				"edits": map[string]any{
 					"type":        "array",
 					"description": "Edits to apply in order.",
@@ -40,10 +40,11 @@ func NewMultiEdit() CoreTool {
 	})
 }
 
-func runMultiEdit(_ context.Context, input json.RawMessage, tc *ToolContext) (Result, error) {
+func runMultiEdit(ctx context.Context, input json.RawMessage, tc *ToolContext) (Result, error) {
 	var in struct {
-		FilePath string `json:"file_path"`
-		Edits    []struct {
+		FilePath        string `json:"file_path"`
+		ExpectedVersion string `json:"expected_version"`
+		Edits           []struct {
 			OldString  string `json:"old_string"`
 			NewString  string `json:"new_string"`
 			ReplaceAll bool   `json:"replace_all"`
@@ -55,23 +56,43 @@ func runMultiEdit(_ context.Context, input json.RawMessage, tc *ToolContext) (Re
 	if len(in.Edits) == 0 {
 		return Errorf("Error: no edits provided"), nil
 	}
-	path := resolvePath(tc, in.FilePath)
-	data, err := os.ReadFile(path)
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	path, unlock, err := lockFile(ctx, resolvePath(tc, in.FilePath))
+	if err != nil {
+		return fileFailure(ctx, err)
+	}
+	defer unlock()
+	version, info, err := currentFileVersion(path)
+	if err != nil {
+		return fileFailure(ctx, err)
+	}
+	if in.ExpectedVersion != "" && in.ExpectedVersion != version {
+		return fileFailure(ctx, errFileChanged)
+	}
+	data, err := readEditFile(ctx, path, info)
 	if err != nil {
 		return Errorf(fmt.Sprintf("Error reading %s: %v", in.FilePath, err)), nil
 	}
 	content := string(data)
 	total := 0
 	for i, e := range in.Edits {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
+		if e.OldString == "" {
+			return Fail("empty_match", "old_string must not be empty", "Read the file and provide a nonempty exact match."), nil
+		}
 		if e.OldString == e.NewString {
 			return Errorf(fmt.Sprintf("Error in edit %d: old_string and new_string are identical", i+1)), nil
 		}
 		count := strings.Count(content, e.OldString)
 		if count == 0 {
-			return Errorf(fmt.Sprintf("Error in edit %d: old_string not found", i+1)), nil
+			return Fail("match_not_found", fmt.Sprintf("edit %d: old_string not found", i+1), "Read the file again and rebuild this batch; no edits were committed."), nil
 		}
 		if count > 1 && !e.ReplaceAll {
-			return Errorf(fmt.Sprintf("Error in edit %d: old_string is not unique (%d matches); add context or set replace_all", i+1, count)), nil
+			return Fail("ambiguous_match", fmt.Sprintf("edit %d: old_string is not unique (%d matches)", i+1, count), "Add surrounding context or explicitly choose replace_all; no edits were committed."), nil
 		}
 		if e.ReplaceAll {
 			content = strings.ReplaceAll(content, e.OldString, e.NewString)
@@ -80,8 +101,8 @@ func runMultiEdit(_ context.Context, input json.RawMessage, tc *ToolContext) (Re
 		}
 		total += count
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return Errorf(fmt.Sprintf("Error writing %s: %v", in.FilePath, err)), nil
+	if err := commitFile(ctx, path, version, content, info.Mode()); err != nil {
+		return fileFailure(ctx, err)
 	}
 	return Text(fmt.Sprintf("Applied %d edits to %s (%d replacement(s))", len(in.Edits), in.FilePath, total)), nil
 }

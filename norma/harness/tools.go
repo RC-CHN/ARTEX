@@ -128,10 +128,5 @@ func (l *loop) execOne(toolCtx context.Context, use llm.ContentBlock, emitProgre
 // the one place that guarantees no tool's output — however constructed — can
 // blow past the context budget.
 func capOutput(tc *tool.ToolContext, res tool.Result) tool.Result {
-	for i, b := range res.Content {
-		if b.Type == llm.BlockText {
-			res.Content[i].Text = tool.CaptureOnce(tc, b.Text)
-		}
-	}
-	return res
+	return tool.CapResult(tc, res)
 }

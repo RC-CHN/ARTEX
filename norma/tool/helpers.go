@@ -68,7 +68,9 @@ func alreadyCaptured(s string) bool {
 // already handled themselves. Output within the limit is a no-op either way,
 // since Capture returns it unchanged.
 func CaptureOnce(tc *ToolContext, s string) string {
-	if alreadyCaptured(s) {
+	// Legacy string-only producers may carry a small trailer. A marker NEVER
+	// exempts an unbounded body; RPC results use CapResult's typed receipt.
+	if len(s) <= maxOut(tc)+512 && alreadyCaptured(s) {
 		return s
 	}
 	return Capture(tc, s)

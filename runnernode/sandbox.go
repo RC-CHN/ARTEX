@@ -225,6 +225,7 @@ func (s *LocalSession) execute(ctx context.Context, c runner.ToolCall) SandboxRe
 	}
 	tc := &tool.ToolContext{WorkingDir: cwd, AgentID: s.spec.AgentKey, ToolUseID: c.ID, MaxOutputChars: maxChars, OutputDir: outputDir, Tasks: s.manager, Env: append(envList(s.spec.Env), c.Env...)}
 	result, err := t.Call(ctx, c.Input, tc)
+	result = tool.CapResult(tc, result)
 	reply := SandboxReply{Result: result, Executed: true, Notifications: s.manager.DrainNotifications()}
 	if err != nil {
 		reply.Error = err.Error()

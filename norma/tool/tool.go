@@ -8,6 +8,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/RC-CHN/ARTEX/norma/llm"
 	"github.com/RC-CHN/ARTEX/norma/permission"
@@ -53,8 +54,10 @@ func (tc *ToolContext) progress(msg string) {
 // Result is the outcome of a tool call. Content is the tool_result payload fed
 // back to the model.
 type Result struct {
-	Content []llm.ContentBlock
-	IsError bool
+	Content  []llm.ContentBlock
+	IsError  bool
+	Failure  *Failure       `json:"failure,omitempty"`
+	Captured *OutputReceipt `json:"captured,omitempty"`
 	// Extra holds additional messages the tool injects into the conversation
 	// right after its tool_result (e.g. the Skill tool emits the invoked skill's
 	// instructions as an independent user message rather than burying them in the
@@ -72,13 +75,13 @@ func Errorf(s string) Result {
 
 // Flatten concatenates the text of a result's content blocks.
 func (r Result) Flatten() string {
-	var s string
+	var s strings.Builder
 	for _, b := range r.Content {
 		if b.Type == llm.BlockText {
-			s += b.Text
+			s.WriteString(b.Text)
 		}
 	}
-	return s
+	return s.String()
 }
 
 // CoreTool is a capability the agent can invoke (FR-04.1).
