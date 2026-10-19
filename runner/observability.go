@@ -118,10 +118,48 @@ type OperationStatus struct {
 }
 
 type BrokerDiagnostics struct {
+	State                 BrokerState                `json:"state"`
 	ObservedAt            time.Time                  `json:"observed_at"`
 	Operations            map[string]OperationStatus `json:"operations"`
 	LeaseExpirations      uint64                     `json:"lease_expirations"`
 	LastLeaseExpirationAt time.Time                  `json:"last_lease_expiration_at,omitempty"`
+}
+
+// BrokerState is independent of the execution mutex, so health checks can still
+// report a closed broker while another request is waiting for persistence.
+type BrokerState struct {
+	BrokerID     string    `json:"broker_id"`
+	IncidentID   string    `json:"incident_id,omitempty"`
+	Closed       bool      `json:"closed"`
+	ClosedAt     time.Time `json:"closed_at,omitempty"`
+	Reason       string    `json:"reason,omitempty"`
+	FailureCode  string    `json:"failure_code,omitempty"`
+	AutoRecovery bool      `json:"auto_recovery"`
+}
+
+func (h *Hub) BrokerState() BrokerState {
+	h.observer.mu.Lock()
+	defer h.observer.mu.Unlock()
+	return h.observer.status.State
+}
+
+// Caller holds h.mu. Preserve the first cause, including across Close(), which
+// is also used to join the sweep loop of an already failed broker.
+func (h *Hub) closeLocked(reason string, err error, recoverable bool) {
+	if h.closed {
+		return
+	}
+	h.closed = true
+	state := BrokerState{BrokerID: h.id, IncidentID: newID(), Closed: true, ClosedAt: time.Now(), Reason: reason, FailureCode: FailureCode(err), AutoRecovery: recoverable}
+	h.observer.mu.Lock()
+	h.observer.status.State = state
+	h.observer.mu.Unlock()
+	h.signalLocked()
+	if h.opts.Log != nil {
+		h.opts.Log.Printf("runner_broker_closed reason=%s code=%s auto_recovery=%t revision=%d", reason, state.FailureCode, recoverable, h.revision)
+	}
+	diagnostics := h.Diagnostics()
+	h.recordEvent(Event{Kind: "broker_closed", IncidentID: state.IncidentID, Code: state.FailureCode, Reason: reason, Revision: h.revision, AutoRecovery: recoverable, Diagnostics: &diagnostics})
 }
 
 type brokerObserver struct {
@@ -210,6 +248,9 @@ func (o *observation) finish(err error, bytes int) {
 	h.observer.mu.Unlock()
 	if logEvent && h.opts.Log != nil {
 		h.opts.Log.Printf("runner_broker op=%s code=%s sqlstate=%s duration_ms=%d lock_wait_ms=%d bytes=%d consecutive_failures=%d recovered=%t", o.op, FailureCode(err), SQLState(err), s.LastDurationMS, s.LastLockWaitMS, bytes, s.ConsecutiveFailures, recovered)
+	}
+	if logEvent {
+		h.recordEvent(Event{Kind: "operation", Operation: o.op, Code: FailureCode(err), SQLState: SQLState(err), DurationMS: s.LastDurationMS, LockWaitMS: s.LastLockWaitMS, Bytes: bytes, Count: s.ConsecutiveFailures, Recovered: recovered})
 	}
 }
 

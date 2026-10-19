@@ -154,6 +154,8 @@ type Engine struct {
 	// readiness reports whether a global LLM provider is configured — the signal behind
 	// Ready()/the llm_configured indicator. Wired once at startup; nil → not ready.
 	readiness func() bool
+	// Wired once at startup; a failed remote broker pauses frontier admission.
+	executionAvailable func(agentKey string) bool
 }
 
 type taskRuntime struct {
@@ -993,6 +995,9 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string, pool *wor
 // runIntent. Returns false when nothing was claimable. The pool worker loop is its
 // only caller.
 func (e *Engine) runWorkerStep(ctx context.Context, t *Task, name string, worker *agent.Worker) bool {
+	if e.executionAvailable != nil && !e.executionAvailable("worker") {
+		return false
+	}
 	intent := e.claimNext(t, name)
 	if intent == nil {
 		return false
@@ -1048,7 +1053,7 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 	var wrote agent.WriteCounts
 	var err error
 	execute := func() {
-		err = waitWorkerCapacity(workCtx, 5*time.Second, func() error {
+		err = waitWorkerPreparation(workCtx, 5*time.Second, func() error {
 			e.BeginLLMCall(t.ID)
 			defer e.EndLLMCall(t.ID)
 			if hasChatMessage {
@@ -1057,9 +1062,13 @@ func (e *Engine) runIntent(ctx context.Context, t *Task, name string, worker *ag
 				reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
 			}
 			return err
-		}, func(attempt int, elapsed time.Duration) {
-			log.Printf("[worker %s] task %s intent %d: runner_capacity_wait retry=%d elapsed_seconds=%d", name, t.ID, intent.ID, attempt, int(elapsed.Seconds()))
-			taskEmit(db.Activity{Kind: "text", Summary: fmt.Sprintf("等待 Runner 执行容量，保留当前意图，5 秒后继续尝试（第 %d 次，已等待 %s）；可随时暂停或取消。", attempt, elapsed.Round(time.Second))})
+		}, func(cause error, attempt int, elapsed time.Duration) {
+			code, label := "runner_capacity_wait", "执行容量"
+			if errors.Is(cause, errRunnerPreparationUnavailable) {
+				code, label = "runner_broker_wait", "调度服务恢复"
+			}
+			log.Printf("[worker %s] task %s intent %d: %s retry=%d elapsed_seconds=%d", name, t.ID, intent.ID, code, attempt, int(elapsed.Seconds()))
+			taskEmit(db.Activity{Kind: "text", Summary: fmt.Sprintf("等待 Runner %s，保留当前意图，5 秒后继续尝试（第 %d 次，已等待 %s）；可随时暂停或取消。", label, attempt, elapsed.Round(time.Second))})
 		})
 	}
 	execute()

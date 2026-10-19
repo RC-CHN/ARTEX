@@ -15,7 +15,16 @@ func (s *Server) runnerBrokerDiagnostics(w http.ResponseWriter, r *http.Request)
 		writeErr(w, 503, "Runner broker unavailable")
 		return
 	}
-	writeJSON(w, 200, hub.Diagnostics())
+	writeJSON(w, 200, struct {
+		runner.BrokerDiagnostics
+		Recovery runnerRecoveryStatus `json:"recovery"`
+		Journal  runnerJournalStatus  `json:"journal"`
+	}{hub.Diagnostics(), s.recoverySnapshot(), s.runnerJournalStatus()})
+}
+
+func (s *Server) runnerJournalStatus() runnerJournalStatus {
+	status, _ := s.runnerJournal.snapshot(0, "")
+	return status
 }
 
 func (s *Server) runnerSessionDiagnostics(w http.ResponseWriter, r *http.Request) {

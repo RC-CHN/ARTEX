@@ -96,6 +96,26 @@ Runner 状态快照以 PostgreSQL `JSON` 原样保存，升级时自动将旧 `J
 
 排查成批租约过期时，应对照同一时间窗的 `runner_transport` 和 `runner_broker`：较高的 `authenticate`/`heartbeat` 锁等待伴随 `checkpoint_store` 超时支持数据库保存阻塞的判断；较高的 `checkpoint_marshal`/`checkpoint_rollback` 耗时支持历史状态处理开销的判断；管理器网络错误而控制器无对应操作则应检查网络路径。频繁 PostgreSQL WAL 检查点本身不能证明心跳中断的最终根因。本轮仍保留完整状态持久化设计，尚未将租约拆为独立存储。
 
+### Broker 故障与恢复
+
+远程 Worker 领取意图前检查 Broker 是否可用。Broker 关闭、缺失或配置加载失败时，尚未领取的意图保持 `open`。领取后才遇到故障的竞态由准备阶段处理：只有明确尚未开始模型/工具执行的环境分配失败才允许重试，保持当前意图为 `running`，每 5 秒重试，等待提示最多每 30 秒重复一次。暂停、取消和任务截止时间仍可终止等待。已经执行的工具或结果未知的会话不会因 Broker 恢复而自动重放，也不会自动重跑之前被标记为 `blocked` 的任务。显式配置为本机执行的 Agent 不受远程 Broker 关闭影响；配置本身加载失败时仍拒绝执行。
+
+停止/隔离状态持久化失败导致的 Broker 关闭，会先冷却 5 秒，再尝试从数据库建立新的 Broker。失败后退避 10、20、40、60 秒，后续最多每分钟尝试一次。恢复与配置保存、进程关闭互斥，恢复 I/O 不占用 API 状态快照锁。新 Broker 隔离所有旧会话，保留旧租约占用直到确认清理或到期；旧 Session 句柄不会转接到新 Broker。恢复前校验原控制器 epoch，写入时继续校验状态 revision，避免抢占已经接管的控制器。
+
+版本冲突、回滚解析失败、主动关闭/禁用以及无法读取有效状态等情况不自动接管。恢复尝试遇到所有权冲突或非存储错误也停止重试，管理员应检查原因后重新保存 Runner 配置。进程启动时的配置/状态初始化失败同样需要人工修复。`runner_broker_closed` 记录最初关闭原因、固定错误码、是否允许自动恢复和 revision；`runner_recovery` 记录尝试次数、连续失败和恢复结果。`GET /api/runners/diagnostics` 新增 `state` 和 `recovery`，不返回原始错误文本或任务数据。
+
+`GET /api/health` 在启用的 Broker 缺失/关闭、配置加载失败或服务器退出时返回 HTTP 503，并提供 `execution.ready`、固定 `code` 和恢复状态；健康时返回 200。此检查反映控制器执行服务状态，不承诺节点在线、配额充足或数据库实时可用。独立的 `GET /api/livez` 只检查 HTTP 进程存活。Kubernetes 模板将 startup/liveness 改为 `/api/livez`，readiness 保留 `/api/auth/status` 的数据库检查，使 Broker 故障期间心跳、结果提交和修复界面仍可到达控制器。部署已有集群时需要同步更新探针路径，不能继续把 `/api/health` 用作 liveness。
+
+### 独立故障记录
+
+控制器把运行元数据写入 `<dataDir>/diagnostics/runner-incidents.jsonl`（标准容器为 `/app/data/diagnostics/runner-incidents.jsonl`）。该路径使用控制器持久数据卷，不写入任务目录，也不依赖 PostgreSQL 或普通服务器日志表。单文件上限 8 MiB，保留 `.1`～`.4` 四个轮转文件，总上限约 40 MiB；文件权限为 0600。每个控制器数据目录由一个进程写入，Kubernetes 使用 Recreate 升级策略。
+
+记录覆盖控制器/Broker 启动、首次/变化的操作错误、慢操作、租约过期、Broker 关闭及每次自动恢复结果。`broker_id` 关联同一控制器执行实例的前后事件；`incident_id` 将一次关闭和恢复尝试关联起来，恢复成功包含新 Broker 的 `related_broker_id`。关闭事件附带独立内存诊断快照。所有字段均为显式元数据，不保存原始错误文本、SQL、凭据、提示词、任务正文或工具输入输出。
+
+经管理 API 认证访问 `GET /api/runners/incidents?limit=100&incident_id=…`；`limit` 支持 1～500，`incident_id` 可省略。返回最近记录及 `journal` 写入状态，即使 Broker 初始化失败也可查询。内存最多保留 500 条；启动时从轮转日志的有界尾部恢复历史，更早记录可在上述独立文件中排查。`GET /api/runners/diagnostics` 同时提供日志路径、待写数量、累计丢弃数、写入失败次数和最后成功写入时间。
+
+记录通过 1024 项有界队列异步追加并 fsync，不让磁盘延迟占用 Broker 主锁。存储失败每秒重试，队列满时显式计入 `dropped`；后续持久记录附带当时的 `journal_dropped_total`。文件写入失败另发固定码 `runner_journal` 日志。统计按进程计数，历史文件有容量上限，这不是无损审计系统；若持久卷持续不可写且进程退出，未落盘记录可能丢失。退出最多等待 5 秒刷新；不确定的写入重试可能产生相同 ID，读取历史时去重。崩溃留下的残缺尾行会被隔开并跳过，避免吞掉后续记录。
+
 回归覆盖 10,000 条历史会话下的 1,000 次并发轮询（无变化时 0 次状态重写）、模拟超过 24 小时的历史过期、100,000 条回执反复回收、64 路并发领取，以及连续创建/取消/配额变更。开发验证额外重复 25 轮 race 压力测试，累计 250 万条回执与 750 次预热生命周期；这是加速堆积测试，不等同于连续运行数天的观测。真实 K3s 测试通过 `TestManagedRunnerEnvironments` 交替冷启动/预热，校验 Pod UID、物理 cwd、读写权限、共享文件、MCP、干净 HOME/tmp、cgroup 和最终零执行 Pod。
 
 ## 中央环境与节点选择

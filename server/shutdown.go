@@ -32,11 +32,12 @@ func (s *Server) Close() {
 		if s.engine != nil {
 			s.engine.Close()
 		}
-		s.runnerMu.Lock()
-		if s.runners != nil {
-			_ = s.runners.Close()
+		s.runnerLifecycleMu.Lock()
+		_, hub, _ := s.runnerSnapshot()
+		if hub != nil {
+			_ = hub.Close()
 		}
-		s.runnerMu.Unlock()
+		s.runnerLifecycleMu.Unlock()
 		s.backgroundWG.Wait()
 		s.archiveWG.Wait()
 		if s.logDone != nil {
@@ -46,6 +47,7 @@ func (s *Server) Close() {
 		// Seal persistence after those producers finish, then keep PG alive until
 		// every accepted update has completed.
 		s.persistence.close()
+		s.runnerJournal.Close()
 	})
 }
 

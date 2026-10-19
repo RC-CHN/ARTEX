@@ -215,12 +215,25 @@ func (s *Server) initRunners() {
 	}
 	s.runnerCfg = cfg
 	if cfg.Enabled && s.runnerErr == nil {
-		s.runners, s.runnerErr = runner.New(runner.Options{Store: runnerPGStore{s.m.pg.DB}, Log: log.Default()})
+		s.runners, s.runnerErr = runner.New(s.runnerOptions())
+	}
+	if s.runnerErr != nil {
+		s.runnerJournal.Record(runner.Event{Kind: "initialization_failed", Code: runner.FailureCode(s.runnerErr), ManualRequired: true})
 	}
 	if s.runners != nil {
 		s.runners.SetWarmProfiles(s.runnerWarmProfiles(cfg))
 	}
 	s.wireRunnerExecution()
+	if s.engine != nil {
+		s.engine.executionAvailable = s.runnerExecutionAvailable
+	}
+	if s.ctx != nil {
+		s.background(s.runnerRecoveryLoop)
+	}
+}
+
+func (s *Server) runnerOptions() runner.Options {
+	return runner.Options{Store: runnerPGStore{s.m.pg.DB}, Log: log.Default(), RecordEvent: s.runnerJournal.Record}
 }
 func (s *Server) runnerSnapshot() (runnerConfig, *runner.Hub, error) {
 	s.runnerMu.RLock()
@@ -233,10 +246,14 @@ func (s *Server) getRunners(w http.ResponseWriter, r *http.Request) {
 	if hub != nil {
 		nodes = hub.ListNodes()
 		if err == nil && hub.IsClosed() {
-			err = errors.New("Runner broker 已停止，请重新保存配置以恢复；旧执行租约会保留到清理确认或到期")
+			if hub.BrokerState().AutoRecovery && !s.recoverySnapshot().ManualRequired {
+				err = errors.New("Runner broker 已停止，正在等待自动恢复；暂停领取新意图，旧租约保留到清理确认或到期")
+			} else {
+				err = errors.New("Runner broker 已停止，需检查关闭原因后重新保存配置以恢复；暂停领取新意图，旧租约保留到清理确认或到期")
+			}
 		}
 	}
-	out := map[string]any{"config": cfg, "nodes": nodes, "experimental": true}
+	out := map[string]any{"config": cfg, "nodes": nodes, "experimental": true, "recovery": s.recoverySnapshot()}
 	if err != nil {
 		out["error"] = err.Error()
 	}
@@ -248,26 +265,31 @@ func (s *Server) saveRunnerConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	s.runnerMu.Lock()
-	defer s.runnerMu.Unlock()
+	s.runnerLifecycleMu.Lock()
+	defer s.runnerLifecycleMu.Unlock()
+	if s.ctx != nil && s.ctx.Err() != nil {
+		writeErr(w, 503, "server shutting down")
+		return
+	}
+	current, currentHub, currentErr := s.runnerSnapshot()
 	b, _ := json.Marshal(cfg)
 	persist := func() error { return s.m.pg.SetSetting(runnerConfigKey, string(b)) }
-	modeChanged := cfg.Enabled && s.runnerCfg.Enabled && (cfg.DefaultMode != s.runnerCfg.DefaultMode || !maps.Equal(cfg.AgentModes, s.runnerCfg.AgentModes) || fileModesChanged(cfg, s.runnerCfg))
+	modeChanged := cfg.Enabled && current.Enabled && (cfg.DefaultMode != current.DefaultMode || !maps.Equal(cfg.AgentModes, current.AgentModes) || fileModesChanged(cfg, current))
 	allowsLocal := cfg.DefaultMode == "local"
 	for _, mode := range cfg.AgentModes {
 		allowsLocal = allowsLocal || mode == "local"
 	}
-	unknownReservations := s.runners == nil || s.runners.IsClosed() || s.runnerErr != nil
+	unknownReservations := currentHub == nil || currentHub.IsClosed() || currentErr != nil
 	if !cfg.Enabled || modeChanged || (unknownReservations && allowsLocal) {
 		// A local execution must not bypass a previous remote lease. If startup
 		// failed before publishing a broker, reload persisted reservations first.
-		previous := s.runners
+		previous := currentHub
 		created := false
 		if previous == nil || previous.IsClosed() {
 			if previous != nil {
 				_ = previous.Close()
 			}
-			previous, err = runner.New(runner.Options{Store: runnerPGStore{s.m.pg.DB}, Log: log.Default()})
+			previous, err = runner.New(s.runnerOptions())
 			created = true
 		}
 		if err == nil {
@@ -278,7 +300,7 @@ func (s *Server) saveRunnerConfig(w http.ResponseWriter, r *http.Request) {
 				_ = previous.Close()
 			}
 			if created {
-				s.runnerErr = err
+				s.publishRunnerState(current, currentHub, err)
 			}
 			status := http.StatusInternalServerError
 			if errors.Is(err, runner.ErrSessionsActive) {
@@ -290,23 +312,24 @@ func (s *Server) saveRunnerConfig(w http.ResponseWriter, r *http.Request) {
 		// The switch is now durable and the predecessor refuses admissions.
 		// Never restore it if reinitialization fails; keep the new configuration
 		// with an explicit error so execution stays closed until the next save.
-		s.runnerCfg = cfg
-		s.runners, s.runnerErr = nil, nil
+		currentHub, currentErr = nil, nil
+		s.publishRunnerState(cfg, nil, errors.New("runner configuration transition"))
 		if cfg.Enabled {
-			s.runners, s.runnerErr = runner.New(runner.Options{Store: runnerPGStore{s.m.pg.DB}, Log: log.Default()})
+			currentHub, currentErr = runner.New(s.runnerOptions())
 		}
-		if s.runnerErr != nil {
-			writeErr(w, 500, s.runnerErr.Error())
+		if currentErr != nil {
+			s.publishRunnerState(cfg, currentHub, currentErr)
+			writeErr(w, 500, currentErr.Error())
 			return
 		}
 	} else {
-		candidate := s.runners
+		candidate := currentHub
 		created := false
 		if cfg.Enabled && (candidate == nil || candidate.IsClosed()) {
 			if candidate != nil {
 				_ = candidate.Close()
 			}
-			candidate, err = runner.New(runner.Options{Store: runnerPGStore{s.m.pg.DB}, Log: log.Default()})
+			candidate, err = runner.New(s.runnerOptions())
 			created = true
 		}
 		if err != nil {
@@ -320,13 +343,12 @@ func (s *Server) saveRunnerConfig(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
-		s.runners = candidate
+		currentHub = candidate
 	}
-	s.runnerCfg = cfg
-	s.runnerErr = nil
-	if s.runners != nil {
-		s.runners.SetWarmProfiles(s.runnerWarmProfiles(cfg))
+	if currentHub != nil {
+		currentHub.SetWarmProfiles(s.runnerWarmProfiles(cfg))
 	}
+	s.publishRunnerState(cfg, currentHub, nil)
 	writeJSON(w, 200, cfg)
 }
 

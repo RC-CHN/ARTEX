@@ -202,8 +202,7 @@ func (h *Hub) WithSessionWrite(r *http.Request, sessionID string, commit func() 
 		defer cancel()
 		err := guarded.Guard(ctx, h.revision, commit)
 		if errors.Is(err, ErrStoreConflict) {
-			h.closed = true
-			h.signalLocked()
+			h.closeLocked("store_conflict", err, false)
 		}
 		return err
 	}
@@ -366,8 +365,7 @@ func (h *Hub) pollContext(ctx context.Context, req PollRequest, authenticated st
 		err = storeError(err)
 		guardOp.finish(err, 0)
 		if errors.Is(err, ErrStoreConflict) {
-			h.closed = true
-			h.signalLocked()
+			h.closeLocked("store_conflict", err, false)
 		}
 	}
 	if err != nil {

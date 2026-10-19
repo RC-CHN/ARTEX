@@ -87,13 +87,14 @@ spec:
               containerPort: 8787
           startupProbe:
             httpGet:
-              path: /api/health
+              path: /api/livez
               port: http
             periodSeconds: 5
             timeoutSeconds: 3
             # Allow the one-time search-index backfill its 30-minute budget.
             failureThreshold: 372
           readinessProbe:
+            # Keep protocol/repair traffic reachable during broker recovery.
             httpGet:
               path: /api/auth/status
               port: http
@@ -101,7 +102,7 @@ spec:
             timeoutSeconds: 3
           livenessProbe:
             httpGet:
-              path: /api/health
+              path: /api/livez
               port: http
             periodSeconds: 20
             timeoutSeconds: 3

@@ -62,6 +62,7 @@ type Options struct {
 	PollWait        time.Duration    // default 10 seconds; less than lease duration
 	Clock           func() time.Time // injectable for deterministic lease tests
 	Log             *log.Logger      // optional, content-free operational diagnostics
+	RecordEvent     func(Event)      // optional; must enqueue without blocking or doing I/O
 }
 
 type GPU struct {

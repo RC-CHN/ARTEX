@@ -27,6 +27,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/runners", s.getRunners)
 	mux.HandleFunc("GET /api/runners/sessions", s.runnerSessionDiagnostics)
 	mux.HandleFunc("GET /api/runners/diagnostics", s.runnerBrokerDiagnostics)
+	mux.HandleFunc("GET /api/runners/incidents", s.runnerIncidents)
 	mux.HandleFunc("PUT /api/runners/config", s.saveRunnerConfig)
 	mux.HandleFunc("POST /api/runners/registration-token", s.runnerRegistration)
 	mux.HandleFunc("PUT /api/runners/{id}/enabled", s.setRunnerEnabled)
@@ -54,6 +55,7 @@ func (s *Server) registerAuthRoutes(mux *http.ServeMux) {
 // Self-update and audit routes remain protected by the common API middleware.
 func (s *Server) registerSystemRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", s.health)
+	mux.HandleFunc("GET /api/livez", s.live)
 	mux.HandleFunc("GET /api/stats", s.stats)
 	mux.HandleFunc("GET /api/update/check", s.updateCheck)
 	mux.HandleFunc("POST /api/update/apply", s.updateApply)

@@ -11,11 +11,39 @@ import (
 // --- handlers ---
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	out := map[string]any{"ok": true, "service": "artex", "version": BuildVersion}
-	if tr := s.m.Traffic(); tr != nil {
-		out["traffic_backend"] = tr.Backend()
+	cfg, hub, err := s.runnerSnapshot()
+	ready, code := true, "disabled"
+	if err != nil {
+		ready, code = false, "configuration_unavailable"
+	} else if cfg.Enabled {
+		code = "ready"
+		if hub == nil {
+			ready, code = false, "broker_unavailable"
+		} else if state := hub.BrokerState(); state.Closed {
+			ready, code = false, "broker_closed"
+		}
 	}
-	writeJSON(w, 200, out)
+	if s.ctx != nil && s.ctx.Err() != nil {
+		ready, code = false, "shutting_down"
+	}
+	out := map[string]any{"ok": ready, "service": "artex", "version": BuildVersion,
+		"execution": map[string]any{"ready": ready, "code": code}, "runner_recovery": s.recoverySnapshot()}
+	if s.m != nil {
+		if tr := s.m.Traffic(); tr != nil {
+			out["traffic_backend"] = tr.Backend()
+		}
+	}
+	status := http.StatusOK
+	if !ready {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, out)
+}
+
+// Broker recovery requires a reachable controller. Process probes must not
+// restart it or remove it from service just because execution is degraded.
+func (s *Server) live(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "artex"})
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {

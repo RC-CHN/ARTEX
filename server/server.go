@@ -106,16 +106,21 @@ type Server struct {
 
 	// Cold task archives run through one persistent FIFO worker. The buffered wake
 	// channel coalesces enqueue bursts; the database remains the source of truth.
-	archiveWake  chan struct{}
-	archiveWG    sync.WaitGroup
-	side         *sideQuestionState
-	runnerMu     sync.RWMutex
-	runnerCfg    runnerConfig
-	runners      *runner.Hub
-	runnerErr    error
-	runnerFiles  *runnerfiles.Store
-	runnerPoolMu sync.Mutex
-	runnerPoolAt time.Time
+	archiveWake chan struct{}
+	archiveWG   sync.WaitGroup
+	side        *sideQuestionState
+	runnerMu    sync.RWMutex
+	// Serialize replacement/configuration/shutdown without holding runnerMu over
+	// database I/O. Protocol snapshots and health checks must remain responsive.
+	runnerLifecycleMu sync.Mutex
+	runnerRecovery    runnerRecoveryStatus
+	runnerJournal     *runnerJournal
+	runnerCfg         runnerConfig
+	runners           *runner.Hub
+	runnerErr         error
+	runnerFiles       *runnerfiles.Store
+	runnerPoolMu      sync.Mutex
+	runnerPoolAt      time.Time
 }
 
 // provEntry is a cached provider + its config for one LLM profile id.
@@ -152,6 +157,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		profChatAgents: map[int64]*agent.ChatAgent{},
 		provByProfile:  map[int64]*provEntry{},
 		taskAgents:     map[string]*taskAgentBundle{}, archiveWake: make(chan struct{}, 1)}
+	s.runnerJournal = newRunnerJournal(dataDir)
+	s.runnerJournal.Record(runner.Event{Kind: "controller_started", Code: "ok"})
 	s.llmHealth = newLLMHealthRegistry(m.pg, &s.persistence)
 	m.onClose(s.Close)
 	s.initSideQuestions()

@@ -16,6 +16,7 @@ import (
 )
 
 type Hub struct {
+	id           string // immutable identity, also used as the controller epoch
 	mu           contextMutex
 	observer     brokerObserver
 	opts         Options
@@ -27,12 +28,22 @@ type Hub struct {
 	done         chan struct{}
 	stopOnce     sync.Once
 	closed       bool
+	reopenMu     sync.Mutex
+	reopened     bool
 	redeliver    map[string]time.Time // transport hints only; never authorize execution
 	warmProfiles []WarmProfile
 	poolStatus   map[string]PoolStatus
 }
 
 func New(opts Options) (*Hub, error) {
+	return NewContext(context.Background(), opts)
+}
+
+func NewContext(parent context.Context, opts Options) (*Hub, error) {
+	return newHub(parent, opts, "")
+}
+
+func newHub(parent context.Context, opts Options, predecessorEpoch string) (*Hub, error) {
 	if opts.Store == nil {
 		return nil, errors.New("runner StateStore is required")
 	}
@@ -60,11 +71,11 @@ func New(opts Options) (*Hub, error) {
 	if opts.PollWait > opts.LeaseDuration/3 {
 		opts.PollWait = opts.LeaseDuration / 3
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	snap, err := opts.Store.Load(ctx)
 	if err != nil {
-		return nil, err
+		return nil, storeError(err)
 	}
 	h := &Hub{opts: opts, revision: snap.Revision, lastSaved: append(json.RawMessage(nil), snap.Data...), wake: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{}), redeliver: map[string]time.Time{}}
 	if len(snap.Data) > 0 {
@@ -72,11 +83,18 @@ func New(opts Options) (*Hub, error) {
 			return nil, fmt.Errorf("decode runner state: %w", err)
 		}
 	}
+	// Recovery may observe a newer revision from an ambiguously committed write,
+	// but it must never fence a different controller that took over meanwhile.
+	if predecessorEpoch != "" && h.state.Epoch != predecessorEpoch {
+		return nil, ErrStoreConflict
+	}
 	if h.state.Version != 0 && h.state.Version != ProtocolVersion {
 		return nil, errors.New("unsupported persisted runner state version")
 	}
 	h.state.Version = ProtocolVersion
 	h.state.Epoch = newID()
+	h.id = h.state.Epoch
+	h.observer.status.State.BrokerID = h.id
 	if h.state.Registrations == nil {
 		h.state.Registrations = map[string]time.Time{}
 	}
@@ -101,9 +119,13 @@ func New(opts Options) (*Hub, error) {
 		}
 	}
 	h.expireLocked()
-	if err := h.saveLocked(); err != nil {
+	if err := h.saveContextLocked(parent); err != nil {
 		return nil, err
 	}
+	if err := parent.Err(); err != nil {
+		return nil, err
+	}
+	h.recordEvent(Event{Kind: "broker_started", Revision: h.revision})
 	go h.sweepLoop()
 	return h, nil
 }
@@ -121,7 +143,9 @@ func (h *Hub) signalLocked() { close(h.wake); h.wake = make(chan struct{}) }
 
 // Every visible mutation is durably saved before commands or leases are exposed.
 // Roll back on failure; a CAS conflict permanently fences this Hub instance.
-func (h *Hub) saveLocked() (err error) {
+func (h *Hub) saveLocked() error { return h.saveContextLocked(context.Background()) }
+
+func (h *Hub) saveContextLocked(parent context.Context) (err error) {
 	op := h.observe("checkpoint", false)
 	var size int
 	defer func() { op.finish(err, size) }()
@@ -130,7 +154,7 @@ func (h *Hub) saveLocked() (err error) {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	var rev uint64
 	write := h.observe("checkpoint_store", false)
@@ -149,12 +173,12 @@ func (h *Hub) saveLocked() (err error) {
 			if restoreErr == nil {
 				h.state = restored
 			} else {
-				h.closed = true
+				h.closeLocked("rollback_failed", restoreErr, false)
 			}
 			rollback.finish(restoreErr, len(h.lastSaved))
 		}
 		if errors.Is(err, ErrStoreConflict) {
-			h.closed = true
+			h.closeLocked("store_conflict", err, false)
 		}
 		h.signalLocked()
 		return err
@@ -170,8 +194,7 @@ func (h *Hub) saveLocked() (err error) {
 func (h *Hub) saveFenceLocked() error {
 	err := h.saveLocked()
 	if err != nil {
-		h.closed = true
-		h.signalLocked()
+		h.closeLocked("fence_persistence_failed", err, errors.Is(err, ErrStoreUnavailable))
 	}
 	return err
 }
@@ -194,6 +217,7 @@ func (h *Hub) expireLocked() bool {
 			if h.opts.Log != nil {
 				h.opts.Log.Printf("runner_broker op=lease_expired session=%q node=%q overdue_ms=%d", s.ID, s.NodeID, now.Sub(s.LeaseUntil).Milliseconds())
 			}
+			h.recordEvent(Event{Kind: "lease_expired", Code: "lease_expired", SessionID: s.ID, NodeID: s.NodeID, DurationMS: now.Sub(s.LeaseUntil).Milliseconds()})
 			s.State, s.FinishedAt = "expired", now
 			s.addReason("runner lease expired; remote outcome may be unknown")
 			changed = true
@@ -502,8 +526,7 @@ func (h *Hub) Close() error {
 			}
 		}
 		err = h.saveLocked()
-		h.closed = true
-		h.signalLocked()
+		h.closeLocked("shutdown", err, false)
 	}
 	h.mu.Unlock()
 	<-h.done
@@ -511,9 +534,31 @@ func (h *Hub) Close() error {
 }
 
 func (h *Hub) IsClosed() bool {
+	return h.BrokerState().Closed
+}
+
+// Reopen only recovers failed fence persistence. A CAS conflict can mean another
+// controller owns the state; never automatically compete with that owner. The
+// replacement fences every predecessor session and retains its original lease
+// reservations. Existing Session handles remain attached to the closed hub.
+func (h *Hub) Reopen(ctx context.Context) (*Hub, error) {
+	h.reopenMu.Lock()
+	defer h.reopenMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if h.reopened || !h.BrokerState().AutoRecovery {
+		return nil, ErrClosed
+	}
+	_ = h.Close()
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.closed
+	epoch := h.state.Epoch
+	h.mu.Unlock()
+	next, err := newHub(ctx, h.opts, epoch)
+	if err == nil {
+		h.reopened = true
+	}
+	return next, err
 }
 
 // DisableIfIdle commits the feature switch while excluding new admissions.
@@ -536,8 +581,7 @@ func (h *Hub) DisableIfIdle(commit func() error) error {
 		h.mu.Unlock()
 		return err
 	}
-	h.closed = true
-	h.signalLocked()
+	h.closeLocked("disabled", nil, false)
 	h.stopOnce.Do(func() { close(h.stop) })
 	h.mu.Unlock()
 	<-h.done

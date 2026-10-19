@@ -102,9 +102,14 @@ func (s *Server) buildRunnerPool(ctx context.Context, cfg runnerConfig, h *runne
 		return
 	}
 	// A slow refresh cannot resurrect a disabled/previous configuration.
-	s.runnerMu.RLock()
-	defer s.runnerMu.RUnlock()
-	if s.runners == h && reflect.DeepEqual(cfg, s.runnerCfg) {
+	// Use the lifecycle lock: never hold the snapshot lock while waiting for a
+	// broker checkpoint, or a pending replacement would also block health reads.
+	if !s.runnerLifecycleMu.TryLock() {
+		return
+	}
+	defer s.runnerLifecycleMu.Unlock()
+	current, currentHub, _ := s.runnerSnapshot()
+	if currentHub == h && reflect.DeepEqual(cfg, current) {
 		h.SetWarmProfiles(profiles)
 	}
 }

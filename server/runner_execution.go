@@ -26,6 +26,18 @@ import (
 )
 
 type remoteExecutionKey struct{}
+
+// This marker is only returned before a worker model/tool run has started.
+// Raw broker errors from an existing runtime must never cause a whole-run retry.
+var errRunnerPreparationUnavailable = errors.New("runner execution preparation unavailable")
+
+func runnerPreparationError(err error) error {
+	if !errors.Is(err, runner.ErrUnknownOutcome) && (errors.Is(err, runner.ErrClosed) || errors.Is(err, runner.ErrStoreUnavailable) || errors.Is(err, runner.ErrStoreConflict)) {
+		return errors.Join(errRunnerPreparationUnavailable, err)
+	}
+	return err
+}
+
 type remoteExecution struct {
 	*runner.Session
 	spec              runner.RunSpec
@@ -46,6 +58,13 @@ func (r *remoteExecution) Call(ctx context.Context, name string, in json.RawMess
 func (s *Server) wireRunnerExecution() {
 	s.runnerFiles = runnerfiles.NewStore()
 	agent.PrepareExecution = func(ctx context.Context, key string, info agent.RunInfo, dir string) (context.Context, actool.ExecutionRuntime, func(), error) {
+		cfg, hub, err := s.runnerSnapshot()
+		if err != nil {
+			return ctx, nil, nil, errors.Join(errRunnerPreparationUnavailable, err)
+		}
+		if runnerNeedsRemote(cfg, key) && (hub == nil || hub.IsClosed()) {
+			return ctx, nil, nil, errors.Join(errRunnerPreparationUnavailable, runner.ErrClosed)
+		}
 		// Closed server instances can remain in the optional global hook in
 		// embedded/test hosts. Do not read their released DB for local runs.
 		if info.TaskID > 0 && s.m != nil && (s.ctx == nil || s.ctx.Err() == nil) {
@@ -60,22 +79,8 @@ func (s *Server) wireRunnerExecution() {
 				})
 			}
 		}
-		cfg, hub, err := s.runnerSnapshot()
-		if err != nil {
-			return ctx, nil, nil, err
-		}
-		if !cfg.Enabled {
+		if !runnerNeedsRemote(cfg, key) {
 			return ctx, nil, nil, nil
-		}
-		mode := cfg.DefaultMode
-		if v := cfg.AgentModes[key]; v != "" {
-			mode = v
-		}
-		if mode == "local" {
-			return ctx, nil, nil, nil
-		}
-		if hub == nil {
-			return ctx, nil, nil, errors.New("experimental runner broker unavailable")
 		}
 		spec, localMCP, err := s.runnerSpec(ctx, cfg, key, info, dir)
 		if err != nil {
@@ -105,7 +110,7 @@ func (s *Server) wireRunnerExecution() {
 				err = fmt.Errorf("等待 Runner 或准备执行环境超过 %d 秒（包括文件同步与 Pod 启动）: %w", cfg.AcquireTimeoutSeconds, cause)
 			}
 			cancel()
-			return ctx, nil, nil, fmt.Errorf("远程执行环境分配失败（不会退回本机）: %w", err)
+			return ctx, nil, nil, fmt.Errorf("远程执行环境分配失败（不会退回本机）: %w", runnerPreparationError(err))
 		}
 		rt := &remoteExecution{Session: session, spec: spec, controllerMCP: localMCP, environmentPrompt: cfg.Environments[spec.Environment].EnvironmentPrompt}
 		go func() {
