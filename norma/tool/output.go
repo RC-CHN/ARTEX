@@ -2,8 +2,8 @@ package tool
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/RC-CHN/ARTEX/norma/llm"
@@ -16,16 +16,43 @@ type OutputReceipt struct {
 	Limit  int    `json:"limit"`
 }
 
+// Preserve Read's established line-pagination budget at both runtime boundaries.
+// The extra allowance is fixed and selected by the registered tool name, never
+// by an output marker or an untrusted receipt.
+func CapToolResult(name string, tc *ToolContext, r Result) Result {
+	if name == "Read" {
+		copyTC := ToolContext{}
+		if tc != nil {
+			copyTC = *tc
+		}
+		copyTC.MaxOutputChars = maxOut(tc) + readOutputBonus + 384
+		return CapResult(&copyTC, r)
+	}
+	return CapResult(tc, r)
+}
+
 func CapResult(tc *ToolContext, r Result) Result {
 	limit := maxOut(tc)
-	var text strings.Builder
+	var s string
+	count, size := 0, 0
 	for _, b := range r.Content {
 		if b.Type == llm.BlockText {
-			text.WriteString(b.Text)
+			s = b.Text
+			count++
+			size += len(b.Text)
 		}
 	}
-	s := text.String()
-	digest := fmt.Sprintf("%x", sha256.Sum256([]byte(s)))
+	if count > 1 {
+		var text strings.Builder
+		text.Grow(size)
+		for _, b := range r.Content {
+			if b.Type == llm.BlockText {
+				text.WriteString(b.Text)
+			}
+		}
+		s = text.String()
+	}
+	digest := outputDigest(s)
 	if len(s) > limit+512 || (r.Captured == nil || r.Captured.Digest != digest || r.Captured.Limit > limit) {
 		if len(s) > limit {
 			s = CaptureOnce(tc, s)
@@ -33,6 +60,7 @@ func CapResult(tc *ToolContext, r Result) Result {
 			if len(s) > limit+512 {
 				s = truncate(s, limit)
 			}
+			digest = outputDigest(s)
 			blocks := make([]llm.ContentBlock, 0, len(r.Content))
 			added := false
 			for _, b := range r.Content {
@@ -60,6 +88,21 @@ func CapResult(tc *ToolContext, r Result) Result {
 			r.Extra = []llm.Message{llm.UserText("Additional tool context exceeded the inline budget; read the saved artifact as needed.\n" + Capture(&copyTC, string(raw)))}
 		}
 	}
-	r.Captured = &OutputReceipt{Digest: fmt.Sprintf("%x", sha256.Sum256([]byte(s))), Limit: limit}
+	if r.Captured == nil || r.Captured.Digest != digest || r.Captured.Limit != limit {
+		r.Captured = &OutputReceipt{Digest: digest, Limit: limit}
+	}
 	return r
+}
+
+func outputDigest(s string) string {
+	// Hash without allocating a second copy of the complete output string.
+	h := sha256.New()
+	var buf [4096]byte
+	for len(s) > 0 {
+		n := copy(buf[:], s)
+		h.Write(buf[:n])
+		s = s[n:]
+	}
+	var sum [sha256.Size]byte
+	return hex.EncodeToString(h.Sum(sum[:0]))
 }

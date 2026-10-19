@@ -108,8 +108,10 @@ func runRead(ctx context.Context, input json.RawMessage, tc *ToolContext) (Resul
 	reader := bufio.NewReaderSize(f, 32<<10)
 	scanned := int64(0)
 	emitted := 0
+	var lineOffsets []int64
 	var out strings.Builder
 	for emitted < limit {
+		lineStart := scanned
 		line := make([]byte, 0, maxLineLen)
 		lineBytes := 0
 		eof := false
@@ -140,11 +142,16 @@ func runRead(ctx context.Context, input json.RawMessage, tc *ToolContext) (Resul
 		}
 		if lineNo >= start {
 			text := strings.TrimSuffix(string(line), "\n")
-			if lineBytes > maxLineLen && !(lineBytes == maxLineLen+1 && len(line) == maxLineLen) {
+			textBytes := lineBytes
+			if !eof {
+				textBytes--
+			} // ReadSlice consumed a terminating newline.
+			if textBytes > maxLineLen {
 				text += "… [line truncated]"
 			}
 			fmt.Fprintf(&out, "%6d\t%s\n", lineNo+1, text)
 			emitted++
+			lineOffsets = append(lineOffsets, in.ByteOffset+lineStart)
 		}
 		lineNo++
 		if eof || out.Len() >= maxOut(tc)+readOutputBonus {
@@ -172,6 +179,8 @@ func runRead(ctx context.Context, input json.RawMessage, tc *ToolContext) (Resul
 	// If the output cap cut the last line, resume at that line, not past it.
 	_, returned := headWithinBudget(out.String(), maxOut(tc)+readOutputBonus)
 	if returned < emitted {
+		head, _ := headWithinBudget(out.String(), maxOut(tc)+readOutputBonus)
+		body = head + fmt.Sprintf("\n... [Read truncated to fit the output limit. Continue reading with Read offset=%d, byte_offset=%d, expected_version=%s, or narrow with Grep.] ...", start+returned+1, lineOffsets[returned], version)
 		return Text(fmt.Sprintf("[version=%s]\n%s", version, body)), nil
 	}
 	cursor := in.ByteOffset + scanned

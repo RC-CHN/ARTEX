@@ -109,7 +109,7 @@ func (l *loop) execOne(toolCtx context.Context, use llm.ContentBlock, emitProgre
 	// (the failure mode that motivated this net). CaptureOnce is idempotent:
 	// output a tool already spilled/truncated carries a marker and is left
 	// untouched, so this never double-truncates or double-spills.
-	res = capOutput(tc, res)
+	res = tool.CapToolResult(use.Name, tc, res)
 
 	if l.in.Hooks != nil {
 		raw, _ := json.Marshal(res.Flatten())

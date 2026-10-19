@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"time"
 )
 
@@ -76,10 +78,31 @@ func lockFile(ctx context.Context, path string) (string, func(), error) {
 	if err != nil {
 		return "", nil, err
 	}
-	if resolved, e := filepath.EvalSymlinks(abs); e == nil {
-		abs = resolved
-	} else if !errors.Is(e, os.ErrNotExist) {
-		return "", nil, e
+	for links := 0; ; links++ {
+		if links >= 40 {
+			return "", nil, errors.New("too many symbolic links")
+		}
+		if resolved, e := filepath.EvalSymlinks(abs); e == nil {
+			abs = resolved
+			break
+		} else if !errors.Is(e, os.ErrNotExist) {
+			return "", nil, e
+		}
+		// EvalSymlinks rejects a dangling final target. Write still follows
+		// that link when creating the target, just as os.WriteFile does.
+		info, e := os.Lstat(abs)
+		if e != nil || info.Mode()&os.ModeSymlink == 0 {
+			break
+		}
+		target, e := os.Readlink(abs)
+		if e != nil {
+			return "", nil, e
+		}
+		if filepath.IsAbs(target) {
+			abs = target
+		} else {
+			abs = filepath.Join(filepath.Dir(abs), target)
+		}
 	}
 	parent, err := filepath.EvalSymlinks(filepath.Dir(abs))
 	if err != nil {
@@ -124,13 +147,28 @@ func commitFile(ctx context.Context, path, version string, data string, mode os.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".artex-write-*")
+	if version != "missing" {
+		// A writable parent alone must not bypass an existing file's write
+		// permissions when replacing it atomically.
+		check, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		if err = check.Close(); err != nil {
+			return err
+		}
+	}
+	// OpenFile applies umask to newly created files. Existing files retain
+	// their original mode, independent of the current process umask.
+	f, err := os.OpenFile(filepath.Join(filepath.Dir(path), ".artex-write-"+rand.Text()), os.O_CREATE|os.O_EXCL|os.O_RDWR, mode.Perm())
 	if err != nil {
 		return err
 	}
 	defer func() { f.Close(); os.Remove(f.Name()) }()
-	if err = f.Chmod(mode.Perm()); err != nil {
-		return err
+	if version != "missing" {
+		if err = f.Chmod(mode.Perm()); err != nil {
+			return err
+		}
 	}
 	for start := 0; start < len(data); {
 		if err = ctx.Err(); err != nil {
@@ -177,34 +215,35 @@ func fileFailure(ctx context.Context, err error) (Result, error) {
 
 const maxEditBytes = 64 << 20
 
-func readEditFile(ctx context.Context, path string, info os.FileInfo) ([]byte, error) {
+func readEditFile(ctx context.Context, path string, info os.FileInfo) (string, error) {
 	if info == nil {
-		return nil, os.ErrNotExist
+		return "", os.ErrNotExist
 	}
 	if info.Size() > maxEditBytes {
-		return nil, fmt.Errorf("file exceeds the 64 MiB Edit limit; use a bounded streaming transformation")
+		return "", fmt.Errorf("file exceeds the 64 MiB Edit limit; use a bounded streaming transformation")
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	defer f.Close()
-	var out []byte
+	var out strings.Builder
+	out.Grow(int(info.Size()))
 	buf := make([]byte, 64<<10)
 	for {
 		if err = ctx.Err(); err != nil {
-			return nil, err
+			return "", err
 		}
 		n, e := f.Read(buf)
-		if len(out)+n > maxEditBytes {
-			return nil, fmt.Errorf("file grew beyond Edit limit")
+		if out.Len()+n > maxEditBytes {
+			return "", fmt.Errorf("file grew beyond Edit limit")
 		}
-		out = append(out, buf[:n]...)
+		out.Write(buf[:n])
 		if e == io.EOF {
-			return out, nil
+			return out.String(), nil
 		}
 		if e != nil {
-			return nil, e
+			return "", e
 		}
 	}
 }

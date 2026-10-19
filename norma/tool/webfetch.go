@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -217,7 +218,7 @@ func webFetchRunner(cfg WebFetchConfig) func(context.Context, json.RawMessage, *
 
 		var out string
 		if strings.Contains(strings.ToLower(resp.Header.Get("content-type")), "html") {
-			doc, perr := html.Parse(strings.NewReader(string(body)))
+			doc, perr := html.Parse(bytes.NewReader(body))
 			if perr != nil { // html.Parse is lenient; this is effectively unreachable
 				out = string(body)
 			} else {

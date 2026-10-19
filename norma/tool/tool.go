@@ -75,7 +75,17 @@ func Errorf(s string) Result {
 
 // Flatten concatenates the text of a result's content blocks.
 func (r Result) Flatten() string {
+	if len(r.Content) == 1 && r.Content[0].Type == llm.BlockText {
+		return r.Content[0].Text
+	}
+	size := 0
+	for _, b := range r.Content {
+		if b.Type == llm.BlockText {
+			size += len(b.Text)
+		}
+	}
 	var s strings.Builder
+	s.Grow(size)
 	for _, b := range r.Content {
 		if b.Type == llm.BlockText {
 			s.WriteString(b.Text)

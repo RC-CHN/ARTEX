@@ -51,8 +51,9 @@ func Detect(searchPath string) Inventory {
 func detect(searchPath string, manifest map[string]struct {
 	Version string `json:"version"`
 }) Inventory {
+	dirs := filepath.SplitList(searchPath)
 	find := func(name string) *Tool {
-		for _, dir := range filepath.SplitList(searchPath) {
+		for _, dir := range dirs {
 			if !filepath.IsAbs(dir) {
 				continue
 			}

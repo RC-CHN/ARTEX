@@ -43,9 +43,9 @@ func (r *Registry) List() []CoreTool {
 // Schemas renders the registry into provider-facing tool definitions, merging
 // each tool's extended Prompt into its description.
 func (r *Registry) Schemas() []llm.ToolSchema {
-	tools := r.List()
-	out := make([]llm.ToolSchema, 0, len(tools))
-	for _, t := range tools {
+	out := make([]llm.ToolSchema, 0, len(r.order))
+	for _, name := range r.order {
+		t := r.byName[name]
 		desc := t.Description()
 		if p := t.Prompt(); p != "" {
 			desc += "\n\n" + p

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 )
 
@@ -49,16 +48,16 @@ func runLS(_ context.Context, input json.RawMessage, tc *ToolContext) (Result, e
 	if len(entries) == 0 {
 		return Text("(empty directory)"), nil
 	}
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].IsDir() != entries[j].IsDir() {
-			return entries[i].IsDir() // directories first
-		}
-		return entries[i].Name() < entries[j].Name()
-	})
+	// os.ReadDir already sorts by name. Two stable passes put directories
+	// first without sorting the entire directory a second time.
 	var b strings.Builder
 	for _, e := range entries {
 		if e.IsDir() {
 			fmt.Fprintf(&b, "%s/\n", e.Name())
+		}
+	}
+	for _, e := range entries {
+		if e.IsDir() {
 			continue
 		}
 		var size int64

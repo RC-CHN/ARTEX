@@ -62,11 +62,11 @@ func (s *UnlockSet) Has(name string) bool {
 // List returns the unlocked names, sorted.
 func (s *UnlockSet) List() []string {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	out := make([]string, 0, len(s.names))
 	for n := range s.names {
 		out = append(out, n)
 	}
+	s.mu.RUnlock()
 	sort.Strings(out)
 	return out
 }

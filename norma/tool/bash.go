@@ -1,7 +1,6 @@
 package tool
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -164,12 +163,12 @@ func runBashSync(ctx context.Context, tc *ToolContext, command string, timeout t
 			cmd.Env = env
 		}
 	}
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
+	buf := newCaptureWriter(tc)
+	cmd.Stdout = buf
+	cmd.Stderr = buf
 	err := cmd.Run()
 
-	out := Capture(tc, buf.String())
+	out := buf.finish()
 	if cctx.Err() == context.DeadlineExceeded {
 		return Errorf(out + fmt.Sprintf("\n\n[command timed out after %s]", timeout)), nil
 	}

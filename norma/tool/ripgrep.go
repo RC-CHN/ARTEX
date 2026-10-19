@@ -1,6 +1,8 @@
 package tool
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -102,7 +104,7 @@ type ripgrepReq struct {
 // runWithRipgrep runs the query through the rg binary and formats the result.
 // Returns ok=false when rg failed for a real reason (not "no matches"), so the
 // caller falls back to the Go implementation.
-func runWithRipgrep(rg string, r ripgrepReq, tc *ToolContext) (Result, bool) {
+func runWithRipgrep(ctx context.Context, rg string, r ripgrepReq, tc *ToolContext) (Result, bool) {
 	args := []string{"--color", "never"}
 	if r.ignoreCase {
 		args = append(args, "-i")
@@ -145,9 +147,15 @@ func runWithRipgrep(rg string, r ripgrepReq, tc *ToolContext) (Result, bool) {
 	// `-e pattern --` keeps a pattern/path starting with '-' from being read as a flag.
 	args = append(args, "-e", r.pattern, "--", target)
 
-	cmd := exec.Command(rg, args...)
+	cmd := exec.CommandContext(ctx, rg, args...)
 	cmd.Dir = dir
-	out, err := cmd.Output()
+	headLimit := 250
+	if r.headLimit != nil {
+		headLimit = *r.headLimit
+	}
+	page := &linePager{limit: headLimit, offset: max(r.offset, 0)}
+	cmd.Stdout = page
+	err := cmd.Run()
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && ee.ExitCode() == 1 {
@@ -155,16 +163,10 @@ func runWithRipgrep(rg string, r ripgrepReq, tc *ToolContext) (Result, bool) {
 		}
 		return Result{}, false // real failure → Go fallback
 	}
-	trimmed := strings.TrimRight(string(out), "\n")
-	if trimmed == "" {
+	kept, more := page.finish()
+	if page.total == 0 {
 		return Text("No matches found"), true
 	}
-	lines := strings.Split(trimmed, "\n")
-	headLimit := 250
-	if r.headLimit != nil {
-		headLimit = *r.headLimit
-	}
-	kept, more := applyHeadOffset(lines, headLimit, r.offset)
 	res := strings.Join(kept, "\n")
 	if len(kept) > 0 {
 		res += "\n"
@@ -173,4 +175,63 @@ func runWithRipgrep(rg string, r ripgrepReq, tc *ToolContext) (Result, bool) {
 		res += fmt.Sprintf("... [%d more result(s) — page with offset=%d, or head_limit=0 for all] ...\n", more, r.offset+len(kept))
 	}
 	return Text(Capture(tc, res)), true
+}
+
+// Retain only the requested page while counting every result for the existing
+// exact "more results" notice. Large skipped lines never need to be buffered.
+// Trailing blank lines are dropped just like TrimRight(output, "\n").
+type linePager struct {
+	limit, offset   int
+	position, total int
+	lineBytes       int
+	pending         strings.Builder
+	lines           []string
+}
+
+func (p *linePager) keeping() bool {
+	return p.position >= p.offset && (p.limit <= 0 || p.position-p.offset < p.limit)
+}
+
+func (p *linePager) endLine() {
+	if p.keeping() {
+		p.lines = append(p.lines, p.pending.String())
+	}
+	p.pending.Reset()
+	p.position++
+	if p.lineBytes > 0 {
+		p.total = p.position
+	}
+	p.lineBytes = 0
+}
+
+func (p *linePager) Write(data []byte) (int, error) {
+	n := len(data)
+	for len(data) > 0 {
+		i := bytes.IndexByte(data, '\n')
+		end := len(data)
+		if i >= 0 {
+			end = i
+		}
+		p.lineBytes += end
+		if p.keeping() {
+			p.pending.Write(data[:end])
+		}
+		if i < 0 {
+			break
+		}
+		p.endLine()
+		data = data[i+1:]
+	}
+	return n, nil
+}
+
+func (p *linePager) finish() ([]string, int) {
+	if p.lineBytes > 0 {
+		p.endLine()
+	}
+	available := max(0, p.total-p.offset)
+	if len(p.lines) > available {
+		p.lines = p.lines[:available]
+	}
+	return p.lines, available - len(p.lines)
 }

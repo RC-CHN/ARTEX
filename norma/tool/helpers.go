@@ -2,6 +2,7 @@ package tool
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,8 +83,17 @@ func spillOutput(dir, s string) (string, error) {
 	}
 	name := fmt.Sprintf("output-%d-%d.txt", time.Now().Unix(), spillSeq.Add(1))
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(s), 0o644); err != nil {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
 		return "", err
+	}
+	_, err = io.WriteString(f, s)
+	closeErr := f.Close()
+	if err != nil {
+		return "", err
+	}
+	if closeErr != nil {
+		return "", closeErr
 	}
 	return path, nil
 }

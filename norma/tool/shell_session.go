@@ -58,6 +58,7 @@ type ptySession struct {
 
 	mu       sync.Mutex
 	buf      []byte // raw scrollback (ring, capped)
+	storage  []byte // reusable sliding-window backing, at most 2*sessRingCap
 	total    int64  // total bytes ever produced (absolute cursor space)
 	emu      vt10x.Terminal
 	state    string // starting | running | exited | closed
@@ -65,7 +66,7 @@ type ptySession struct {
 	lastOut  time.Time
 	exitedAt time.Time
 
-	readCur  int64 // tool-side read cursor (shell_read without since_cursor continues here)
+	readCur  int64         // tool-side read cursor (shell_read without since_cursor continues here)
 	notifyCh chan struct{} // pinged on new output
 	done     chan struct{} // closed when the process exits
 }
@@ -85,7 +86,22 @@ func (s *ptySession) setReadCursor(c int64) {
 
 func (s *ptySession) append(p []byte) {
 	s.mu.Lock()
-	s.buf = append(s.buf, p...)
+	if len(p) >= sessRingCap {
+		if s.storage == nil {
+			s.storage = make([]byte, 2*sessRingCap)
+		}
+		s.buf = s.storage[:sessRingCap]
+		copy(s.buf, p[len(p)-sessRingCap:])
+	} else {
+		if len(p) > cap(s.buf)-len(s.buf) && len(s.buf)+len(p) > sessRingCap {
+			if s.storage == nil {
+				s.storage = make([]byte, 2*sessRingCap)
+			}
+			copy(s.storage, s.buf)
+			s.buf = s.storage[:len(s.buf)]
+		}
+		s.buf = append(s.buf, p...)
+	}
 	s.total += int64(len(p))
 	if len(s.buf) > sessRingCap {
 		s.buf = s.buf[len(s.buf)-sessRingCap:]
