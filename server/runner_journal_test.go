@@ -2,6 +2,8 @@ package server
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,11 +11,68 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/RC-CHN/ARTEX/runner"
 )
+
+type journalPanicStore struct {
+	runner.MemoryStore
+	panicNext atomic.Bool
+}
+
+func (s *journalPanicStore) Guard(ctx context.Context, revision uint64, commit func() error) error {
+	if s.panicNext.Swap(false) {
+		panic("PRIVATE synthetic runtime panic")
+	}
+	return s.MemoryStore.Guard(ctx, revision, commit)
+}
+
+func TestRunnerJournalPersistsSanitizedPollPanic(t *testing.T) {
+	dir := t.TempDir()
+	j := newRunnerJournal(dir)
+	defer j.Close()
+	store := &journalPanicStore{}
+	h, err := runner.New(runner.Options{Store: store, RecordEvent: j.Record})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	token, _, err := h.CreateRegistrationToken(t.Context(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(runner.RegisterRequest{Token: token, Name: "synthetic", BootID: "boot", Protocol: runner.ProtocolVersion, Capabilities: runner.Capabilities{Slots: 1}})
+	w := httptest.NewRecorder()
+	h.Handler().ServeHTTP(w, httptest.NewRequest("POST", "/register", bytes.NewReader(body)))
+	var node runner.RegisterResponse
+	if w.Code != 201 || json.Unmarshal(w.Body.Bytes(), &node) != nil {
+		t.Fatal("registration failed")
+	}
+	store.panicNext.Store(true)
+	body, _ = json.Marshal(runner.PollRequest{NodeID: node.NodeID, BootID: "boot", Protocol: runner.ProtocolVersion})
+	req := httptest.NewRequest("POST", "/poll", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+node.Credential)
+	w = httptest.NewRecorder()
+	h.Handler().ServeHTTP(w, req)
+	if w.Code != 500 || !strings.Contains(w.Body.String(), `"code":"internal_panic"`) || strings.Contains(w.Body.String(), "PRIVATE") {
+		t.Fatal("panic did not produce a safe structured response")
+	}
+	waitJournal(t, j, func(s runnerJournalStatus) bool { return s.Pending == 0 })
+	_, events := j.snapshot(500, "")
+	incident := ""
+	for _, event := range events {
+		if event.Kind == "operation_panic" && event.Operation == "poll" && event.Recovered {
+			incident = event.IncidentID
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "diagnostics", "runner-incidents.jsonl"))
+	if err != nil || incident == "" || !strings.Contains(string(data), incident) || strings.Contains(string(data), "PRIVATE") {
+		t.Fatal("panic was not safely persisted", err)
+	}
+}
 
 func waitJournal(t *testing.T, j *runnerJournal, ready func(runnerJournalStatus) bool) runnerJournalStatus {
 	t.Helper()

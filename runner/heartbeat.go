@@ -75,7 +75,7 @@ func (h *Hub) recordStoppedContext(ctx context.Context, req HeartbeatRequest, id
 		changed = true
 	}
 	if changed {
-		return h.saveFenceLocked()
+		return h.saveFenceContextLocked(ctx)
 	}
 	return nil
 }

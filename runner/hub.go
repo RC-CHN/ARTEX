@@ -16,23 +16,24 @@ import (
 )
 
 type Hub struct {
-	id           string // immutable identity, also used as the controller epoch
-	mu           contextMutex
-	observer     brokerObserver
-	opts         Options
-	state        persistedState
-	revision     uint64
-	lastSaved    json.RawMessage
-	wake         chan struct{}
-	stop         chan struct{}
-	done         chan struct{}
-	stopOnce     sync.Once
-	closed       bool
-	reopenMu     sync.Mutex
-	reopened     bool
-	redeliver    map[string]time.Time // transport hints only; never authorize execution
-	warmProfiles []WarmProfile
-	poolStatus   map[string]PoolStatus
+	id            string // immutable identity, also used as the controller epoch
+	mu            contextMutex
+	observer      brokerObserver
+	opts          Options
+	state         persistedState
+	revision      uint64
+	lastSaved     json.RawMessage
+	durableLeases map[string]time.Time // last committed, never the pending renewal
+	wake          chan struct{}
+	stop          chan struct{}
+	done          chan struct{}
+	stopOnce      sync.Once
+	closed        bool
+	reopenMu      sync.Mutex
+	reopened      bool
+	redeliver     map[string]time.Time // transport hints only; never authorize execution
+	warmProfiles  []WarmProfile
+	poolStatus    map[string]PoolStatus
 }
 
 func New(opts Options) (*Hub, error) {
@@ -78,10 +79,8 @@ func newHub(parent context.Context, opts Options, predecessorEpoch string) (*Hub
 		return nil, storeError(err)
 	}
 	h := &Hub{opts: opts, revision: snap.Revision, lastSaved: append(json.RawMessage(nil), snap.Data...), wake: make(chan struct{}), stop: make(chan struct{}), done: make(chan struct{}), redeliver: map[string]time.Time{}}
-	if len(snap.Data) > 0 {
-		if err := json.Unmarshal(snap.Data, &h.state); err != nil {
-			return nil, fmt.Errorf("decode runner state: %w", err)
-		}
+	if h.state, err = decodeState(snap.Data); err != nil {
+		return nil, fmt.Errorf("decode runner state: %w", err)
 	}
 	// Recovery may observe a newer revision from an ambiguously committed write,
 	// but it must never fence a different controller that took over meanwhile.
@@ -95,20 +94,6 @@ func newHub(parent context.Context, opts Options, predecessorEpoch string) (*Hub
 	h.state.Epoch = newID()
 	h.id = h.state.Epoch
 	h.observer.status.State.BrokerID = h.id
-	if h.state.Registrations == nil {
-		h.state.Registrations = map[string]time.Time{}
-	}
-	if h.state.Nodes == nil {
-		h.state.Nodes = map[string]*nodeRecord{}
-	}
-	for _, n := range h.state.Nodes {
-		if n.BootIDs == nil {
-			n.BootIDs = map[string]bool{n.BootID: true}
-		}
-	}
-	if h.state.Sessions == nil {
-		h.state.Sessions = map[string]*sessionRecord{}
-	}
 	// A controller restart does not prove that an old remote process has died.
 	// Fence its writes immediately, but retain all reservations until its old lease
 	// expires. Fresh polls cannot extend a predecessor's lease.
@@ -148,34 +133,28 @@ func (h *Hub) saveLocked() error { return h.saveContextLocked(context.Background
 func (h *Hub) saveContextLocked(parent context.Context) (err error) {
 	op := h.observe("checkpoint", false)
 	var size int
-	defer func() { op.finish(err, size) }()
+	defer op.finishDeferred(&err, &size)
+	ctx, cancel := context.WithTimeout(parent, h.checkpointTimeoutLocked())
+	defer cancel()
 	raw, err := h.marshalState()
 	size = len(raw)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
-	defer cancel()
 	var rev uint64
-	write := h.observe("checkpoint_store", false)
-	if store, ok := h.opts.Store.(DiagnosticStore); ok {
-		rev, err = store.SaveDiagnostic(ctx, h.revision, raw, h.sessionStatusesLocked())
-	} else {
-		rev, err = h.opts.Store.Save(ctx, h.revision, raw)
-	}
-	err = storeError(err)
-	write.finish(err, size)
+	err = h.observeCall("checkpoint_store", size, func() error {
+		if store, ok := h.opts.Store.(DiagnosticStore); ok {
+			rev, err = store.SaveDiagnostic(ctx, h.revision, raw, h.sessionStatusesLocked())
+		} else {
+			rev, err = h.opts.Store.Save(ctx, h.revision, raw)
+		}
+		return storeError(err)
+	})
 	if err != nil {
 		if len(h.lastSaved) > 0 {
-			rollback := h.observe("checkpoint_rollback", false)
-			var restored persistedState
-			restoreErr := json.Unmarshal(h.lastSaved, &restored)
-			if restoreErr == nil {
-				h.state = restored
-			} else {
+			if restoreErr := h.restoreLocked(); restoreErr != nil {
 				h.closeLocked("rollback_failed", restoreErr, false)
 			}
-			rollback.finish(restoreErr, len(h.lastSaved))
 		}
 		if errors.Is(err, ErrStoreConflict) {
 			h.closeLocked("store_conflict", err, false)
@@ -184,15 +163,55 @@ func (h *Hub) saveContextLocked(parent context.Context) (err error) {
 		return err
 	}
 	h.revision, h.lastSaved = rev, raw
+	h.durableLeases = make(map[string]time.Time)
+	for id, s := range h.state.Sessions {
+		if s.live() {
+			h.durableLeases[id] = s.LeaseUntil
+		}
+	}
 	h.signalLocked()
 	return nil
+}
+
+func (h *Hub) checkpointTimeoutLocked() time.Duration {
+	budget := 5 * time.Second
+	if store, ok := h.opts.Store.(ProgressiveStore); ok {
+		budget = min(2*time.Minute, max(budget, store.CheckpointTimeout()))
+	}
+	now := h.opts.Clock()
+	for id, until := range h.durableLeases {
+		if s := h.state.Sessions[id]; s != nil && s.live() {
+			// Leave time for another heartbeat and delivery. Even a pending
+			// renewal cannot grant more time until its transaction commits.
+			budget = min(budget, max(100*time.Millisecond, until.Sub(now)-h.opts.LeaseDuration/6))
+		}
+	}
+	return budget
+}
+
+// Caller holds h.mu. Publish only a fully decoded, writable checkpoint.
+func (h *Hub) restoreLocked() error {
+	return h.observeCall("checkpoint_rollback", len(h.lastSaved), func() error {
+		if len(h.lastSaved) == 0 {
+			return errors.New("missing saved runner state")
+		}
+		state, err := decodeState(h.lastSaved)
+		if err == nil {
+			h.state = state
+		}
+		return err
+	})
 }
 
 // A failed durable cancellation must never resurrect the in-memory attempt.
 // Refuse all further leases and file access until the controller is reopened;
 // reopening fences the persisted predecessor and waits out its last lease.
 func (h *Hub) saveFenceLocked() error {
-	err := h.saveLocked()
+	return h.saveFenceContextLocked(context.Background())
+}
+
+func (h *Hub) saveFenceContextLocked(ctx context.Context) error {
+	err := h.saveContextLocked(ctx)
 	if err != nil {
 		h.closeLocked("fence_persistence_failed", err, errors.Is(err, ErrStoreUnavailable))
 	}
@@ -270,7 +289,7 @@ func (h *Hub) CreateRegistrationToken(ctx context.Context, ttl time.Duration) (s
 	token := newID()
 	expiry := h.opts.Clock().Add(ttl)
 	h.state.Registrations[hashToken(token)] = expiry
-	if err := h.saveLocked(); err != nil {
+	if err := h.saveContextLocked(ctx); err != nil {
 		return "", time.Time{}, err
 	}
 	return token, expiry, nil

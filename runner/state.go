@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +58,49 @@ type persistedState struct {
 	Registrations map[string]time.Time      `json:"registrations"`
 	Nodes         map[string]*nodeRecord    `json:"nodes"`
 	Sessions      map[string]*sessionRecord `json:"sessions"`
+}
+
+// Empty maps tagged omitempty disappear from checkpoints. Every restore path,
+// including an in-process rollback, must rebuild writable maps before use.
+func decodeState(raw json.RawMessage) (persistedState, error) {
+	var state persistedState
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &state); err != nil {
+			return state, err
+		}
+	}
+	if state.Registrations == nil {
+		state.Registrations = map[string]time.Time{}
+	}
+	if state.Nodes == nil {
+		state.Nodes = map[string]*nodeRecord{}
+	}
+	if state.Sessions == nil {
+		state.Sessions = map[string]*sessionRecord{}
+	}
+	for _, n := range state.Nodes {
+		if n == nil {
+			return state, errors.New("invalid saved runner node")
+		}
+		if n.BootIDs == nil {
+			n.BootIDs = map[string]bool{n.BootID: true}
+		}
+	}
+	for _, s := range state.Sessions {
+		if s == nil {
+			return state, errors.New("invalid saved runner session")
+		}
+		if s.Commands == nil {
+			s.Commands = map[string]*commandRecord{}
+		}
+		if s.CallIDs == nil {
+			s.CallIDs = map[string]string{}
+		}
+		if s.NotificationIDs == nil {
+			s.NotificationIDs = map[string]bool{}
+		}
+	}
+	return state, nil
 }
 
 type nodeRecord struct {

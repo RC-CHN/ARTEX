@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+var errOperationPanic = errors.New("runner internal operation failed")
+
 // A cancellable gate prevents disconnected HTTP requests from accumulating
 // behind a slow checkpoint and subsequently performing obsolete renewals.
 // Ordinary in-process callers retain the usual Lock/Unlock interface.
@@ -48,6 +50,8 @@ func FailureCode(err error) string {
 	switch {
 	case err == nil:
 		return "ok"
+	case errors.Is(err, errOperationPanic):
+		return "internal_panic"
 	case errors.Is(err, ErrStoreConflict):
 		return "store_conflict"
 	case errors.Is(err, ErrStoreUnavailable):
@@ -77,7 +81,7 @@ func FailureCode(err error) string {
 
 func KnownFailureCode(code string) bool {
 	switch code {
-	case "store_conflict", "store_timeout", "store_unavailable", "deadline_exceeded", "canceled", "broker_closed", "unauthorized", "fenced", "call_conflict", "request_too_large", "invalid_request":
+	case "internal_panic", "store_conflict", "store_timeout", "store_unavailable", "deadline_exceeded", "canceled", "broker_closed", "unauthorized", "fenced", "call_conflict", "request_too_large", "invalid_request":
 		return true
 	}
 	return false
@@ -216,6 +220,26 @@ func (o *observation) acquired() {
 	o.waiting = false
 }
 
+// Propagate to the enclosing operation's recovery boundary, but never count a
+// panic as success or leave its nested observations permanently in flight.
+func (o *observation) finishDeferred(err *error, bytes *int) {
+	size := 0
+	if bytes != nil {
+		size = *bytes
+	}
+	if value := recover(); value != nil {
+		o.finish(errOperationPanic, size)
+		panic(value)
+	}
+	o.finish(*err, size)
+}
+
+func (h *Hub) observeCall(name string, bytes int, call func() error) (err error) {
+	op := h.observe(name, false)
+	defer op.finishDeferred(&err, &bytes)
+	return call()
+}
+
 func (o *observation) finish(err error, bytes int) {
 	now := time.Now()
 	elapsed := now.Sub(o.start)
@@ -274,6 +298,9 @@ func storeError(err error) error {
 // Keep JSON encoding failures separate from database failures in diagnostics.
 func (h *Hub) marshalState() (raw json.RawMessage, err error) {
 	o := h.observe("checkpoint_marshal", false)
-	defer func() { o.finish(err, len(raw)) }()
-	return json.Marshal(h.state)
+	var size int
+	defer o.finishDeferred(&err, &size)
+	raw, err = json.Marshal(h.state)
+	size = len(raw)
+	return raw, err
 }

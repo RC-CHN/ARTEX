@@ -43,6 +43,13 @@ type DiagnosticStore interface {
 	SaveDiagnostic(context.Context, uint64, json.RawMessage, []SessionStatus) (uint64, error)
 }
 
+// ProgressiveStore enforces its own inactivity timeout and may keep making
+// bounded progress beyond the default five seconds. Hub still caps the total
+// wait by already-issued leases and the caller's cancellation/deadline.
+type ProgressiveStore interface {
+	CheckpointTimeout() time.Duration
+}
+
 // StateGuard serializes a short artifact commit against a controller takeover.
 // Persistent stores should implement this in the same transactional lock domain
 // as Save. Without it, file commit fencing is limited to this Hub instance.

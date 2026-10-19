@@ -35,6 +35,8 @@ func jsonResponse(w http.ResponseWriter, status int, value any) {
 func protocolError(w http.ResponseWriter, err error) {
 	status := http.StatusBadRequest
 	switch {
+	case errors.Is(err, errOperationPanic):
+		status = http.StatusInternalServerError
 	case errors.Is(err, ErrUnauthorized):
 		status = http.StatusUnauthorized
 	case errors.Is(err, ErrClosed), errors.Is(err, ErrStoreConflict):
@@ -113,7 +115,7 @@ func (h *Hub) handleRegister(w http.ResponseWriter, r *http.Request) {
 	delete(h.state.Registrations, hash)
 	id, credential := newID(), newID()
 	h.state.Nodes[id] = &nodeRecord{ID: id, Name: req.Name, BootID: req.BootID, BootIDs: map[string]bool{req.BootID: true}, CredentialHash: hashToken(credential), Enabled: true, Capabilities: req.Capabilities, LastSeen: h.opts.Clock()}
-	if err := h.saveLocked(); err != nil {
+	if err := h.saveContextLocked(r.Context()); err != nil {
 		protocolError(w, err)
 		return
 	}
@@ -226,7 +228,27 @@ func (h *Hub) pollContext(ctx context.Context, req PollRequest, authenticated st
 	if err != nil {
 		return PollResponse{}, nil, err
 	}
-	defer func() { h.mu.Unlock(); op.finish(err, 0) }()
+	fencing := false
+	defer func() {
+		if recover() != nil {
+			// A handler panic must not leave a partially renewed node/session or
+			// report success. Do not include panic values or request data in logs.
+			err = errOperationPanic
+			out, wake = PollResponse{}, nil
+			restoreErr := h.restoreLocked()
+			if restoreErr != nil {
+				h.closeLocked("rollback_failed", restoreErr, false)
+			} else if fencing {
+				// Preserve the failed-fence rule even if persistence panics.
+				h.closeLocked("fence_panic", errOperationPanic, false)
+			} else {
+				h.signalLocked()
+			}
+			h.recordEvent(Event{Kind: "operation_panic", Operation: name, IncidentID: newID(), Code: "internal_panic", Revision: h.revision, Recovered: restoreErr == nil && !h.closed, ManualRequired: restoreErr != nil || h.closed})
+		}
+		h.mu.Unlock()
+		op.finish(err, 0)
+	}()
 	if h.closed {
 		return PollResponse{}, nil, ErrClosed
 	}
@@ -262,6 +284,7 @@ func (h *Hub) pollContext(ctx context.Context, req PollRequest, authenticated st
 	changed := h.expireLocked()
 	bootChanged := n.BootID != req.BootID
 	if bootChanged {
+		fencing = true
 		delete(h.poolStatus, n.ID)
 		for _, s := range h.state.Sessions {
 			if s.NodeID == n.ID && s.reserved(now) {
@@ -280,10 +303,6 @@ func (h *Hub) pollContext(ctx context.Context, req PollRequest, authenticated st
 	// Renew durably before expiry, without rewriting retained command results
 	// on every delivery of an unfinished Open/Call. File reads share this lock.
 	renew := bootChanged || now.Sub(n.LastSeen) >= h.opts.LeaseDuration/3
-	if renew {
-		n.LastSeen = now
-		changed = true
-	}
 	out = PollResponse{Heartbeat: true, AdmissionDiagnostics: true, Epoch: h.state.Epoch, ServerTime: now, Leases: []Lease{}, Commands: []Command{}}
 	if n.Capabilities.Executor == "kubernetes" {
 		if !heartbeat {
@@ -300,6 +319,9 @@ func (h *Hub) pollContext(ctx context.Context, req PollRequest, authenticated st
 			if len(s.NotificationIDs) >= 20000 {
 				continue
 			}
+			if s.NotificationIDs == nil {
+				s.NotificationIDs = map[string]bool{}
+			}
 			s.NotificationIDs[env.ID] = true
 			s.Notifications = append(s.Notifications, env.Items...)
 			changed = true
@@ -314,8 +336,11 @@ func (h *Hub) pollContext(ctx context.Context, req PollRequest, authenticated st
 			continue
 		}
 		if n.Enabled && s.live() {
-			if renew {
+			// Node liveness cannot substitute for this session's own lease.
+			// Repair a lagging lease even when the node was seen recently.
+			if renew || s.LeaseUntil.Sub(now) <= h.opts.LeaseDuration*2/3 {
 				s.LeaseUntil = now.Add(h.opts.LeaseDuration)
+				changed = true
 			}
 			out.Leases = append(out.Leases, Lease{SessionID: s.ID, AttemptID: s.AttemptID, Epoch: s.Epoch, Until: s.LeaseUntil})
 		}
@@ -343,27 +368,29 @@ func (h *Hub) pollContext(ctx context.Context, req PollRequest, authenticated st
 			out.Commands = append(out.Commands, cmd)
 		}
 	}
+	if renew {
+		n.LastSeen = now
+		changed = true
+	}
 	if bootChanged {
-		err = h.saveFenceLocked()
+		err = h.saveFenceContextLocked(ctx)
 	} else if changed {
-		err = h.saveLocked()
+		err = h.saveContextLocked(ctx)
 	} else {
 		// Still fence a superseded controller before returning any lease. A
 		// revision check is cheap and does not rewrite historical tool output.
-		guardOp := h.observe("store_guard", false)
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		if guard, ok := h.opts.Store.(StateGuard); ok {
-			err = guard.Guard(ctx, h.revision, func() error { return nil })
-		} else {
-			var snapshot Snapshot
-			snapshot, err = h.opts.Store.Load(ctx)
-			if err == nil && snapshot.Revision != h.revision {
-				err = ErrStoreConflict
+		defer cancel()
+		err = h.observeCall("store_guard", 0, func() error {
+			if guard, ok := h.opts.Store.(StateGuard); ok {
+				return storeError(guard.Guard(ctx, h.revision, func() error { return nil }))
 			}
-		}
-		cancel()
-		err = storeError(err)
-		guardOp.finish(err, 0)
+			snapshot, loadErr := h.opts.Store.Load(ctx)
+			if loadErr == nil && snapshot.Revision != h.revision {
+				return ErrStoreConflict
+			}
+			return storeError(loadErr)
+		})
 		if errors.Is(err, ErrStoreConflict) {
 			h.closeLocked("store_conflict", err, false)
 		}
@@ -526,9 +553,9 @@ func (h *Hub) acceptResultContext(ctx context.Context, req ResultRequest, authen
 		s.Notifications = append(s.Notifications, req.Notifications...)
 	}
 	if s.State == "fenced" {
-		return h.saveFenceLocked()
+		return h.saveFenceContextLocked(ctx)
 	}
-	return h.saveLocked()
+	return h.saveContextLocked(ctx)
 }
 
 func (h *Hub) handleResult(w http.ResponseWriter, r *http.Request) {

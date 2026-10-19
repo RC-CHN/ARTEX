@@ -51,7 +51,9 @@ func (n *Node) heartbeat(ctx context.Context) {
 	}
 	n.mu.Unlock()
 	sent := time.Now()
-	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// The controller may be committing several delta batches. Its own durable
+	// lease budget bounds that wait; do not abort a progressing write at 5s.
+	requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	var response runner.PollResponse
 	err := n.request(requestCtx, "heartbeat", req, &response)
 	cancel()

@@ -59,6 +59,7 @@ func TestRequestDiagnosticsRejectPrivateCodesAndClassifyTransport(t *testing.T) 
 	}{
 		{`{"code":"secret-target-password","error":"private response"}`, "http_error", 503},
 		{`{"code":"store_conflict"}`, "store_conflict", 503},
+		{`{"code":"internal_panic","error":"private panic value"}`, "internal_panic", 500},
 		{`{"error":"legacy private response"}`, "http_error", 400},
 		{`<private gateway error>`, "http_error", 502},
 		{`{"epoch":`, "invalid_response", 200},

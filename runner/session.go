@@ -155,7 +155,7 @@ func (h *Hub) Acquire(ctx context.Context, spec RunSpec) (*Session, error) {
 			return nil, ErrClosed
 		}
 		if h.expireLocked() {
-			if err := h.saveLocked(); err != nil {
+			if err := h.saveContextLocked(ctx); err != nil {
 				h.mu.Unlock()
 				return nil, err
 			}
@@ -197,7 +197,7 @@ func (h *Hub) Acquire(ctx context.Context, spec RunSpec) (*Session, error) {
 		r.CreatedAt = h.opts.Clock()
 		r.Commands[commandID] = &commandRecord{Command: Command{ID: commandID, Kind: CommandOpen, SessionID: id, AttemptID: attempt, Epoch: r.Epoch, LeaseUntil: r.LeaseUntil, Spec: &r.Spec, GPUIds: gpus}}
 		h.state.Sessions[id] = r
-		if err := h.saveLocked(); err != nil {
+		if err := h.saveContextLocked(ctx); err != nil {
 			h.mu.Unlock()
 			return nil, err
 		}
@@ -354,7 +354,7 @@ func (s *Session) Call(ctx context.Context, name string, input json.RawMessage, 
 		commandID = newID()
 		r.CallIDs[call.ID] = commandID
 		r.Commands[commandID] = &commandRecord{Command: Command{ID: commandID, Kind: CommandCall, SessionID: r.ID, AttemptID: r.AttemptID, Epoch: r.Epoch, LeaseUntil: r.LeaseUntil, Call: &call}}
-		if err := h.saveLocked(); err != nil {
+		if err := h.saveContextLocked(ctx); err != nil {
 			h.mu.Unlock()
 			return tool.Result{}, err
 		}
