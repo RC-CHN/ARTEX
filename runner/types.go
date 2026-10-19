@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"time"
 
 	"github.com/RC-CHN/ARTEX/norma/tool"
@@ -17,6 +18,7 @@ const ProtocolVersion = 1
 
 var (
 	ErrStoreConflict       = errors.New("runner state revision conflict")
+	ErrStoreUnavailable    = errors.New("runner state persistence unavailable")
 	ErrThreadBusy          = errors.New("agent thread already has an active attempt")
 	ErrSessionsActive      = errors.New("runner has reserved sessions; wait for cleanup or lease expiry before disabling")
 	ErrFenced              = errors.New("remote attempt is fenced")
@@ -59,6 +61,7 @@ type Options struct {
 	RegistrationTTL time.Duration    // default 10 minutes, maximum one hour
 	PollWait        time.Duration    // default 10 seconds; less than lease duration
 	Clock           func() time.Time // injectable for deterministic lease tests
+	Log             *log.Logger      // optional, content-free operational diagnostics
 }
 
 type GPU struct {

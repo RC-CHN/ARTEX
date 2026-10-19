@@ -163,13 +163,23 @@ func (p runnerPGStore) Load(ctx context.Context) (runner.Snapshot, error) {
 func (p runnerPGStore) Save(ctx context.Context, revision uint64, data json.RawMessage) (uint64, error) {
 	return p.SaveDiagnostic(ctx, revision, data, nil)
 }
-func (p runnerPGStore) SaveDiagnostic(ctx context.Context, revision uint64, data json.RawMessage, statuses []runner.SessionStatus) (uint64, error) {
+func (p runnerPGStore) SaveDiagnostic(ctx context.Context, revision uint64, data json.RawMessage, statuses []runner.SessionStatus) (next uint64, err error) {
+	start, phase := time.Now(), "begin"
+	defer func() {
+		if err != nil || time.Since(start) >= time.Second {
+			classified := err
+			if err != nil {
+				classified = errors.Join(runner.ErrStoreUnavailable, err)
+			}
+			log.Printf("runner_store phase=%s code=%s sqlstate=%s duration_ms=%d bytes=%d revision=%d", phase, runner.FailureCode(classified), runner.SQLState(err), time.Since(start).Milliseconds(), len(data), revision)
+		}
+	}()
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
-	var next uint64
+	phase = "checkpoint"
 	if revision == 0 {
 		err = tx.QueryRowContext(ctx, "INSERT INTO runner_state(id, revision, payload) VALUES(1,1,$1) ON CONFLICT DO NOTHING RETURNING revision", string(data)).Scan(&next)
 	} else {
@@ -177,15 +187,12 @@ func (p runnerPGStore) SaveDiagnostic(ctx context.Context, revision uint64, data
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		err = runner.ErrStoreConflict
-	} else if err != nil {
-		// Log the database error, never the checkpoint: it contains tool output
-		// and runner configuration. Result delivery must not fail silently.
-		log.Printf("[runner] persist broker checkpoint failed: %v", err)
 	}
 	if err != nil {
 		return 0, err
 	}
 	if statuses != nil {
+		phase = "diagnostics"
 		projection, e := json.Marshal(statuses)
 		if e != nil {
 			return 0, e
@@ -195,6 +202,7 @@ func (p runnerPGStore) SaveDiagnostic(ctx context.Context, revision uint64, data
 			return 0, err
 		}
 	}
+	phase = "commit"
 	return next, tx.Commit()
 }
 func (s *Server) initRunners() {
@@ -207,7 +215,7 @@ func (s *Server) initRunners() {
 	}
 	s.runnerCfg = cfg
 	if cfg.Enabled && s.runnerErr == nil {
-		s.runners, s.runnerErr = runner.New(runner.Options{Store: runnerPGStore{s.m.pg.DB}})
+		s.runners, s.runnerErr = runner.New(runner.Options{Store: runnerPGStore{s.m.pg.DB}, Log: log.Default()})
 	}
 	if s.runners != nil {
 		s.runners.SetWarmProfiles(s.runnerWarmProfiles(cfg))
@@ -259,7 +267,7 @@ func (s *Server) saveRunnerConfig(w http.ResponseWriter, r *http.Request) {
 			if previous != nil {
 				_ = previous.Close()
 			}
-			previous, err = runner.New(runner.Options{Store: runnerPGStore{s.m.pg.DB}})
+			previous, err = runner.New(runner.Options{Store: runnerPGStore{s.m.pg.DB}, Log: log.Default()})
 			created = true
 		}
 		if err == nil {
@@ -285,7 +293,7 @@ func (s *Server) saveRunnerConfig(w http.ResponseWriter, r *http.Request) {
 		s.runnerCfg = cfg
 		s.runners, s.runnerErr = nil, nil
 		if cfg.Enabled {
-			s.runners, s.runnerErr = runner.New(runner.Options{Store: runnerPGStore{s.m.pg.DB}})
+			s.runners, s.runnerErr = runner.New(runner.Options{Store: runnerPGStore{s.m.pg.DB}, Log: log.Default()})
 		}
 		if s.runnerErr != nil {
 			writeErr(w, 500, s.runnerErr.Error())
@@ -298,7 +306,7 @@ func (s *Server) saveRunnerConfig(w http.ResponseWriter, r *http.Request) {
 			if candidate != nil {
 				_ = candidate.Close()
 			}
-			candidate, err = runner.New(runner.Options{Store: runnerPGStore{s.m.pg.DB}})
+			candidate, err = runner.New(runner.Options{Store: runnerPGStore{s.m.pg.DB}, Log: log.Default()})
 			created = true
 		}
 		if err != nil {

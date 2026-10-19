@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"net/http"
 )
@@ -24,11 +25,11 @@ func (h *Hub) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		protocolError(w, err)
 		return
 	}
-	if err = h.recordStopped(req, id); err != nil {
+	if err = h.recordStoppedContext(r.Context(), req, id); err != nil {
 		protocolError(w, err)
 		return
 	}
-	out, _, err := h.pollMode(PollRequest{NodeID: req.NodeID, BootID: req.BootID, Protocol: req.Protocol, PoolStatus: req.PoolStatus}, id, true)
+	out, _, err := h.pollContext(r.Context(), PollRequest{NodeID: req.NodeID, BootID: req.BootID, Protocol: req.Protocol, PoolStatus: req.PoolStatus}, id, true)
 	if err != nil {
 		protocolError(w, err)
 		return
@@ -37,8 +38,15 @@ func (h *Hub) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Hub) recordStopped(req HeartbeatRequest, id string) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	return h.recordStoppedContext(context.Background(), req, id)
+}
+
+func (h *Hub) recordStoppedContext(ctx context.Context, req HeartbeatRequest, id string) (err error) {
+	op, err := h.lockOperation(ctx, "stopped")
+	if err != nil {
+		return err
+	}
+	defer func() { h.mu.Unlock(); op.finish(err, 0) }()
 	if h.closed {
 		return ErrClosed
 	}

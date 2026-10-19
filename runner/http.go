@@ -39,12 +39,22 @@ func protocolError(w http.ResponseWriter, err error) {
 		status = http.StatusUnauthorized
 	case errors.Is(err, ErrClosed), errors.Is(err, ErrStoreConflict):
 		status = http.StatusServiceUnavailable
+	case errors.Is(err, ErrStoreUnavailable):
+		status = http.StatusServiceUnavailable
+	case errors.Is(err, context.DeadlineExceeded):
+		status = http.StatusGatewayTimeout
+	case errors.Is(err, context.Canceled):
+		status = http.StatusRequestTimeout
 	case errors.Is(err, ErrFenced):
 		status = http.StatusGone
 	case errors.Is(err, ErrCallConflict):
 		status = http.StatusConflict
 	}
-	jsonResponse(w, status, map[string]string{"error": err.Error()})
+	message := err.Error()
+	if errors.Is(err, ErrStoreUnavailable) {
+		message = ErrStoreUnavailable.Error()
+	}
+	jsonResponse(w, status, map[string]string{"error": message, "code": FailureCode(err)})
 }
 func decodeRequest(w http.ResponseWriter, r *http.Request, target any, max int64) error {
 	r.Body = http.MaxBytesReader(w, r.Body, max)
@@ -127,9 +137,12 @@ func (h *Hub) authenticateLocked(r *http.Request) (string, error) {
 	return "", ErrUnauthorized
 }
 
-func (h *Hub) Authenticate(r *http.Request) (string, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+func (h *Hub) Authenticate(r *http.Request) (id string, err error) {
+	op, err := h.lockOperation(r.Context(), "authenticate")
+	if err != nil {
+		return "", err
+	}
+	defer func() { h.mu.Unlock(); op.finish(err, 0) }()
 	return h.authenticateLocked(r)
 }
 
@@ -154,9 +167,12 @@ func (h *Hub) authorizeLocked(r *http.Request, sessionID string, write bool) (*s
 	return s, nil
 }
 
-func (h *Hub) AuthorizeSession(r *http.Request, sessionID string, write bool) (RunSpec, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+func (h *Hub) AuthorizeSession(r *http.Request, sessionID string, write bool) (spec RunSpec, err error) {
+	op, err := h.lockOperation(r.Context(), "file_authorize")
+	if err != nil {
+		return RunSpec{}, err
+	}
+	defer func() { h.mu.Unlock(); op.finish(err, 0) }()
 	s, err := h.authorizeLocked(r, sessionID, write)
 	if err != nil {
 		return RunSpec{}, err
@@ -169,9 +185,12 @@ func (h *Hub) AuthorizeSession(r *http.Request, sessionID string, write bool) (R
 
 // WithSessionWrite closes the authorization-to-rename race. The callback must
 // only perform its short atomic commit; read/hash/upload before entering here.
-func (h *Hub) WithSessionWrite(r *http.Request, sessionID string, commit func() error) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+func (h *Hub) WithSessionWrite(r *http.Request, sessionID string, commit func() error) (err error) {
+	op, err := h.lockOperation(r.Context(), "file_commit")
+	if err != nil {
+		return err
+	}
+	defer func() { h.mu.Unlock(); op.finish(err, 0) }()
 	if _, err := h.authorizeLocked(r, sessionID, true); err != nil {
 		return err
 	}
@@ -196,8 +215,19 @@ func (h *Hub) poll(req PollRequest, authenticated string) (PollResponse, <-chan 
 }
 
 func (h *Hub) pollMode(req PollRequest, authenticated string, heartbeat bool) (PollResponse, <-chan struct{}, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	return h.pollContext(context.Background(), req, authenticated, heartbeat)
+}
+
+func (h *Hub) pollContext(ctx context.Context, req PollRequest, authenticated string, heartbeat bool) (out PollResponse, wake <-chan struct{}, err error) {
+	name := "poll"
+	if heartbeat {
+		name = "heartbeat"
+	}
+	op, err := h.lockOperation(ctx, name)
+	if err != nil {
+		return PollResponse{}, nil, err
+	}
+	defer func() { h.mu.Unlock(); op.finish(err, 0) }()
 	if h.closed {
 		return PollResponse{}, nil, ErrClosed
 	}
@@ -255,7 +285,7 @@ func (h *Hub) pollMode(req PollRequest, authenticated string, heartbeat bool) (P
 		n.LastSeen = now
 		changed = true
 	}
-	out := PollResponse{Heartbeat: true, AdmissionDiagnostics: true, Epoch: h.state.Epoch, ServerTime: now, Leases: []Lease{}, Commands: []Command{}}
+	out = PollResponse{Heartbeat: true, AdmissionDiagnostics: true, Epoch: h.state.Epoch, ServerTime: now, Leases: []Lease{}, Commands: []Command{}}
 	if n.Capabilities.Executor == "kubernetes" {
 		if !heartbeat {
 			out.Pool = h.poolPolicyLocked(n)
@@ -314,7 +344,6 @@ func (h *Hub) pollMode(req PollRequest, authenticated string, heartbeat bool) (P
 			out.Commands = append(out.Commands, cmd)
 		}
 	}
-	var err error
 	if bootChanged {
 		err = h.saveFenceLocked()
 	} else if changed {
@@ -322,7 +351,8 @@ func (h *Hub) pollMode(req PollRequest, authenticated string, heartbeat bool) (P
 	} else {
 		// Still fence a superseded controller before returning any lease. A
 		// revision check is cheap and does not rewrite historical tool output.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		guardOp := h.observe("store_guard", false)
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if guard, ok := h.opts.Store.(StateGuard); ok {
 			err = guard.Guard(ctx, h.revision, func() error { return nil })
 		} else {
@@ -333,6 +363,8 @@ func (h *Hub) pollMode(req PollRequest, authenticated string, heartbeat bool) (P
 			}
 		}
 		cancel()
+		err = storeError(err)
+		guardOp.finish(err, 0)
 		if errors.Is(err, ErrStoreConflict) {
 			h.closed = true
 			h.signalLocked()
@@ -365,7 +397,7 @@ func (h *Hub) handlePoll(w http.ResponseWriter, r *http.Request) {
 		protocolError(w, err)
 		return
 	}
-	out, wake, err := h.poll(req, id)
+	out, wake, err := h.pollContext(r.Context(), req, id, false)
 	if err != nil {
 		protocolError(w, err)
 		return
@@ -379,7 +411,7 @@ func (h *Hub) handlePoll(w http.ResponseWriter, r *http.Request) {
 		case <-timer.C:
 		case <-wake:
 		}
-		out, _, err = h.poll(req, id)
+		out, _, err = h.pollContext(r.Context(), req, id, false)
 		if err != nil {
 			protocolError(w, err)
 			return
@@ -411,8 +443,15 @@ func validateMCPTools(s *sessionRecord, defs []ToolDefinition) error {
 }
 
 func (h *Hub) acceptResult(req ResultRequest, authenticated string) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	return h.acceptResultContext(context.Background(), req, authenticated)
+}
+
+func (h *Hub) acceptResultContext(ctx context.Context, req ResultRequest, authenticated string) (err error) {
+	op, err := h.lockOperation(ctx, "result")
+	if err != nil {
+		return err
+	}
+	defer func() { h.mu.Unlock(); op.finish(err, 0) }()
 	if h.closed {
 		return ErrClosed
 	}
@@ -505,7 +544,7 @@ func (h *Hub) handleResult(w http.ResponseWriter, r *http.Request) {
 		protocolError(w, err)
 		return
 	}
-	if err := h.acceptResult(req, id); err != nil {
+	if err := h.acceptResultContext(r.Context(), req, id); err != nil {
 		protocolError(w, err)
 		return
 	}

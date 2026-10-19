@@ -26,6 +26,7 @@ func (s *Server) Handler() http.Handler {
 	s.registerInterceptRoutes(mux)
 	mux.HandleFunc("GET /api/runners", s.getRunners)
 	mux.HandleFunc("GET /api/runners/sessions", s.runnerSessionDiagnostics)
+	mux.HandleFunc("GET /api/runners/diagnostics", s.runnerBrokerDiagnostics)
 	mux.HandleFunc("PUT /api/runners/config", s.saveRunnerConfig)
 	mux.HandleFunc("POST /api/runners/registration-token", s.runnerRegistration)
 	mux.HandleFunc("PUT /api/runners/{id}/enabled", s.setRunnerEnabled)

@@ -7,6 +7,17 @@ import (
 	"strings"
 )
 
+// This endpoint deliberately does not acquire the broker's execution mutex or
+// query PostgreSQL: it remains useful while checkpoints are blocked.
+func (s *Server) runnerBrokerDiagnostics(w http.ResponseWriter, r *http.Request) {
+	_, hub, err := s.runnerSnapshot()
+	if hub == nil || err != nil {
+		writeErr(w, 503, "Runner broker unavailable")
+		return
+	}
+	writeJSON(w, 200, hub.Diagnostics())
+}
+
 func (s *Server) runnerSessionDiagnostics(w http.ResponseWriter, r *http.Request) {
 	_, hub, err := s.runnerSnapshot()
 	if hub == nil || err != nil {

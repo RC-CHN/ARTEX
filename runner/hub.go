@@ -16,7 +16,8 @@ import (
 )
 
 type Hub struct {
-	mu           sync.Mutex
+	mu           contextMutex
+	observer     brokerObserver
 	opts         Options
 	state        persistedState
 	revision     uint64
@@ -120,24 +121,37 @@ func (h *Hub) signalLocked() { close(h.wake); h.wake = make(chan struct{}) }
 
 // Every visible mutation is durably saved before commands or leases are exposed.
 // Roll back on failure; a CAS conflict permanently fences this Hub instance.
-func (h *Hub) saveLocked() error {
-	raw, err := json.Marshal(h.state)
+func (h *Hub) saveLocked() (err error) {
+	op := h.observe("checkpoint", false)
+	var size int
+	defer func() { op.finish(err, size) }()
+	raw, err := h.marshalState()
+	size = len(raw)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var rev uint64
+	write := h.observe("checkpoint_store", false)
 	if store, ok := h.opts.Store.(DiagnosticStore); ok {
 		rev, err = store.SaveDiagnostic(ctx, h.revision, raw, h.sessionStatusesLocked())
 	} else {
 		rev, err = h.opts.Store.Save(ctx, h.revision, raw)
 	}
+	err = storeError(err)
+	write.finish(err, size)
 	if err != nil {
 		if len(h.lastSaved) > 0 {
+			rollback := h.observe("checkpoint_rollback", false)
 			var restored persistedState
-			_ = json.Unmarshal(h.lastSaved, &restored)
-			h.state = restored
+			restoreErr := json.Unmarshal(h.lastSaved, &restored)
+			if restoreErr == nil {
+				h.state = restored
+			} else {
+				h.closed = true
+			}
+			rollback.finish(restoreErr, len(h.lastSaved))
 		}
 		if errors.Is(err, ErrStoreConflict) {
 			h.closed = true
@@ -173,6 +187,13 @@ func (h *Hub) expireLocked() bool {
 	}
 	for id, s := range h.state.Sessions {
 		if s.State != "closed" && s.State != "expired" && !now.Before(s.LeaseUntil) {
+			h.observer.mu.Lock()
+			h.observer.status.LeaseExpirations++
+			h.observer.status.LastLeaseExpirationAt = now
+			h.observer.mu.Unlock()
+			if h.opts.Log != nil {
+				h.opts.Log.Printf("runner_broker op=lease_expired session=%q node=%q overdue_ms=%d", s.ID, s.NodeID, now.Sub(s.LeaseUntil).Milliseconds())
+			}
 			s.State, s.FinishedAt = "expired", now
 			s.addReason("runner lease expired; remote outcome may be unknown")
 			changed = true
