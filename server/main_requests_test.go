@@ -156,6 +156,13 @@ func TestMainRequestConcurrentAdmissionAndBoundedRetries(t *testing.T) {
 	if winners.Load() != 1 {
 		t.Fatalf("multiple main admissions: %d", winners.Load())
 	}
+	// Admission only reserves the lane; the asynchronous database claim may
+	// not have happened yet. This case tests stopping an executing attempt.
+	select {
+	case <-p.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("admitted main request did not enter the model")
+	}
 	s.cancelTaskChat(task.ID, agent.AbortChatStoppedByUser)
 	select {
 	case <-done:
@@ -166,7 +173,10 @@ func TestMainRequestConcurrentAdmissionAndBoundedRetries(t *testing.T) {
 	if err := task.Store.AckMainReply(p.requestID); err != nil {
 		t.Fatal(err)
 	}
-	old, _ := task.Store.MainRequest(p.requestID)
+	old, err := task.Store.MainRequest(p.requestID)
+	if err != nil || old.State != "delivered" {
+		t.Fatalf("first request was not settled before retry: %+v %v", old, err)
+	}
 	r, err := task.Store.CreateMainRequest(t.Context(), old.IntentID, "retry-call", "unanswered question", "")
 	if err != nil {
 		t.Fatal(err)
@@ -190,6 +200,60 @@ func TestMainRequestConcurrentAdmissionAndBoundedRetries(t *testing.T) {
 	got, _ := task.Store.MainRequest(r.ID)
 	if got.State != "answered" || got.AnswerSource != "system" || got.Attempts != 3 {
 		t.Fatalf("unbounded retry: %+v", got)
+	}
+}
+
+func TestMainRequestCancellationBeforeClaimPreservesQueue(t *testing.T) {
+	s, task, p, _ := newMainRequestFixture(t)
+	tx, err := s.m.pg.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	// Block the claim before it can consume a request. No timing sleep is
+	// needed to distinguish this boundary from cancellation during execution.
+	if _, err = tx.Exec("LOCK TABLE main_requests IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{}, 1)
+	if !s.startMainRequest(task, func() { done <- struct{}{} }) {
+		t.Fatal("not admitted")
+	}
+	s.cancelTaskChat(task.ID, agent.AbortChatStoppedByUser)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("blocked claim ignored cancellation")
+	}
+	if err = tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	r, err := task.Store.MainRequest(p.requestID)
+	if err != nil || r.State != "pending" || r.Attempts != 0 || p.calls.Load() != 0 {
+		t.Fatalf("unclaimed request consumed: %+v %v", r, err)
+	}
+	if s.engine.inflightCount(task.ID) != 0 {
+		t.Fatal("unclaimed cancellation leaked admission")
+	}
+	// It remains available for a later dispatcher, rather than being silently
+	// acknowledged without an answer or rejected as a duplicate new request.
+	if !s.startMainRequest(task, func() { done <- struct{}{} }) {
+		t.Fatal("queue did not recover")
+	}
+	select {
+	case <-p.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("retained request did not execute")
+	}
+	close(p.release)
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("retained request did not settle")
+	}
+	r, err = task.Store.MainRequest(p.requestID)
+	if err != nil || r.State != "answered" || r.Attempts != 1 {
+		t.Fatalf("retained request lost: %+v %v", r, err)
 	}
 }
 
