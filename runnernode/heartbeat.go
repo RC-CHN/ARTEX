@@ -27,38 +27,42 @@ func (n *Node) heartbeats(ctx context.Context) {
 		if !n.heartbeatEnabled.Load() {
 			continue
 		}
-		req := runner.HeartbeatRequest{NodeID: n.identity.NodeID, BootID: n.bootID, Protocol: runner.ProtocolVersion}
-		if k, ok := n.Executor.(*KubernetesExecutor); ok && n.admissionEnabled.Load() {
-			status := k.PoolStatus()
-			req.PoolStatus = &status
-		}
-		n.mu.Lock()
-		for _, s := range n.sessions {
-			s.mu.Lock()
-			if s.ended && len(req.Stopped) < 1024 {
-				reason := s.stopReason
-				if reason == "" {
-					reason = "session_aborted"
-				}
-				req.Stopped = append(req.Stopped, runner.StoppedSession{SessionID: s.id, AttemptID: s.attempt, Epoch: s.epoch, Reason: reason})
-			}
-			s.mu.Unlock()
-		}
-		n.mu.Unlock()
-		sent := time.Now()
-		requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		var response runner.PollResponse
-		err := n.request(requestCtx, "heartbeat", req, &response)
-		cancel()
-		if err != nil {
-			var status *httpStatusError
-			if errors.As(err, &status) && status.status == http.StatusBadRequest {
-				n.admissionEnabled.Store(false)
-			}
-			continue
-		}
-		n.responseMu.Lock()
-		n.applyLeases(response, sent)
-		n.responseMu.Unlock()
+		n.heartbeat(ctx)
 	}
+}
+
+func (n *Node) heartbeat(ctx context.Context) {
+	req := runner.HeartbeatRequest{NodeID: n.identity.NodeID, BootID: n.bootID, Protocol: runner.ProtocolVersion}
+	if k, ok := n.Executor.(*KubernetesExecutor); ok && n.admissionEnabled.Load() {
+		status := k.PoolStatus()
+		req.PoolStatus = &status
+	}
+	n.mu.Lock()
+	for _, s := range n.sessions {
+		s.mu.Lock()
+		if s.ended && len(req.Stopped) < 1024 {
+			reason := s.stopReason
+			if reason == "" {
+				reason = "session_aborted"
+			}
+			req.Stopped = append(req.Stopped, runner.StoppedSession{SessionID: s.id, AttemptID: s.attempt, Epoch: s.epoch, Reason: reason})
+		}
+		s.mu.Unlock()
+	}
+	n.mu.Unlock()
+	sent := time.Now()
+	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	var response runner.PollResponse
+	err := n.request(requestCtx, "heartbeat", req, &response)
+	cancel()
+	if err != nil {
+		var status *httpStatusError
+		if errors.As(err, &status) && status.status == http.StatusBadRequest {
+			n.admissionEnabled.Store(false)
+		}
+		return
+	}
+	n.responseMu.Lock()
+	n.applyLeases(response, sent)
+	n.responseMu.Unlock()
 }

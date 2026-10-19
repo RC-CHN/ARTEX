@@ -78,10 +78,12 @@ type Node struct {
 	heartbeatEnabled atomic.Bool
 	admissionEnabled atomic.Bool
 	responseMu       sync.Mutex
+	transport        transportObserver
 }
 type httpStatusError struct {
 	route  string
 	status int
+	code   string // Only a whitelisted protocol code; never the response error text.
 }
 
 func (e *httpStatusError) Error() string {
@@ -165,7 +167,10 @@ func saveIdentity(file string, id identity) error {
 	}
 	return os.Rename(f.Name(), file)
 }
-func (n *Node) request(ctx context.Context, route string, input, output any) error {
+func (n *Node) request(ctx context.Context, route string, input, output any) (err error) {
+	start := time.Now()
+	status := 0
+	defer func() { n.observeRequest(route, start, err, status) }()
 	body, err := json.Marshal(input)
 	if err != nil {
 		return err
@@ -183,9 +188,16 @@ func (n *Node) request(ctx context.Context, route string, input, output any) err
 		return err
 	}
 	defer resp.Body.Close()
+	status = resp.StatusCode
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return &httpStatusError{route: route, status: resp.StatusCode}
+		var failure struct {
+			Code string `json:"code"`
+		}
+		_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&failure)
+		if !runner.KnownFailureCode(failure.Code) {
+			failure.Code = ""
+		}
+		return &httpStatusError{route: route, status: resp.StatusCode, code: failure.Code}
 	}
 	return json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(output)
 }
@@ -301,9 +313,6 @@ func (n *Node) Run(ctx context.Context, enrollmentToken string) error {
 				return fmt.Errorf("runner identity rejected; stopping local executions: %w", err)
 			}
 			failures++
-			if failures == 1 || failures%10 == 0 {
-				n.Log.Printf("controller poll unavailable (%d consecutive failures); lease watchdog remains active", failures)
-			}
 			delay := time.Duration(min(failures, 10)) * time.Second
 			select {
 			case <-ctx.Done():
@@ -862,6 +871,7 @@ func (n *Node) scheduleAbortReason(s *nodeSession, reason string) {
 	s.ended = true
 	if s.stopReason == "" {
 		s.stopReason = reason
+		n.logSessionStop(s, reason)
 	}
 	if s.stopped || s.cleanupRunning || time.Now().Before(s.cleanupAfter) {
 		s.mu.Unlock()
@@ -974,7 +984,8 @@ func (n *Node) sendResults(ctx context.Context) {
 		if failed {
 			failures++
 			if failures == 1 || failures%10 == 0 {
-				n.Log.Printf("result delivery unavailable (%d consecutive attempts), command %s: %v; retaining completed result for retry without re-execution", failures, failedCommand, firstErr)
+				code, status := requestFailure(firstErr)
+				n.Log.Printf("result delivery unavailable (%d consecutive attempts), command %s: code=%s http_status=%d; retaining completed result for retry without re-execution", failures, failedCommand, code, status)
 			}
 			delay = min(time.Duration(1<<min(failures-1, 6))*250*time.Millisecond, 10*time.Second)
 		} else {
