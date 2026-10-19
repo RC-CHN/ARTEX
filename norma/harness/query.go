@@ -224,6 +224,7 @@ type budgetTracker struct {
 }
 
 type loop struct {
+	failureStreaks       map[string]failureStreak
 	interruptedToolInput *llm.ContentBlock
 	ctx                  context.Context
 	cancelRun            context.CancelCauseFunc
@@ -550,6 +551,7 @@ func (l *loop) run() {
 		resultMsg := llm.Message{Role: llm.RoleUser, Content: results}
 		l.messages = append(l.messages, resultMsg)
 		l.record(resultMsg, llm.Usage{})
+		l.noteRepeatedFailures(toolUses, results)
 		// Extra messages a tool injected after its result (e.g. the Skill tool's
 		// instructions as an independent user message) are appended next so the
 		// next model round sees them as standing guidance.
