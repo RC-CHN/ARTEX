@@ -32,7 +32,7 @@ func TestResourceSnapshotAppendsOnceWithoutChangingSystem(t *testing.T) {
 		t.Fatal("empty selection altered prompt")
 	}
 	system, boundary := deferredSystem("static instructions", DeferredInfo{})
-	if len(system) != 1 || system[0] != "static instructions" || boundary != 0 {
+	if len(system) != 1 || system[0] != "static instructions" || boundary != 1 {
 		t.Fatal("resource snapshot changed system prefix")
 	}
 }

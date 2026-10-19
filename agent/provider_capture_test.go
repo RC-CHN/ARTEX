@@ -122,4 +122,11 @@ func TestRoundTripWithoutCaptureIsUnchanged(t *testing.T) {
 	if string(got) != "ok" {
 		t.Fatalf("body=%q", got)
 	}
+	req, _ := http.NewRequest("POST", srv.URL, strings.NewReader("{}"))
+	req.GetBody = func() (io.ReadCloser, error) { t.Fatal("recording disabled but body was cloned"); return nil, nil }
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
 }

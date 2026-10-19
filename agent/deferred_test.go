@@ -9,11 +9,30 @@ import (
 	actool "github.com/RC-CHN/ARTEX/norma/tool"
 )
 
+func TestDynamicClockDoesNotChangeCachedSystemPrefix(t *testing.T) {
+	old := PromptOverride
+	PromptOverride = nil
+	t.Cleanup(func() { PromptOverride = old })
+	var prefix string
+	for _, now := range []string{"2026-10-19 10:00:00 CST", "2026-10-19 10:01:00 CST"} {
+		body := renderSystem("custom", "Rules. Current time: {{.Now}}", WorkerVars{Now: now})
+		sys, b := deferredSystem(body, DeferredInfo{ExecutionGuidance: "storage paths", GlobalNames: []string{"mcp__x__y"}})
+		if b != 2 || len(sys) != 3 || !strings.Contains(sys[2], now) {
+			t.Fatalf("clock not dynamic: %v %d", sys, b)
+		}
+		p := strings.Join(sys[:b], "\n")
+		if prefix != "" && p != prefix {
+			t.Fatal("clock invalidated cached prefix")
+		}
+		prefix = p
+	}
+}
+
 func TestDeferredSystem_NoGlobal(t *testing.T) {
-	// No global MCP names → plain single-segment system, no cache boundary.
+	// Static system caching must not depend on MCP tool availability.
 	sys, boundary := deferredSystem("SYS", DeferredInfo{})
-	if len(sys) != 1 || sys[0] != "SYS" || boundary != 0 {
-		t.Fatalf("expected [SYS],0 — got %v,%d", sys, boundary)
+	if len(sys) != 1 || sys[0] != "SYS" || boundary != 1 {
+		t.Fatalf("expected [SYS],1 — got %v,%d", sys, boundary)
 	}
 }
 

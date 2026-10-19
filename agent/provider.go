@@ -350,7 +350,9 @@ func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error
 	// them: norma builds the request body internally and decodes the SSE response
 	// before either reaches the recorder.
 	capt := llmrec.CaptureFrom(req.Context())
-	capt.SetRequest(requestBodySnapshot(req))
+	if capt != nil {
+		capt.SetRequest(requestBodySnapshot(req))
+	}
 
 	resp, err := t.base.RoundTrip(req)
 	if err != nil || resp == nil {

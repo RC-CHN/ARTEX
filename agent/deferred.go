@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/RC-CHN/ARTEX/norma/llm"
 	actool "github.com/RC-CHN/ARTEX/norma/tool"
@@ -13,17 +14,28 @@ import (
 // placed as the LAST system-prompt segment, with DynamicBoundary set so the whole
 // (session-fixed) system prompt — including the block — is cached (design doc
 // §2.1 / C1). Skill-gated MCP names are NOT in this block; they surface when their
-// skill loads. Returns a single plain segment + boundary 0 when there is no global
-// block to add.
+// skill loads. The stable system prefix is cached even without a global block;
+// per-turn time, when present, follows the boundary.
 func deferredSystem(sysText string, def DeferredInfo) (system []string, boundary int) {
+	dynamic := ""
+	if start := strings.Index(sysText, dynamicTimeStart); start >= 0 {
+		if end := strings.Index(sysText[start+len(dynamicTimeStart):], dynamicTimeEnd); end >= 0 {
+			end += start + len(dynamicTimeStart)
+			dynamic = sysText[start+len(dynamicTimeStart) : end]
+			sysText = sysText[:start] + sysText[end+len(dynamicTimeEnd):]
+		}
+	}
 	sysText += def.FindingGuidance
 	sysText += def.ExecutionGuidance
 	block := actool.RenderDeferredToolsBlock(def.GlobalNames)
-	if block == "" {
-		return []string{sysText}, 0
+	system = []string{sysText}
+	if block != "" {
+		system = append(system, block)
 	}
-	system = []string{sysText, block}
 	boundary = len(system) // b >= len → whole system prompt cached (SDK guard)
+	if dynamic != "" {
+		system = append(system, dynamic)
+	}
 	return system, boundary
 }
 

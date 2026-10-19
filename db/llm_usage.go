@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"sort"
 	"strconv"
 	"time"
@@ -66,11 +67,17 @@ func (d *DB) EnsureLLMUsageTable() error {
 // InsertLLMUsage appends one metering row. Best-effort: callers log and continue on
 // error (a lost metering row must never break the LLM call).
 func (d *DB) InsertLLMUsage(u *LLMUsage) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	return d.InsertLLMUsageContext(ctx, u)
+}
+
+func (d *DB) InsertLLMUsageContext(ctx context.Context, u *LLMUsage) error {
 	var expID any
 	if u.ExplorationID > 0 {
 		expID = u.ExplorationID
 	}
-	_, err := d.Exec(`
+	_, err := d.ExecContext(ctx, `
 INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status)
 VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11)`,
 		u.TaskID, expID, u.Worker, u.Model, u.ProfileName,

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"reflect"
 	"strings"
 	"text/template"
 	"time"
@@ -17,6 +18,9 @@ var PromptOverride func(agentKey string) (string, bool)
 // run, including local execution and custom agents. Notes are literal text,
 // never a Go template or a source of process environment variables.
 var EnvironmentPrompt func() string
+
+const dynamicTimeStart = "\n\n<artex-dynamic-time>"
+const dynamicTimeEnd = "</artex-dynamic-time>"
 
 func EnvironmentPromptBlock(title, notes string) string {
 	if strings.TrimSpace(notes) == "" {
@@ -60,13 +64,30 @@ func renderSystem(agentKey, def string, vars any) string {
 		}
 	}
 	if out, err := renderTmpl(tmpl, vars); err == nil {
-		return out + environment
+		return separatePromptTime(out+environment, vars)
 	}
 	// DB template broke (e.g. references an out-of-catalog var) → code default.
 	if out, err := renderTmpl(def, vars); err == nil {
-		return out + environment
+		return separatePromptTime(out+environment, vars)
 	}
 	return def + environment
+}
+
+// Render conditionals normally, then move emitted wall-clock values to a
+// dynamic suffix. Custom templates keep their semantics and see the real time.
+func separatePromptTime(out string, vars any) string {
+	v := reflect.ValueOf(vars)
+	if v.Kind() == reflect.Pointer && !v.IsNil() {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return out
+	}
+	f := v.FieldByName("Now")
+	if !f.IsValid() || f.Kind() != reflect.String || f.String() == "" || !strings.Contains(out, f.String()) {
+		return out
+	}
+	return strings.ReplaceAll(out, f.String(), "（见本轮时间说明）") + dynamicTimeStart + "本轮时间说明：" + f.String() + dynamicTimeEnd
 }
 
 func renderTmpl(tmpl string, vars any) (string, error) {
