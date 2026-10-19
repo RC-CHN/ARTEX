@@ -43,6 +43,13 @@ type DiagnosticStore interface {
 	SaveDiagnostic(context.Context, uint64, json.RawMessage, []SessionStatus) (uint64, error)
 }
 
+// MetadataStore updates only existing node/session metadata fragments. A pure
+// lease renewal must not encode, hash or fetch immutable execution history.
+// Keys use the same JSON path/chunk convention as the full checkpoint store.
+type MetadataStore interface {
+	SaveMetadata(context.Context, uint64, map[string]json.RawMessage, []SessionStatus) (uint64, error)
+}
+
 // ProgressiveStore enforces its own inactivity timeout and may keep making
 // bounded progress beyond the default five seconds. Hub still caps the total
 // wait by already-issued leases and the caller's cancellation/deadline.

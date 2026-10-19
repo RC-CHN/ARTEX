@@ -283,6 +283,7 @@ func (h *Hub) pollContext(ctx context.Context, req PollRequest, authenticated st
 	now := h.opts.Clock()
 	changed := h.expireLocked()
 	bootChanged := n.BootID != req.BootID
+	metadataOnly := !changed && !bootChanged && len(req.Notifications) == 0
 	if bootChanged {
 		fencing = true
 		delete(h.poolStatus, n.ID)
@@ -375,7 +376,11 @@ func (h *Hub) pollContext(ctx context.Context, req PollRequest, authenticated st
 	if bootChanged {
 		err = h.saveFenceContextLocked(ctx)
 	} else if changed {
-		err = h.saveContextLocked(ctx)
+		if metadataOnly {
+			err = h.saveLeaseMetadataLocked(ctx)
+		} else {
+			err = h.saveContextLocked(ctx)
+		}
 	} else {
 		// Still fence a superseded controller before returning any lease. A
 		// revision check is cheap and does not rewrite historical tool output.

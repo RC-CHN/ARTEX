@@ -16,24 +16,26 @@ import (
 )
 
 type Hub struct {
-	id            string // immutable identity, also used as the controller epoch
-	mu            contextMutex
-	observer      brokerObserver
-	opts          Options
-	state         persistedState
-	revision      uint64
-	lastSaved     json.RawMessage
-	durableLeases map[string]time.Time // last committed, never the pending renewal
-	wake          chan struct{}
-	stop          chan struct{}
-	done          chan struct{}
-	stopOnce      sync.Once
-	closed        bool
-	reopenMu      sync.Mutex
-	reopened      bool
-	redeliver     map[string]time.Time // transport hints only; never authorize execution
-	warmProfiles  []WarmProfile
-	poolStatus    map[string]PoolStatus
+	id              string // immutable identity, also used as the controller epoch
+	mu              contextMutex
+	observer        brokerObserver
+	opts            Options
+	state           persistedState
+	revision        uint64
+	lastSaved       json.RawMessage
+	durableLeases   map[string]time.Time // last committed, never the pending renewal
+	durableNodeSeen map[string]time.Time
+	metadataOverlay bool // committed lease metadata newer than lastSaved
+	wake            chan struct{}
+	stop            chan struct{}
+	done            chan struct{}
+	stopOnce        sync.Once
+	closed          bool
+	reopenMu        sync.Mutex
+	reopened        bool
+	redeliver       map[string]time.Time // transport hints only; never authorize execution
+	warmProfiles    []WarmProfile
+	poolStatus      map[string]PoolStatus
 }
 
 func New(opts Options) (*Hub, error) {
@@ -163,14 +165,23 @@ func (h *Hub) saveContextLocked(parent context.Context) (err error) {
 		return err
 	}
 	h.revision, h.lastSaved = rev, raw
+	h.metadataOverlay = false
+	h.rememberLeaseMetadataLocked()
+	h.signalLocked()
+	return nil
+}
+
+func (h *Hub) rememberLeaseMetadataLocked() {
 	h.durableLeases = make(map[string]time.Time)
+	h.durableNodeSeen = make(map[string]time.Time)
+	for id, n := range h.state.Nodes {
+		h.durableNodeSeen[id] = n.LastSeen
+	}
 	for id, s := range h.state.Sessions {
 		if s.live() {
 			h.durableLeases[id] = s.LeaseUntil
 		}
 	}
-	h.signalLocked()
-	return nil
 }
 
 func (h *Hub) checkpointTimeoutLocked() time.Duration {
@@ -197,6 +208,18 @@ func (h *Hub) restoreLocked() error {
 		}
 		state, err := decodeState(h.lastSaved)
 		if err == nil {
+			if h.metadataOverlay {
+				for id, seen := range h.durableNodeSeen {
+					if n := state.Nodes[id]; n != nil {
+						n.LastSeen = seen
+					}
+				}
+				for id, until := range h.durableLeases {
+					if s := state.Sessions[id]; s != nil {
+						s.LeaseUntil = until
+					}
+				}
+			}
 			h.state = state
 		}
 		return err
