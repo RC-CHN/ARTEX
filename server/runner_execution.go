@@ -428,7 +428,7 @@ func (s *Server) runnerTools() []actool.CoreTool {
 	if !cfg.Enabled {
 		return nil
 	}
-	return []actool.CoreTool{actool.Build(actool.Spec{Name: "list_runners", Description: "查看实验性执行节点的在线状态、并发槽、CPU/内存/GPU、标签和环境。创建意图前按需要调用，再在 add_intent 的 runner 字段声明 node_id/environment/labels/resources；不要假设每台机器都有 GPU 或相同网络。活跃线程固定执行节点，资源不足排队，不能自动退回本机。", Schema: map[string]any{"type": "object", "properties": map[string]any{}}, ReadOnly: func(json.RawMessage) bool { return true }, Concurrent: func(json.RawMessage) bool { return true }, Permissions: func(context.Context, json.RawMessage, permission.Context) permission.Decision {
+	return []actool.CoreTool{actool.Build(actool.Spec{Name: "list_runners", Description: "查看实验性执行节点的在线状态、并发槽、CPU/内存/GPU、标签、环境和 file_mode（shared 直接挂载共享存储；snapshot 需要文件同步）。创建意图前按需要调用，再在 add_intent 的 runner 字段声明 node_id/environment/labels/resources；大量文件或大文件优先选择满足其他要求的 shared 环境，不要假设每台机器都有 GPU、相同网络或共享卷。活跃线程固定执行节点，资源不足排队，不能自动退回本机。", Schema: map[string]any{"type": "object", "properties": map[string]any{}}, ReadOnly: func(json.RawMessage) bool { return true }, Concurrent: func(json.RawMessage) bool { return true }, Permissions: func(context.Context, json.RawMessage, permission.Context) permission.Decision {
 		return permission.Allowed()
 	}, Run: func(context.Context, json.RawMessage, *actool.ToolContext) (actool.Result, error) {
 		c, h, err := s.runnerSnapshot()
@@ -444,14 +444,60 @@ func (s *Server) runnerTools() []actool.CoreTool {
 func runnerEnvironmentSummary(c runnerConfig) map[string]any {
 	out := map[string]any{}
 	for name, e := range c.Environments {
-		out[name] = map[string]any{"resources": e.Resources, "labels": e.Labels}
+		mode := e.FileMode
+		if mode == "" {
+			mode = "snapshot"
+		}
+		out[name] = map[string]any{"resources": e.Resources, "labels": e.Labels, "file_mode": mode}
 	}
 	return out
 }
 
-func runnerFileGuidance(plan runnerfiles.Plan) string {
-	if plan.Mode == runnerfiles.SharedMode {
-		return "。文件采用共享存储直接挂载，无需同步或发布操作；读写实时可见（受文件系统缓存约束），没有快照版本冲突检测。不要同时覆盖同一个文件；协作产物使用唯一文件名，先写同目录临时文件再原子重命名，避免其他线程读到未完成内容。HOME、/tmp 和 /workspace 为本次执行私有临时空间，结束即回收；需恢复的结果写入任务目录。"
+// Describe only sandbox-visible paths from this run's mount plan. Keep the block
+// stable during a run; live capacity and directory listings belong in tool calls.
+func runnerFileGuidance(plan runnerfiles.Plan, workingDir string) string {
+	var b strings.Builder
+	b.WriteString("\n\n【当前执行的文件系统与大文件处理】\n")
+	fmt.Fprintf(&b, "当前工作目录（默认 CWD）：%q；相对输出路径落在这里。\n", workingDir)
+	var workspace *runnerfiles.Mount
+	hasPublished := false
+	for i := range plan.Mounts {
+		mount := &plan.Mounts[i]
+		switch mount.Name {
+		case "workspace":
+			workspace = mount
+			fmt.Fprintf(&b, "工作区可读根目录：%q。允许写入的目录（含子目录）：", mount.Target)
+			if len(mount.Writable) == 0 {
+				b.WriteString("无")
+			}
+			for j, prefix := range mount.Writable {
+				if j > 0 {
+					b.WriteString("、")
+				}
+				fmt.Fprintf(&b, "%q", filepath.Join(mount.Target, prefix))
+			}
+			b.WriteString("；可读不代表可写。\n")
+		case "published":
+			hasPublished = true
+			fmt.Fprintf(&b, "同任务产物的只读目录：%q（含 shared/ 和各 i<id>/），不可作为输出目录。\n", mount.Target)
+		}
 	}
-	return "。文件采用版本快照，同任务已发布产物在工具调用前刷新；读取新结果使用只读产物目录，原可写目录不会被下载覆盖。共享目录发布有版本冲突检测；冲突时保留现场，不重放已经执行的工具。快照准备上限为 10,000 个文件、1 GiB；超限需缩小输入范围或使用共享存储。"
+	if workspace != nil && hasPublished {
+		for _, prefix := range workspace.Writable {
+			if prefix == "." || prefix == "shared" {
+				fmt.Fprintf(&b, "需要跨线程协作时可写任务协作目录：%q；自己的中间产物优先留在当前工作目录，避免公共目录重名覆盖。\n", filepath.Join(workspace.Target, "shared"))
+				break
+			}
+		}
+	}
+	if plan.Mode == runnerfiles.SharedMode {
+		b.WriteString("文件模式：shared。上面的工作区直接挂载持久共享存储，Worker 自己的 i<id>/ 工作目录也在共享卷上；执行结束后文件保留，无需额外同步或搬到 shared/ 才能保存。大文件、下载、抓包、归档、批量输出应从一开始直接写入允许的工作目录，不要先放 /tmp 再搬运。\n")
+		b.WriteString("同任务读写实时可见（受文件系统缓存约束），没有快照版本冲突检测。不要同时覆盖同一个文件；协作产物使用唯一文件名，先写目标目录内的临时文件，完成后原子重命名，避免其他线程读到未完成内容。共享存储仍有容量和 I/O 限制，开始大规模写入前按需检查目标卷可用空间（例如 df -h）。\n")
+		b.WriteString("HOME（256 MiB）和 /tmp（512 MiB）是本次执行的内存临时卷，占用容器内存；未被任务卷覆盖的 /workspace 是 512 MiB 临时空间。这些空间结束即回收，不用于大文件或需要保留的结果。\n")
+	} else {
+		b.WriteString("文件模式：snapshot。文件采用版本快照，同任务已发布产物在工具调用前刷新；读取新结果使用只读产物目录，原可写目录不会被下载覆盖。任务 shared/ 也需要同步，不是直接挂载的共享卷，写到这里不能绕过同步成本或上限。发布有版本冲突检测；冲突时保留现场，不重放已经执行的工具。\n")
+		b.WriteString("快照准备上限为全部挂载合计 10,000 个文件、1 GiB；单文件同步默认最多 1 GiB，文件变化后整份传输，尚无断点续传。预计超过上限或产生大量数据时，先通过 list_runners 查看 file_mode，交由编排器在满足其他要求的 shared 环境安排执行，或缩小输入/输出范围；当前执行不能靠改路径切换文件模式。\n")
+	}
+	b.WriteString("需要大量临时空间的程序，应显式指定当前工作目录下独占的临时子目录；支持时为该命令设置 TMPDIR/TMP/TEMP 或工具的临时目录参数，完成后只清理本次创建的临时文件。大响应、大日志和二进制内容直接写文件，工具返回及汇报仅给出文件路径、大小和必要摘要，不要把完整内容或 base64 塞进工具输出、对话或事实记录。")
+	return b.String()
 }

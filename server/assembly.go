@@ -185,12 +185,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 			def.ExecutionGuidance += rt.EnvironmentTools().Prompt()
 			var plan runnerfiles.Plan
 			if json.Unmarshal(rt.spec.Files, &plan) == nil {
-				def.ExecutionGuidance += runnerFileGuidance(plan)
-				for _, mount := range plan.Mounts {
-					if mount.Name == "published" {
-						def.ExecutionGuidance += "。同任务产物的只读目录：" + mount.Target + "（含 shared/ 和各 i<id>/）。写入仍使用原工作目录及任务 shared/。"
-					}
-				}
+				def.ExecutionGuidance += runnerFileGuidance(plan, rt.spec.WorkingDir)
 			}
 		}
 		return extra, def, cleanup

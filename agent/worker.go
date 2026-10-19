@@ -269,17 +269,17 @@ func workerTrafficBlock(recording bool) string {
 }
 
 // artifactSpec is 段 [C]: the code-owned, non-editable tail appended to every
-// pentest agent's prompt — intermediate artifacts must land in the shared work
-// dir, never /tmp. Guaranteed present regardless of how the DB body is edited.
+// pentest agent's prompt — artifacts belong in the working directory or an
+// explicitly allowed collaboration directory. Present even with a custom body.
 func artifactSpec(dir string) string {
-	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本任务工作目录 " + dir + "**（相对路径即写在这里，也可用该绝对路径）——**不要写 /tmp、不要用其它绝对路径**。"
+	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等中间产物，**默认写到本任务工作目录 " + dir + "**（相对路径即写在这里，也可用该绝对路径）。如执行环境另列出允许写入的任务协作目录，可按协作需要使用；不要写入未授权路径。大文件直接输出到允许的工作目录，不要先写 /tmp 再搬运，也不要将完整内容塞进工具输出；汇报路径和必要摘要。"
 }
 
 // workerArtifactSpec is the worker's 段 [C]: its per-intent run dir is pre-created
 // by the engine (ensureRunDir), so it just writes relative paths there — no manual
 // mkdir, no cross-worker name collisions.
 func workerArtifactSpec(runDir string) string {
-	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本次意图的专属工作目录 " + runDir + "**（已自动建好，直接用相对路径写在这里即可，无需再手动建目录）——**不要写 /tmp、不要用其它绝对路径**。"
+	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等中间产物，**默认写到本次意图的专属工作目录 " + runDir + "**（已自动建好，直接用相对路径写在这里即可）。如执行环境另列出允许写入的任务协作目录，可按协作需要使用；不要写入其他 Worker 的目录或未授权路径。大文件直接输出到允许的工作目录，不要先写 /tmp 再搬运，也不要将完整内容塞进工具输出；汇报路径和必要摘要。"
 }
 
 // ensureRunDir builds and creates an agent's working directory under base:
