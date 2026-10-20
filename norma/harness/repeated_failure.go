@@ -17,7 +17,7 @@ type failureStreak struct {
 // Only completed error results count. Successful polling and long-running tools
 // never trigger this guidance. Bounded per-run state contains no payload copies.
 func (l *loop) noteRepeatedFailures(uses, results []llm.ContentBlock) {
-	if l.ctx.Err() != nil || l.settling {
+	if l.ctx.Err() != nil || l.settling.Load() {
 		return
 	}
 	byID := map[string]llm.ContentBlock{}

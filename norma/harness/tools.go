@@ -27,7 +27,7 @@ func acceptsRawInput(t tool.CoreTool) bool {
 // executor's goroutines (read-only access to loop config; permission/hook
 // callbacks are the host's responsibility to make safe).
 func (l *loop) execOne(toolCtx context.Context, use llm.ContentBlock, emitProgress func(tool.ProgressInfo)) (llm.ContentBlock, []llm.Message) {
-	if l.settling && l.in.Settlement != nil {
+	if l.settling.Load() && l.in.Settlement != nil {
 		name, input := use.Name, use.Input
 		for depth := 0; name == tool.ExecuteExtraToolName && depth < 8; depth++ {
 			var a struct {

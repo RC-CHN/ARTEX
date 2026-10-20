@@ -259,8 +259,10 @@ type loop struct {
 	boundaryCount   int       // boundary markers already seen, so Recorder fires once each
 	startTime       time.Time // loop start, for MaxDuration (wall-clock budget)
 
-	// settlement (wrap-up) phase state, entered when a budget is hit
-	settling     bool
+	// Tool admission reads the phase from streaming goroutines. A deadline can
+	// let the loop enter settlement before those goroutines finish, so this flag
+	// must be atomic. The remaining settlement state belongs to the loop only.
+	settling     atomic.Bool
 	settleReason TerminalReason // the budget reason to finish with after wrap-up
 	settleTurn   int
 
@@ -433,7 +435,7 @@ func (l *loop) run() {
 
 		l.injectHostNotices()
 		if l.in.TurnBudget != nil {
-			d, err := l.in.TurnBudget.BeforeTurn(l.ctx, l.settling)
+			d, err := l.in.TurnBudget.BeforeTurn(l.ctx, l.settling.Load())
 			if err != nil {
 				l.finish(ReasonExecutionError, fmt.Errorf("reserve model turn budget: %w", err), "")
 				return
@@ -444,11 +446,11 @@ func (l *loop) run() {
 				l.record(msg, llm.Usage{})
 			}
 			if !d.Allowed {
-				if d.Settle && !l.settling && l.beginSettlement(ReasonMaxTurns, &schemas) {
+				if d.Settle && !l.settling.Load() && l.beginSettlement(ReasonMaxTurns, &schemas) {
 					continue
 				}
 				reason := ReasonMaxTurns
-				if l.settling {
+				if l.settling.Load() {
 					reason = l.settleReason
 				}
 				l.finish(reason, nil, "")
@@ -557,7 +559,7 @@ func (l *loop) run() {
 			// During the wrap-up phase, a natural stop ends the run with the ORIGINAL
 			// budget reason (not "completed") — the run was budget-terminated; the
 			// settlement is just a checkpoint. Skip the keep-working nudges below.
-			if l.settling {
+			if l.settling.Load() {
 				l.finish(l.settleReason, nil, asst.Text())
 				return
 			}
@@ -624,7 +626,7 @@ func (l *loop) run() {
 		// still checkpoints its findings. Mid-tool interrupts are always time-driven
 		// (MaxTurns is only ever checked at the turn boundary), hence ReasonTimeout.
 		if aborted {
-			if l.settling {
+			if l.settling.Load() {
 				l.finish(l.settleReason, nil, "")
 				return
 			}
@@ -639,7 +641,7 @@ func (l *loop) run() {
 
 		// next_turn: only tool-turns advance turnCount.
 		l.stopHookActive = false // a real turn happened; stop hooks may fire fresh
-		if l.settling {
+		if l.settling.Load() {
 			// wrap-up phase: bounded by its own small turn budget. When spent, finish
 			// with the original budget reason (not "completed").
 			l.settleTurn++
@@ -697,7 +699,7 @@ func (l *loop) beginSettlement(reason TerminalReason, schemas *[]llm.ToolSchema)
 	msg := llm.UserText(prompt)
 	l.messages = append(l.messages, msg)
 	l.record(msg, llm.Usage{})
-	l.settling = true
+	l.settling.Store(true)
 	l.settleReason = reason
 	l.settleTurn = 0
 	if len(s.DisabledTools) > 0 {

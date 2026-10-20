@@ -17,7 +17,7 @@ func WithTurnNotices(ctx context.Context, source func(context.Context, []llm.Mes
 
 func (l *loop) injectHostNotices() bool {
 	source, _ := l.ctx.Value(turnNoticesKey{}).(func(context.Context, []llm.Message) string)
-	if source == nil || l.ctx.Err() != nil || l.settling {
+	if source == nil || l.ctx.Err() != nil || l.settling.Load() {
 		return false
 	}
 	text := source(l.ctx, l.messages)

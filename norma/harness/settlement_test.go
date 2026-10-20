@@ -111,7 +111,8 @@ func TestSettlementRejectsDirectAndDeferredCommands(t *testing.T) {
 	dir := t.TempDir()
 	registry := tool.NewRegistry(tool.NewBash())
 	registry.Add(tool.NewExecuteExtraTool(registry, nil))
-	l := &loop{ctx: ctx, settling: true, in: QueryInput{Tools: registry, WorkingDir: dir, PermissionMode: permission.ModeBypass, Settlement: &Settlement{DisabledTools: []string{"Bash"}}}}
+	l := &loop{ctx: ctx, in: QueryInput{Tools: registry, WorkingDir: dir, PermissionMode: permission.ModeBypass, Settlement: &Settlement{DisabledTools: []string{"Bash"}}}}
+	l.settling.Store(true)
 	command := json.RawMessage(`{"command":"touch unexpected-side-effect"}`)
 	names := []string{"Bash", tool.ExecuteExtraToolName, tool.ExecuteExtraToolName}
 	inputs := []json.RawMessage{command}
@@ -129,7 +130,7 @@ func TestSettlementRejectsDirectAndDeferredCommands(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "unexpected-side-effect")); !os.IsNotExist(err) {
 		t.Fatal("disabled tool executed", err)
 	}
-	l.settling = false
+	l.settling.Store(false)
 	result, _ := l.execOne(ctx, llm.ContentBlock{ID: "allowed", Name: "Bash", Input: command}, nil)
 	if result.IsError {
 		t.Fatal("normal phase rejected command", result)
