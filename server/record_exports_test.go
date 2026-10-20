@@ -37,6 +37,11 @@ func TestRecordExportToolsPackageAndBoundaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, _ := strconv.ParseInt(task.ID, 10, 64)
+	t.Cleanup(func() {
+		if _, err := s.m.pg.Exec(`DELETE FROM task_record_exports WHERE task_ids @> jsonb_build_array($1::bigint)`, id); err != nil {
+			t.Error(err)
+		}
+	})
 	other, err := s.m.CreateTask("OTHER_TASK_SENTINEL", "private synthetic unrelated", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +197,7 @@ func TestRecordExportToolsPackageAndBoundaries(t *testing.T) {
 	if response.Code != 206 || response.Body.Len() != 10 {
 		t.Fatalf("range download %d %d", response.Code, response.Body.Len())
 	}
-	redacted, err := s.m.pg.QueueRecordExport(t.Context(), db.RecordExportRequest{TaskIDs: []int64{id}, Redacted: true, RequestID: "redacted"}, 0)
+	redacted, err := s.m.pg.QueueRecordExport(t.Context(), db.RecordExportRequest{TaskIDs: []int64{id}, Redacted: true, RequestID: fmt.Sprint("redacted-", id)}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +215,12 @@ func TestRecordExportToolsPackageAndBoundaries(t *testing.T) {
 	call(map[string]any{"action": "retry", "id": cid}, false)
 	call(map[string]any{"action": "list"}, false)
 	otherID, _ := strconv.ParseInt(other.ID, 10, 64)
-	foreign, err := s.m.pg.QueueRecordExport(t.Context(), db.RecordExportRequest{TaskIDs: []int64{otherID}, RequestID: "foreign-export"}, 0)
+	t.Cleanup(func() {
+		if _, err := s.m.pg.Exec(`DELETE FROM task_record_exports WHERE task_ids @> jsonb_build_array($1::bigint)`, otherID); err != nil {
+			t.Error(err)
+		}
+	})
+	foreign, err := s.m.pg.QueueRecordExport(t.Context(), db.RecordExportRequest{TaskIDs: []int64{otherID}, RequestID: fmt.Sprint("foreign-export-", otherID)}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

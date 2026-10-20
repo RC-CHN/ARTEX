@@ -74,7 +74,8 @@ func TestRecordExportLeaseFencesCanceledAndStaleWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	in := RecordExportRequest{TaskIDs: []int64{task.ID}, RequestID: "lease-once"}
+	defer d.Exec(`DELETE FROM task_record_exports WHERE task_ids @> jsonb_build_array($1::bigint)`, task.ID)
+	in := RecordExportRequest{TaskIDs: []int64{task.ID}, RequestID: fmt.Sprint("lease-once-", task.ID)}
 	job, err := d.QueueRecordExport(t.Context(), in, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -128,7 +129,8 @@ func TestRecordExportRetryRespectsCapacityAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	job, err := d.QueueRecordExport(t.Context(), RecordExportRequest{TaskIDs: []int64{task.ID}, RequestID: "cancel-first"}, 0)
+	defer d.Exec(`DELETE FROM task_record_exports WHERE task_ids @> jsonb_build_array($1::bigint)`, task.ID)
+	job, err := d.QueueRecordExport(t.Context(), RecordExportRequest{TaskIDs: []int64{task.ID}, RequestID: fmt.Sprint("cancel-first-", task.ID)}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +139,7 @@ func TestRecordExportRetryRespectsCapacityAndIsIdempotent(t *testing.T) {
 	}
 	var last RecordExport
 	for i := 0; i < 10; i++ {
-		last, err = d.QueueRecordExport(t.Context(), RecordExportRequest{TaskIDs: []int64{task.ID}, RequestID: fmt.Sprint("capacity-", i)}, 0)
+		last, err = d.QueueRecordExport(t.Context(), RecordExportRequest{TaskIDs: []int64{task.ID}, RequestID: fmt.Sprintf("capacity-%d-%d", task.ID, i)}, 0)
 		if err != nil {
 			t.Fatal(err)
 		}

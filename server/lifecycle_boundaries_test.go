@@ -70,7 +70,12 @@ func TestRecordExportOrphanCleanupKeepsLiveOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, _ := strconv.ParseInt(task.ID, 10, 64)
-	if _, err = s.m.pg.QueueRecordExport(t.Context(), db.RecordExportRequest{TaskIDs: []int64{id}, RequestID: "gc"}, 0); err != nil {
+	t.Cleanup(func() {
+		if _, err := s.m.pg.Exec(`DELETE FROM task_record_exports WHERE task_ids @> jsonb_build_array($1::bigint)`, id); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err = s.m.pg.QueueRecordExport(t.Context(), db.RecordExportRequest{TaskIDs: []int64{id}, RequestID: fmt.Sprint("gc-", id)}, 0); err != nil {
 		t.Fatal(err)
 	}
 	job, err := s.m.pg.ClaimRecordExport(t.Context(), "LiveOwner")
