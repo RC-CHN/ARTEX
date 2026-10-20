@@ -47,7 +47,7 @@ func TestPrepareExecutionDisabledAndFailureCleanup(t *testing.T) {
 	PrepareExecution = nil
 	ctx := WithRunInfo(t.Context(), RunInfo{SessionID: "local"})
 	next, runtime, cleanup, err := prepareExecution(ctx, "chat", t.TempDir())
-	if err != nil || runtime != nil || next != ctx {
+	if err != nil || runtime != nil || RunInfoFrom(next).SessionID != "local" || RunInfoFrom(next).AgentKey != "chat" {
 		t.Fatalf("disabled hook changed local behavior: %v", err)
 	}
 	cleanup()
@@ -109,13 +109,17 @@ func TestTaskExecutionPreparedBeforeToolAssembly(t *testing.T) {
 	saveExecutionHooks(t)
 	for _, role := range []string{"worker", "planner", "mainagent"} {
 		t.Run(role, func(t *testing.T) {
-			expID, err := d.CreateExploration("execution fixture", "read the remote artifact")
+			task, err := d.CreateTaskWithOptions("execution fixture", "read the remote artifact", db.TaskCreateOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
+			expID := task.ExplorationID
 			ts := d.Exploration(expID)
-			t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM explorations WHERE id=$1`, expID) })
-			info := RunInfo{TaskID: expID, ExplorationID: expID}
+			t.Cleanup(func() {
+				_, _ = d.Exec(`DELETE FROM tasks WHERE id=$1`, task.ID)
+				_, _ = d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+			})
+			info := RunInfo{TaskID: task.ID, ExplorationID: expID}
 			if role == "worker" {
 				info.IntentID, err = ts.AddNode("intent", map[string]any{"summary": "read the remote artifact"}, 0, "running", "planner", nil)
 				if err != nil {
@@ -145,7 +149,9 @@ func verifyExecutionEntry(t *testing.T, role string, info RunInfo, ts *db.Explor
 	prepared, assembled, cleaned := 0, 0, 0
 	PrepareExecution = func(ctx context.Context, key string, got RunInfo, cwd string) (context.Context, tool.ExecutionRuntime, func(), error) {
 		prepared++
-		if key != role || got != info || cwd != expectedDir {
+		want := info
+		want.AgentKey = role
+		if key != role || got != want || cwd != expectedDir {
 			t.Errorf("wrong preparation scope: %s %+v %s", key, got, cwd)
 		}
 		if fi, err := os.Stat(cwd); err != nil || !fi.IsDir() {

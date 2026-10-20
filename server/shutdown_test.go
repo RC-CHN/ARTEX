@@ -159,7 +159,7 @@ func TestShutdownWorkerCanResumeAfterRestart(t *testing.T) {
 					return llm.Message{}, "", llm.Usage{}, ctx.Err()
 				}
 				return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("partial result")}}, "end_turn", llm.Usage{}, nil
-			}}, "test", dir, nil, 10000, 1)
+			}}, "test", dir, nil, 10000, 2)
 			worker.SetNonStreaming(func() bool { return true })
 			e := NewEngine(m)
 			e.deleteMu.RLock()
@@ -204,7 +204,7 @@ func TestShutdownWorkerCanResumeAfterRestart(t *testing.T) {
 			}
 			resumedWorker := agent.NewWorker(retestProvider{complete: func(context.Context, llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 				return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.TextBlock("finished after restart")}}, "end_turn", llm.Usage{}, nil
-			}}, "test", dir, nil, 10000, 1)
+			}}, "test", dir, nil, 10000, 2)
 			resumedWorker.SetNonStreaming(func() bool { return true })
 			resumed := NewEngine(restarted)
 			if !resumed.beginTaskOperation(task.ID) {

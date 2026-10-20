@@ -20,6 +20,9 @@ import (
 var PrepareExecution func(context.Context, string, RunInfo, string) (context.Context, tool.ExecutionRuntime, func(), error)
 
 func prepareExecution(ctx context.Context, agentKey, workDir string) (context.Context, tool.ExecutionRuntime, func(), error) {
+	info := RunInfoFrom(ctx)
+	info.AgentKey = agentKey
+	ctx = WithRunInfo(ctx, info)
 	if PrepareExecution == nil {
 		return ctx, nil, func() {}, nil
 	}

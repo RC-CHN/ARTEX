@@ -393,6 +393,17 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 	// 收敛工具面、减少低价值调用。其余 SDK 默认工具(Read/Write/Edit/LS/Bash/Sleep)照常。
 	base = append(base, defaultToolsExcept("MultiEdit", "Glob", "Grep")...)
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts), IntentID: intent.ID})
+	var budget harness.TurnBudget
+	if ts != nil && taskID > 0 {
+		b, err := ts.EnsureWorkerBudget(ctx, taskID, intent.ID, w.maxTurns, resolveWrapupTurns("worker"))
+		if err != nil {
+			return harness.ReasonExecutionError, WriteCounts{}, fmt.Errorf("initialize worker budget: %w", err)
+		}
+		if b.Phase == "exhausted" {
+			return harness.ReasonMaxTurns, WriteCounts{}, nil
+		}
+		budget = &workerTurnBudget{store: ts, taskID: taskID, intentID: intent.ID}
+	}
 	runDir := ensureRunDir(w.workDir, taskID, intent.ID)
 	ctx, runtime, releaseExecution, err := prepareExecution(ctx, "worker", runDir)
 	if err != nil {
@@ -482,6 +493,7 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		// clamped(被任务 deadline 夹逼)时用 PromptByReason:因超时=任务到点→任务超时词,
 		// 因步数=夹逼窗口内步数先耗尽→回落 per-run 词。非 clamped 维持纯 per-run。
 		Settlement: settle,
+		TurnBudget: budget,
 		// large tool output spills to cmd-output/ with a head + pointer (SDK tool.Capture);
 		// full output preserved on disk. 截断上限用 SDK 默认(30000 字符)。
 		ToolOutputDir: cmdOutDir(runDir),
@@ -490,6 +502,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		NonStreaming:  w.nonStreaming(),                       // 该 profile 选非流式时走 Provider.Complete
 		MaxTokens:     w.maxTokens(),                          // 0 = 不发上限,由服务端默认值决定
 	}
+	if budget != nil {
+		opts.MaxTurns = 0
+	} // durable reservations replace per-run counts
 	replyHooks := &mainReplyHooks{inner: hooks, ts: ts, intentID: intent.ID, store: w.tx, sessionID: WorkerSessionID(ts.ID(), intent.ID)}
 	opts.Hooks = replyHooks
 	replyHooks.acknowledge()

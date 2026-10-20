@@ -157,6 +157,7 @@ type Options struct {
 	// (MaxTurns/MaxDuration) is hit — injecting the prompt and hiding DisabledTools —
 	// so a budget-terminated run checkpoints its findings. See harness.Settlement.
 	Settlement     *harness.Settlement
+	TurnBudget     harness.TurnBudget
 	MaxTokens      int
 	Temperature    *float64
 	MaxConcurrency int
@@ -526,6 +527,7 @@ func (s *Session) Prompt(ctx context.Context, input string) iter.Seq2[harness.Ev
 		MaxTurns:           s.opts.MaxTurns,
 		MaxDuration:        s.opts.MaxDuration,
 		Settlement:         s.opts.Settlement,
+		TurnBudget:         s.opts.TurnBudget,
 		MaxConcurrency:     s.opts.MaxConcurrency,
 		WorkingDir:         s.opts.WorkingDir,
 		Todos:              s.opts.Todos,

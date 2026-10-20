@@ -16,6 +16,7 @@ import (
 //
 // Zero value = attribution unknown; every consumer must treat it as optional.
 type RunInfo struct {
+	AgentKey      string // host-assigned role; never accepted from tool input
 	TaskID        int64  // task registry id; 0 for non-task runs (chat sessions)
 	ExplorationID int64  // exploration id; 0 when unknown
 	IntentID      int64  // worker's intent node; 0 for planner/mainagent/chat

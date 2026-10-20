@@ -644,6 +644,7 @@ func splitLines(s string) []string {
 func (t *ToolSet) WorkerTools() []actool.CoreTool {
 	return []actool.CoreTool{
 		t.askMainAgent(),
+		t.getWorkerBudget(),
 		// list_findings 保留：报漏洞前先查本任务已确认漏洞，避免重复上报同一漏洞。
 		t.listFindings(),
 		t.addFinding(), t.recordFact(),
@@ -665,6 +666,7 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 	return []actool.CoreTool{
 		t.listMainRequests(), t.replyToWorker(),
+		t.getWorkerBudget(), t.grantWorkerBudget(),
 		t.graphOverview(), t.listFindings(), t.listFacts(), t.nodeDetail(),
 		t.expandDigest(), // cold-digest §6.1
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.addHint(), t.addIntent(),

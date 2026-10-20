@@ -2,7 +2,10 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"iter"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -99,4 +102,39 @@ func contains(xs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// A model can still emit an advertised-in-an-earlier-turn tool. Enforce the
+// phase at execution too, including deferred and nested wrappers.
+func TestSettlementRejectsDirectAndDeferredCommands(t *testing.T) {
+	ctx := t.Context()
+	dir := t.TempDir()
+	registry := tool.NewRegistry(tool.NewBash())
+	registry.Add(tool.NewExecuteExtraTool(registry, nil))
+	l := &loop{ctx: ctx, settling: true, in: QueryInput{Tools: registry, WorkingDir: dir, PermissionMode: permission.ModeBypass, Settlement: &Settlement{DisabledTools: []string{"Bash"}}}}
+	command := json.RawMessage(`{"command":"touch unexpected-side-effect"}`)
+	names := []string{"Bash", tool.ExecuteExtraToolName, tool.ExecuteExtraToolName}
+	inputs := []json.RawMessage{command}
+	for i := 0; i < 2; i++ {
+		wrapped, _ := json.Marshal(map[string]any{"tool_name": names[i], "params": inputs[i]})
+		inputs = append(inputs, wrapped)
+	}
+	for i, name := range names {
+		result, _ := l.execOne(ctx, llm.ContentBlock{ID: "blocked", Name: name, Input: inputs[i]}, nil)
+		encoded, _ := json.Marshal(result)
+		if !result.IsError || !strings.Contains(string(encoded), "settlement_tool_disabled") {
+			t.Fatalf("wrapper %d did not return actionable rejection: %s", i, encoded)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "unexpected-side-effect")); !os.IsNotExist(err) {
+		t.Fatal("disabled tool executed", err)
+	}
+	l.settling = false
+	result, _ := l.execOne(ctx, llm.ContentBlock{ID: "allowed", Name: "Bash", Input: command}, nil)
+	if result.IsError {
+		t.Fatal("normal phase rejected command", result)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "unexpected-side-effect")); err != nil {
+		t.Fatal(err)
+	}
 }

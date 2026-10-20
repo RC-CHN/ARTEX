@@ -26,14 +26,16 @@ func TestWorkerReviewContextAcrossToolCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
-	expID, err := d.CreateExploration("只操作隔离测试目录", "验证创建和清理")
+	task, err := d.CreateTaskWithOptions("只操作隔离测试目录", "验证创建和清理", db.TaskCreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	expID := task.ExplorationID
 	ts := d.Exploration(expID)
-	taskID := fmt.Sprint(expID)
+	taskID := fmt.Sprint(task.ID)
 	t.Cleanup(func() {
 		_, _ = d.Exec(`DELETE FROM intercept_pending WHERE task_id=$1`, taskID)
+		_, _ = d.Exec(`DELETE FROM tasks WHERE id=$1`, task.ID)
 		_, _ = d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
 	})
 	ic := intercept.New(d)
@@ -93,8 +95,8 @@ func TestWorkerReviewContextAcrossToolCalls(t *testing.T) {
 	}
 	rawIntent, _ := json.Marshal(intentPayload)
 	worker := NewWorker(provider, "test-model", workDir, nil, 0, 3, probe)
-	_, _, err = worker.Execute(ctx, "test-agent", expID, nil, ts, &db.Node{ID: intentID, Payload: rawIntent}, guard.NewWithInterceptor(ic).Hooks(), nil, nil, nil)
-	runDir := ensureRunDir(workDir, expID, intentID)
+	_, _, err = worker.Execute(ctx, "test-agent", task.ID, nil, ts, &db.Node{ID: intentID, Payload: rawIntent}, guard.NewWithInterceptor(ic).Hooks(), nil, nil, nil)
+	runDir := ensureRunDir(workDir, task.ID, intentID)
 	if err != nil {
 		t.Fatal(err)
 	}

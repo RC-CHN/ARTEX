@@ -27,6 +27,29 @@ func acceptsRawInput(t tool.CoreTool) bool {
 // executor's goroutines (read-only access to loop config; permission/hook
 // callbacks are the host's responsibility to make safe).
 func (l *loop) execOne(toolCtx context.Context, use llm.ContentBlock, emitProgress func(tool.ProgressInfo)) (llm.ContentBlock, []llm.Message) {
+	if l.settling && l.in.Settlement != nil {
+		name, input := use.Name, use.Input
+		for depth := 0; name == tool.ExecuteExtraToolName && depth < 8; depth++ {
+			var a struct {
+				Name   string          `json:"tool_name"`
+				Params json.RawMessage `json:"params"`
+			}
+			if json.Unmarshal(input, &a) != nil {
+				break
+			}
+			name, input = a.Name, a.Params
+		}
+		blocked := name == tool.ExecuteExtraToolName
+		for _, disabled := range l.in.Settlement.DisabledTools {
+			if name == disabled {
+				blocked = true
+			}
+		}
+		if blocked {
+			r := tool.Fail("settlement_tool_disabled", "收尾阶段该工具不可执行。", "保存已有事实和证据，并输出最终汇报；需要继续探索时请求追加预算。")
+			return llm.ToolResultText(use.ID, r.Flatten(), true), nil
+		}
+	}
 	t, ok := l.in.Tools.Get(use.Name)
 	if !ok {
 		return llm.ToolResultText(use.ID, fmt.Sprintf("Error: unknown tool %q", use.Name), true), nil

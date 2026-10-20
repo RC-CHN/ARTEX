@@ -105,6 +105,19 @@ type QueryInput struct {
 	// findings instead of ending abruptly. The run still finishes with the budget's
 	// reason (ReasonMaxTurns/ReasonTimeout), never ReasonCompleted. Nil = off.
 	Settlement *Settlement
+	// TurnBudget reserves a durable model attempt before issuing it. Hosts may
+	// enforce a cumulative budget across resumes. An unavailable ledger fails
+	// closed. This is separate from TokenBudget's continuation-nudge behavior.
+	TurnBudget TurnBudget
+}
+
+type TurnDecision struct {
+	Allowed, Settle bool
+	Notice          string
+}
+type TurnBudget interface {
+	BeforeTurn(context.Context, bool) (TurnDecision, error)
+	AfterTurn(context.Context, llm.Usage) error
 }
 
 // Settlement configures the wrap-up phase that runs when a budget is hit.
@@ -419,6 +432,29 @@ func (l *loop) run() {
 		}
 
 		l.injectHostNotices()
+		if l.in.TurnBudget != nil {
+			d, err := l.in.TurnBudget.BeforeTurn(l.ctx, l.settling)
+			if err != nil {
+				l.finish(ReasonExecutionError, fmt.Errorf("reserve model turn budget: %w", err), "")
+				return
+			}
+			if d.Notice != "" {
+				msg := llm.UserText(d.Notice)
+				l.messages = append(l.messages, msg)
+				l.record(msg, llm.Usage{})
+			}
+			if !d.Allowed {
+				if d.Settle && !l.settling && l.beginSettlement(ReasonMaxTurns, &schemas) {
+					continue
+				}
+				reason := ReasonMaxTurns
+				if l.settling {
+					reason = l.settleReason
+				}
+				l.finish(reason, nil, "")
+				return
+			}
+		}
 		// Non-destructive proactive compaction (MicroCompact → AutoCompact).
 		if l.in.Compactor != nil {
 			l.messages = l.in.Compactor.Pre(l.ctx, l.messages, l.lastInputTokens)
@@ -427,6 +463,10 @@ func (l *loop) run() {
 
 		usageBefore := l.usage
 		asst, exec, stopReason, streamErr, consumerStopped, aborted := l.streamAndExecute(schemas)
+		var budgetErr error
+		if l.in.TurnBudget != nil {
+			budgetErr = l.in.TurnBudget.AfterTurn(l.ctx, usageDelta(usageBefore, l.usage))
+		}
 		if consumerStopped {
 			return
 		}
@@ -481,6 +521,17 @@ func (l *loop) run() {
 		// compactor over local estimation on the next turn's gate check.
 		l.lastInputTokens = turnUsage.InputTokens + turnUsage.OutputTokens
 		l.record(asst, turnUsage)
+		if budgetErr != nil {
+			// Tool side effects may already exist; preserve their outcomes before
+			// stopping. Never retry a model turn over an uncertain ledger write.
+			if exec != nil && exec.count() > 0 {
+				result := llm.Message{Role: llm.RoleUser, Content: exec.results()}
+				l.messages = append(l.messages, result)
+				l.record(result, llm.Usage{})
+			}
+			l.finish(ReasonExecutionError, fmt.Errorf("record model turn usage: %w", budgetErr), "")
+			return
+		}
 		// surface cumulative usage after each model turn so hosts can show live token
 		// counts during a run (not just at the terminal event).
 		if u := l.usage; u != (llm.Usage{}) {
@@ -592,7 +643,7 @@ func (l *loop) run() {
 			// wrap-up phase: bounded by its own small turn budget. When spent, finish
 			// with the original budget reason (not "completed").
 			l.settleTurn++
-			if l.settleTurn >= l.settleMaxTurns() {
+			if l.in.TurnBudget == nil && l.settleTurn >= l.settleMaxTurns() {
 				l.finish(l.settleReason, nil, "")
 				return
 			}
