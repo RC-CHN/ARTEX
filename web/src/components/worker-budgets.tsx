@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { http } from "@/lib/api";
+import { newRequestId } from "@/lib/request-id";
 
 type Budget = {
   intent_id: number;
@@ -47,7 +48,7 @@ export function WorkerBudgets({ taskId }: { taskId: string }) {
       reason,
     };
     const fingerprint = JSON.stringify(input);
-    if (request.current.fingerprint !== fingerprint) request.current = { fingerprint, id: crypto.randomUUID() };
+    if (request.current.fingerprint !== fingerprint) request.current = { fingerprint, id: newRequestId() };
     try {
       await http(`/tasks/${taskId}/worker-budgets`, {
         method: "POST",
@@ -84,8 +85,9 @@ export function WorkerBudgets({ taskId }: { taskId: string }) {
           <span>
             意图 #{b.intent_id} · 执行 {b.normal_used}/{b.normal_limit || "不限"} · 收尾 {b.wrapup_used}/
             {b.wrapup_limit} ·{" "}
-            {({ normal: "有执行额度", wrapup: "仅余收尾额度", exhausted: "额度用尽" } as Record<string, string>)[b.phase] ??
-              b.phase}
+            {({ normal: "有执行额度", wrapup: "仅余收尾额度", exhausted: "额度用尽" } as Record<string, string>)[
+              b.phase
+            ] ?? b.phase}
           </span>
           <Button
             size="sm"

@@ -19,6 +19,8 @@ async function main() {
     const resourceName=`Lifecycle synthetic resource ${taskId}`;
     const resource=await api('/resources','POST',{name:resourceName,kind:'file',description:'Disposable fixture',access_mode:'global',enabled:true,tags:[]});
     await page.goto(new URL(`/function/tasks/detail?id=${taskId}`,base).href);
+    const secureContext=await page.evaluate(()=>window.isSecureContext);
+    if(process.env.EXPECT_HTTP_ORIGIN==='1')assert.equal(secureContext,false,'fixture must cover an ordinary HTTP origin');
     await page.getByRole('tab',{name:'记录与收尾',exact:true}).click();
     await page.getByRole('heading',{name:'Worker 预算'}).waitFor();
     await page.getByRole('button',{name:'追加预算',exact:true}).click();
@@ -52,7 +54,7 @@ async function main() {
     await page.getByRole('heading',{name:resourceName,exact:true}).waitFor({state:'detached'});
     assert.equal((await api('/resources?q='+encodeURIComponent(resourceName))).some(r=>r.id===resource.id),false);
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({lifecycle:{budget_grant:true,deployment_create_update:true,record_export_download:true,resource_delete:true,browser_errors:0}}));
+    console.log(JSON.stringify({lifecycle:{budget_grant:true,deployment_create_update:true,record_export_download:true,resource_delete:true,browser_errors:0,secure_context:secureContext}}));
   } catch(e) {console.error(JSON.stringify({browser_errors:errors}));console.error((await page.locator('body').innerText()).slice(0,5000));throw e;}
   finally {await browser.close();}
 }

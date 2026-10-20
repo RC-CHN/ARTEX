@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { newRequestId } from "@/lib/request-id";
 import { type Resource, type ResourceReference, resourceAPI } from "@/lib/resources";
 
 export function ResourceLifecycle({ resource, onDeleted }: { resource: Resource; onDeleted: (r: Resource) => void }) {
@@ -31,7 +32,7 @@ export function ResourceLifecycle({ resource, onDeleted }: { resource: Resource;
     setBusy(true);
     setError("");
     const fingerprint = JSON.stringify([resource.id, resource.revision, reason]);
-    if (request.current.fingerprint !== fingerprint) request.current = { fingerprint, id: crypto.randomUUID() };
+    if (request.current.fingerprint !== fingerprint) request.current = { fingerprint, id: newRequestId() };
     try {
       const result = await resourceAPI.delete(resource, reason, request.current.id);
       onDeleted(result.resource);

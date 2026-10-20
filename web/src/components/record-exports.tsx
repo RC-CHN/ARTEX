@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { type RecordExport, recordExportAPI } from "@/lib/record-exports";
+import { newRequestId } from "@/lib/request-id";
 
 const states: Record<string, string> = {
   queued: "排队中",
@@ -39,7 +40,7 @@ export function CreateRecordExport({
     setBusy(true);
     setError("");
     const fingerprint = JSON.stringify([taskIds, redacted]);
-    if (request.current.fingerprint !== fingerprint) request.current = { fingerprint, id: crypto.randomUUID() };
+    if (request.current.fingerprint !== fingerprint) request.current = { fingerprint, id: newRequestId() };
     try {
       const job = await recordExportAPI.create(taskIds, redacted, request.current.id);
       onCreated?.(job);

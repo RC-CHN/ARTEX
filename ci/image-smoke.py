@@ -143,7 +143,7 @@ try:
     lifecycle = docker('run', '--rm', '--network', network, '--entrypoint', 'node', *artifact_args,
                        '-v', str(Path(__file__).resolve().parent) + ':/smoke:ro',
                        '-e', 'BASE_URL=http://' + app_name + ':8787', '-e', 'AUTH_TOKEN=' + token,
-                       '-e', 'LIFECYCLE_TASK_ID=' + str(lifecycle_task), image, '/smoke/lifecycle-ui-smoke.cjs', check=False)
+                       '-e', 'LIFECYCLE_TASK_ID=' + str(lifecycle_task), '-e', 'EXPECT_HTTP_ORIGIN=1', image, '/smoke/lifecycle-ui-smoke.cjs', check=False)
     if lifecycle.returncode:
         print((lifecycle.stdout + lifecycle.stderr).replace(token, '[redacted]'), file=sys.stderr)
         raise RuntimeError('lifecycle UI smoke failed')

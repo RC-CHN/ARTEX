@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { WorkerBudgets } from "@/components/worker-budgets";
 import { type Deployment, deploymentAPI, deploymentStates, type Handoff } from "@/lib/deployments";
+import { newRequestId } from "@/lib/request-id";
 
 const labels = {
   name: "名称",
@@ -59,7 +60,7 @@ export function HandoffTab({ taskId }: { taskId: string }) {
     if (!entry) return;
     const body = { ...entry, expected_revision: entry.revision };
     const fingerprint = JSON.stringify(body);
-    if (request.current.fingerprint !== fingerprint) request.current = { fingerprint, id: crypto.randomUUID() };
+    if (request.current.fingerprint !== fingerprint) request.current = { fingerprint, id: newRequestId() };
     await deploymentAPI.save(taskId, { ...body, request_id: request.current.id });
     setEntry(null);
     await refresh();
