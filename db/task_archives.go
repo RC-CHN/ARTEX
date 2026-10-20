@@ -562,6 +562,16 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 	if err := coordinateWithSchemaMigration(tx); err != nil {
 		return nil, err
 	}
+	snapshot, err := d.snapshotTaskRows(tx, taskID, llmRecords, nil)
+	if err != nil {
+		return nil, err
+	}
+	return snapshot, tx.Commit()
+}
+
+// snapshotTaskRows shares the archive's complete task selection with portable
+// record exports. exportSink streams ALL tables without accumulating row arrays.
+func (d *DB) snapshotTaskRows(tx *sql.Tx, taskID int64, llmRecords io.Writer, exportSink func(string) (io.WriteCloser, error)) (*TaskArchiveSnapshot, error) {
 	var expID int64
 	if err := tx.QueryRow(`SELECT exploration_id FROM tasks WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&expID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -588,6 +598,12 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		{"task_llm_profiles", `SELECT * FROM task_llm_profiles WHERE task_id=$1 ORDER BY position`, []any{taskID}},
 		{"task_scope", `SELECT * FROM task_scope WHERE task_id=$1 ORDER BY id`, []any{taskID}},
 		{"task_owned_resources", `SELECT * FROM task_owned_resources WHERE task_id=$1 ORDER BY resource_id`, []any{taskID}},
+		// Keep the live ledger during archive compaction: pending cleanup must
+		// still block resource deletion. Include its history in the package too.
+		{"task_deployments", `SELECT * FROM task_deployments WHERE task_id=$1 ORDER BY id`, []any{taskID}},
+		{"task_deployment_events", `SELECT * FROM task_deployment_events WHERE task_id=$1 ORDER BY id`, []any{taskID}},
+		{"worker_budgets", `SELECT * FROM worker_budgets WHERE task_id=$1 ORDER BY intent_id`, []any{taskID}},
+		{"worker_budget_events", `SELECT * FROM worker_budget_events WHERE task_id=$1 ORDER BY id`, []any{taskID}},
 		{"findings", `SELECT * FROM findings WHERE task_id=$1 ORDER BY id`, []any{taskID}},
 		{"finding_traffic_bindings", `SELECT b.* FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id WHERE f.task_id=$1 ORDER BY b.finding_id,b.position,b.id`, []any{taskID}},
 		{"traffic_evidence_snapshots", `SELECT s.* FROM traffic_evidence_snapshots s WHERE EXISTS(SELECT 1 FROM finding_traffic_bindings b JOIN findings f ON f.id=b.finding_id WHERE b.snapshot_id=s.id AND f.task_id=$1) ORDER BY s.id`, []any{taskID}},
@@ -602,7 +618,40 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 	}
 	counts := make(map[string]int64, len(queries))
 	streamedTables := map[string]string{}
+	if exportSink != nil {
+		resourceIDs := `SELECT resource_id FROM task_owned_resources WHERE task_id=$1 UNION SELECT resource_id FROM task_deployments WHERE task_id=$1 AND resource_id IS NOT NULL UNION SELECT id FROM owned_resources WHERE creator_task_id=$1`
+		queries = append(queries, struct {
+			name  string
+			query string
+			args  []any
+		}{"owned_resources", `SELECT id,name,kind,description,tags,access_mode,enabled,revision,creator_task_id,updated_at,deleted_at FROM owned_resources WHERE id IN (` + resourceIDs + `) ORDER BY id`, []any{taskID}}, struct {
+			name  string
+			query string
+			args  []any
+		}{"owned_resource_versions", `SELECT id,resource_id,version,size,manifest,note,validation,actor,created_at FROM owned_resource_versions WHERE id IN(SELECT version_id FROM task_owned_resources WHERE task_id=$1) OR resource_id IN(SELECT id FROM owned_resources WHERE creator_task_id=$1) ORDER BY id`, []any{taskID}}, struct {
+			name  string
+			query string
+			args  []any
+		}{"owned_resource_events", `SELECT * FROM owned_resource_events WHERE actor->>'task_id'=$1 ORDER BY id`, []any{strconv.FormatInt(taskID, 10)}})
+	}
 	for _, query := range queries {
+		if exportSink != nil {
+			writer, err := exportSink(query.name)
+			if err != nil {
+				return nil, err
+			}
+			count, err := streamArchiveRows(tx, writer, query.query, query.args...)
+			closeErr := writer.Close()
+			if err != nil {
+				return nil, fmt.Errorf("snapshot %s: %w", query.name, err)
+			}
+			if closeErr != nil {
+				return nil, closeErr
+			}
+			counts[query.name] = count
+			streamedTables[query.name] = "database/" + query.name + ".jsonl"
+			continue
+		}
 		if query.name == "llm_records" && llmRecords != nil {
 			count, err := streamArchiveRows(tx, llmRecords, query.query, query.args...)
 			if err != nil {
@@ -621,6 +670,9 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		counts[query.name] = count
 	}
 
+	if exportSink != nil {
+		return &TaskArchiveSnapshot{FormatVersion: TaskArchiveFormatVersion, TaskID: taskID, ExplorationID: expID, StreamedTables: streamedTables, DataCounts: counts}, nil
+	}
 	assetIDs, exclusiveAssetIDs, hosts, exclusiveHosts, err := archiveAssetMetadata(tx, taskID, expID, tables["assets"])
 	if err != nil {
 		return nil, err
@@ -652,7 +704,34 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		ExclusiveAssetIDs: exclusiveAssetIDs, Tables: tables, StreamedTables: streamedTables,
 		DataCounts: counts, AggregateStats: stats,
 	}
-	return snapshot, tx.Commit()
+	return snapshot, nil
+}
+
+// SnapshotTaskRecords selects multiple tasks under one repeatable-read snapshot,
+// including raw LLM records and lifecycle history. It never pauses or archives.
+func (d *DB) SnapshotTaskRecords(ctx context.Context, ids []int64, sink func(int64, string) (io.WriteCloser, error)) ([]*TaskArchiveSnapshot, error) {
+	tx, err := d.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err = coordinateWithSchemaMigration(tx); err != nil {
+		return nil, err
+	}
+	var cutoff time.Time
+	if err = tx.QueryRowContext(ctx, `SELECT transaction_timestamp()`).Scan(&cutoff); err != nil {
+		return nil, err
+	}
+	out := make([]*TaskArchiveSnapshot, 0, len(ids))
+	for _, id := range ids {
+		v, err := d.snapshotTaskRows(tx, id, nil, func(table string) (io.WriteCloser, error) { return sink(id, table) })
+		if err != nil {
+			return nil, err
+		}
+		v.CreatedAt = cutoff
+		out = append(out, v)
+	}
+	return out, tx.Commit()
 }
 
 func archiveAssetMetadata(tx *sql.Tx, taskID, expID int64, assetRows json.RawMessage) ([]int64, []int64, []string, []string, error) {

@@ -219,7 +219,7 @@ func (d *DB) seedBuiltins() error {
 		var agentID int64
 		err := d.QueryRow(`
 INSERT INTO agents(key, name, description, role, builtin, enabled, interactive_shell, run_seconds)
-VALUES ($1, $2, NULLIF($3,''), $4, true, true, $5, COALESCE($6, 1200))
+VALUES ($1, $2, NULLIF($3,''), $4, true, true, $5, CASE WHEN $1='worker' THEN 0 ELSE COALESCE($6, 1200) END)
 ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description
 RETURNING id`, a.key, a.name, a.desc, a.role, a.interactiveShell, a.runSeconds).Scan(&agentID)
 		if err != nil {
@@ -235,6 +235,9 @@ ON CONFLICT (agent_id, var_name) DO UPDATE
 				return fmt.Errorf("agent %s var %s: %w", a.key, v.name, err)
 			}
 		}
+	}
+	if err := d.seedWorkerBudgetDefaults(); err != nil {
+		return fmt.Errorf("seed worker budget: %w", err)
 	}
 	// Drop catalog entries for variables that were renamed, so the white-list no
 	// longer advertises a name templates can't resolve (EngagementTitle→Description).

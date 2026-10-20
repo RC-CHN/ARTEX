@@ -16,6 +16,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/RC-CHN/ARTEX/internal/operation"
 )
 
 const (
@@ -61,16 +63,17 @@ type Actor struct {
 	RunnerID string `json:"runner_id"`
 }
 type Resource struct {
-	ID            int64     `json:"id"`
-	Name          string    `json:"name"`
-	Kind          string    `json:"kind"`
-	Description   string    `json:"description"`
-	Tags          []string  `json:"tags"`
-	AccessMode    string    `json:"access_mode"`
-	Enabled       bool      `json:"enabled"`
-	Revision      int64     `json:"revision"`
-	CreatorTaskID int64     `json:"creator_task_id"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID            int64      `json:"id"`
+	Name          string     `json:"name"`
+	Kind          string     `json:"kind"`
+	Description   string     `json:"description"`
+	Tags          []string   `json:"tags"`
+	AccessMode    string     `json:"access_mode"`
+	Enabled       bool       `json:"enabled"`
+	Revision      int64      `json:"revision"`
+	CreatorTaskID int64      `json:"creator_task_id"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	DeletedAt     *time.Time `json:"deleted_at,omitempty"`
 }
 type File struct {
 	Path       string `json:"path"`
@@ -202,14 +205,14 @@ func validateManifest(m Manifest) (int64, error) {
 	return total, nil
 }
 
-const resourceCols = `id,name,kind,description,tags,access_mode,enabled,revision,creator_task_id,updated_at`
+const resourceCols = `id,name,kind,description,tags,access_mode,enabled,revision,creator_task_id,updated_at,deleted_at`
 
 type scanner interface{ Scan(...any) error }
 
 func scanResource(row scanner) (Resource, error) {
 	var r Resource
 	var tags []byte
-	err := row.Scan(&r.ID, &r.Name, &r.Kind, &r.Description, &tags, &r.AccessMode, &r.Enabled, &r.Revision, &r.CreatorTaskID, &r.UpdatedAt)
+	err := row.Scan(&r.ID, &r.Name, &r.Kind, &r.Description, &tags, &r.AccessMode, &r.Enabled, &r.Revision, &r.CreatorTaskID, &r.UpdatedAt, &r.DeletedAt)
 	if err == nil {
 		err = json.Unmarshal(tags, &r.Tags)
 	}
@@ -222,7 +225,7 @@ func (s *Store) List(ctx context.Context, q, kind string, before int64) ([]Resou
 	if len(q) > 200 {
 		return nil, invalid("search too long")
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+resourceCols+` FROM owned_resources WHERE ($1='' OR name ILIKE '%'||$1||'%' OR description ILIKE '%'||$1||'%') AND ($2='' OR kind=$2) AND ($3=0 OR id<$3) ORDER BY id DESC LIMIT 100`, q, kind, before)
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+resourceCols+` FROM owned_resources WHERE deleted_at IS NULL AND ($1='' OR name ILIKE '%'||$1||'%' OR description ILIKE '%'||$1||'%') AND ($2='' OR kind=$2) AND ($3=0 OR id<$3) ORDER BY id DESC LIMIT 100`, q, kind, before)
 	if err != nil {
 		return nil, err
 	}
@@ -241,6 +244,9 @@ func (s *Store) List(ctx context.Context, q, kind string, before int64) ([]Resou
 // Every mutation uses the same lock order: quota -> task -> resource -> draft.
 // Bytes are received before acquiring locks, so slow uploads don't block users.
 func (s *Store) begin(ctx context.Context, a Actor, id int64) (*sql.Tx, Resource, error) {
+	return s.beginResource(ctx, a, id, false)
+}
+func (s *Store) beginResource(ctx context.Context, a Actor, id int64, allowDeleted bool) (*sql.Tx, Resource, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, Resource{}, err
@@ -262,8 +268,11 @@ func (s *Store) begin(ctx context.Context, a Actor, id int64) (*sql.Tx, Resource
 	if err != nil {
 		return fail(err)
 	}
+	if r.DeletedAt != nil && !allowDeleted {
+		return fail(ErrUnavailable)
+	}
 	if a.TaskID > 0 {
-		if !r.Enabled {
+		if !r.Enabled && !(allowDeleted && r.DeletedAt != nil) {
 			return fail(ErrUnavailable)
 		}
 		if r.AccessMode == "restricted" && r.CreatorTaskID != a.TaskID {
@@ -283,6 +292,9 @@ func event(ctx context.Context, tx *sql.Tx, id, version int64, kind, detail stri
 	return err
 }
 func (s *Store) Create(ctx context.Context, r *Resource, a Actor) error {
+	return s.CreateWithRequest(ctx, r, a, "")
+}
+func (s *Store) CreateWithRequest(ctx context.Context, r *Resource, a Actor, requestID string) error {
 	if err := ValidateResource(r); err != nil {
 		return err
 	}
@@ -291,6 +303,13 @@ func (s *Store) Create(ctx context.Context, r *Resource, a Actor) error {
 		return err
 	}
 	defer tx.Rollback()
+	input := *r
+	scope := fmt.Sprintf("resource-create:%d", a.TaskID)
+	if requestID != "" {
+		if replay, e := operation.Replay(ctx, tx, scope, requestID, input, r); e != nil || replay {
+			return e
+		}
+	}
 	r.CreatorTaskID = a.TaskID
 	err = tx.QueryRowContext(ctx, `INSERT INTO owned_resources(name,kind,description,tags,access_mode,enabled,creator_task_id) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id,revision,updated_at`, r.Name, r.Kind, r.Description, marshal(r.Tags), r.AccessMode, r.Enabled, a.TaskID).Scan(&r.ID, &r.Revision, &r.UpdatedAt)
 	if err != nil {
@@ -299,9 +318,17 @@ func (s *Store) Create(ctx context.Context, r *Resource, a Actor) error {
 	if err = event(ctx, tx, r.ID, 0, "created", "", a); err != nil {
 		return err
 	}
+	if requestID != "" {
+		if err = operation.Save(ctx, tx, scope, requestID, input, r); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 func (s *Store) Update(ctx context.Context, r *Resource, a Actor) error {
+	return s.UpdateWithRequest(ctx, r, a, "")
+}
+func (s *Store) UpdateWithRequest(ctx context.Context, r *Resource, a Actor, requestID string) error {
 	if err := ValidateResource(r); err != nil {
 		return err
 	}
@@ -310,6 +337,13 @@ func (s *Store) Update(ctx context.Context, r *Resource, a Actor) error {
 		return err
 	}
 	defer tx.Rollback()
+	input := *r
+	scope := fmt.Sprintf("resource-update:%d:%d", a.TaskID, r.ID)
+	if requestID != "" {
+		if replay, e := operation.Replay(ctx, tx, scope, requestID, input, r); e != nil || replay {
+			return e
+		}
+	}
 	if current.Revision != r.Revision {
 		return &Conflict{CurrentRevision: current.Revision}
 	}
@@ -334,6 +368,11 @@ func (s *Store) Update(ctx context.Context, r *Resource, a Actor) error {
 	}
 	if err = event(ctx, tx, r.ID, 0, "metadata_updated", "", a); err != nil {
 		return err
+	}
+	if requestID != "" {
+		if err = operation.Save(ctx, tx, scope, requestID, input, r); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

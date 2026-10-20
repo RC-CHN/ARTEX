@@ -1521,3 +1521,62 @@ CREATE TABLE IF NOT EXISTS owned_resource_events (
 CREATE INDEX IF NOT EXISTS idx_owned_resource_versions ON owned_resource_versions(resource_id,id DESC);
 CREATE INDEX IF NOT EXISTS idx_owned_resource_drafts ON owned_resource_drafts(resource_id,id DESC);
 CREATE INDEX IF NOT EXISTS idx_owned_resource_events ON owned_resource_events(resource_id,id DESC);
+
+-- Tombstones preserve historical references. They never execute remote cleanup.
+ALTER TABLE owned_resources ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS operation_receipts (
+ scope TEXT NOT NULL, request_id TEXT NOT NULL,
+ fingerprint BYTEA NOT NULL, result JSONB NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(scope,request_id)
+);
+
+-- Deployment instances belong to a task, independently of the reusable library.
+CREATE TABLE IF NOT EXISTS task_deployments (
+ id BIGSERIAL PRIMARY KEY, task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ resource_id BIGINT REFERENCES owned_resources(id),
+ name TEXT NOT NULL, kind TEXT NOT NULL, location TEXT NOT NULL, identifier TEXT NOT NULL,
+ cleanup TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'active'
+  CHECK(state IN ('active','removing','removed','retained','unknown','failed')),
+ verification TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+ revision BIGINT NOT NULL DEFAULT 1, actor JSONB NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_task_deployments ON task_deployments(task_id,id DESC);
+CREATE INDEX IF NOT EXISTS idx_deployment_resources ON task_deployments(resource_id,state) WHERE resource_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS task_deployment_events (
+ id BIGSERIAL PRIMARY KEY, task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ deployment_id BIGINT NOT NULL REFERENCES task_deployments(id) ON DELETE CASCADE,
+ revision BIGINT NOT NULL, state TEXT NOT NULL, actor JSONB NOT NULL,
+ snapshot JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_deployment_events ON task_deployment_events(task_id,id);
+
+-- Intent budgets survive retries and cold archiving (which removes graph nodes).
+CREATE TABLE IF NOT EXISTS worker_budgets (
+ intent_id BIGINT PRIMARY KEY, task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ normal_limit INTEGER NOT NULL CHECK(normal_limit>=0), wrapup_limit INTEGER NOT NULL CHECK(wrapup_limit>0),
+ normal_used INTEGER NOT NULL DEFAULT 0, wrapup_used INTEGER NOT NULL DEFAULT 0,
+ phase TEXT NOT NULL DEFAULT 'normal' CHECK(phase IN ('normal','wrapup','exhausted')),
+ input_tokens BIGINT NOT NULL DEFAULT 0, output_tokens BIGINT NOT NULL DEFAULT 0,
+ revision BIGINT NOT NULL DEFAULT 1, updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_worker_budgets_task ON worker_budgets(task_id,intent_id);
+CREATE TABLE IF NOT EXISTS worker_budget_events (
+ id BIGSERIAL PRIMARY KEY, task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ intent_id BIGINT NOT NULL REFERENCES worker_budgets(intent_id) ON DELETE CASCADE,
+ kind TEXT NOT NULL, detail JSONB NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_worker_budget_events_task ON worker_budget_events(task_id,id);
+
+CREATE TABLE IF NOT EXISTS task_record_exports (
+ id BIGSERIAL PRIMARY KEY, task_ids JSONB NOT NULL, redacted BOOLEAN NOT NULL DEFAULT false,
+ state TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued','running','ready','failed','canceled','deleting','deleted')),
+ phase TEXT NOT NULL DEFAULT 'queued', error TEXT NOT NULL DEFAULT '',
+ owner TEXT NOT NULL DEFAULT '', lease_until TIMESTAMPTZ, attempt INTEGER NOT NULL DEFAULT 0,
+ files BIGINT NOT NULL DEFAULT 0, bytes BIGINT NOT NULL DEFAULT 0,
+ sha256 TEXT NOT NULL DEFAULT '', cutoff_at TIMESTAMPTZ,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ expires_at TIMESTAMPTZ NOT NULL DEFAULT now()+interval '7 days'
+);
+CREATE INDEX IF NOT EXISTS idx_record_exports_queue ON task_record_exports(state,id);
+CREATE INDEX IF NOT EXISTS idx_record_exports_tasks ON task_record_exports USING gin(task_ids);
