@@ -49,6 +49,7 @@ import { GraphTab } from "./_tabs/graph-tab";
 import { InterceptTab } from "./_tabs/intercept-tab";
 import { OverviewTab } from "./_tabs/overview-tab";
 import { ReportTab } from "./_tabs/report-tab";
+import { HandoffTab } from "./_tabs/handoff-tab";
 import { RetestsTab } from "./_tabs/retests-tab";
 import { SessionsTab } from "./_tabs/sessions-tab";
 
@@ -63,6 +64,7 @@ const TABS = [
   { value: "coverage", label: "资产覆盖图" },
   { value: "intercept", label: "拦截审批" },
   { value: "report", label: "报告" },
+  { value: "handoff", label: "记录与收尾" },
 ];
 
 function taskProfileIDs(task: Task): string[] {
@@ -211,7 +213,7 @@ function TaskDetailInner() {
   const [task, setTask] = React.useState<Task | null>(null);
   const [paused, setPaused] = React.useState(false);
   const [loaded, setLoaded] = React.useState(false);
-  const [tab, setTab] = React.useState("sessions");
+  const [tab, setTab] = React.useState(searchParams.get("tab") === "handoff" ? "handoff" : "sessions");
   const [interceptPendingCount, setInterceptPendingCount] = React.useState(0);
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [archiving, setArchiving] = React.useState(false);
@@ -445,6 +447,7 @@ function TaskDetailInner() {
         <TabsContent value="report" className="mt-0">
           <ReportTab taskId={id} />
         </TabsContent>
+        <TabsContent value="handoff" className="mt-0"><HandoffTab key={id} taskId={id} /></TabsContent>
       </div>
     </Tabs>
   );

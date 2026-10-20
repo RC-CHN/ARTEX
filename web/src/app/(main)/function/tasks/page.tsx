@@ -3,6 +3,7 @@
 import { subscribeRefresh } from "@/lib/api-refresh";
 import * as React from "react";
 import { ResourcePicker } from "@/components/resource-picker";
+import { CreateRecordExport } from "@/components/record-exports";
 
 import Link from "next/link";
 
@@ -855,6 +856,7 @@ export default function TasksPage() {
               {selectedIds.size > 0 && (
                 <>
                   <span className="text-xs tabular-nums">已选 {selectedIds.size} 个</span>
+                  <CreateRecordExport taskIds={[...selectedIds].map(Number)} />
                   <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
                     取消选择
                   </Button>

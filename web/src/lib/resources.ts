@@ -11,7 +11,9 @@ export type Resource = {
   revision: number;
   creator_task_id: number;
   updated_at: string;
+  deleted_at?: string;
 };
+export type ResourceReference = { task_id: number; version_id?: number; deployment_id?: number; state: string; blocking: boolean };
 export type ResourceFile = { path: string; sha256: string; size: number; executable: boolean };
 export type ResourceEndpoint = { name: string; url: string; has_credential: boolean };
 export type ResourceActor = { task_id: number; thread_id: string; runner_id: string };
@@ -53,6 +55,9 @@ export const resourceAPI = {
   list: (q = "", kind = "", before = 0) =>
     http<Resource[]>(`/resources?${new URLSearchParams({ q, kind, before: String(before) })}`),
   get: (id: number) => http<Resource>(`/resources/${id}`, { cache: "no-store" }),
+  references: (id: number) => http<ResourceReference[]>(`/resources/${id}/references`, { cache: "no-store" }),
+  delete: (resource: Resource, reason: string, request_id: string) =>
+    http<{resource: Resource}>(`/resources/${resource.id}`, { method: "DELETE", body: JSON.stringify({expected_revision: resource.revision, reason, request_id}) }),
   save: (resource: Partial<Resource>) =>
     http<Resource>(resource.id ? `/resources/${resource.id}` : "/resources", {
       method: resource.id ? "PUT" : "POST",

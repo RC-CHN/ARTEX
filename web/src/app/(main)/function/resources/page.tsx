@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Markdown } from "@/components/markdown";
+import { ResourceLifecycle } from "@/components/resource-lifecycle";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import {
@@ -205,7 +206,7 @@ export default function ResourcesPage() {
             key={selected.id}
             resource={selected}
             onSaved={(r) => {
-              setSelected((current) => (current?.id === r.id ? r : current));
+              setSelected((current) => (current?.id === r.id ? (r.deleted_at ? null : r) : current));
               setRefresh((n) => n + 1);
             }}
           />
@@ -449,6 +450,7 @@ function ResourceDetail({ resource, onSaved }: { resource: Resource; onSaved: (r
             ["drafts", `草稿 (${drafts.length})`],
             ["versions", "版本与任务"],
             ["events", "变更与观察"],
+            ["lifecycle", "引用与删除"],
           ].map(([key, label]) => (
             <Button
               key={key}
@@ -464,6 +466,7 @@ function ResourceDetail({ resource, onSaved }: { resource: Resource; onSaved: (r
         </div>
       </div>
       <div className="space-y-5 p-5" role="tabpanel">
+        {tab === "lifecycle" && <ResourceLifecycle resource={resource} onDeleted={onSaved} />}
         {updateAvailable && (
           <div role="status" className="rounded-md border p-3 text-sm">
             资源已更新。当前草稿编辑内容保留；刷新后可查看新版本。

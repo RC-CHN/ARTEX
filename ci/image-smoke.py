@@ -135,6 +135,19 @@ try:
         print((resources.stdout + resources.stderr).replace(token, '[redacted]'), file=sys.stderr)
         raise RuntimeError('resource UI smoke failed')
     print(resources.stdout.strip(), flush=True)
+    _, raw = request('/api/tasks', {'description': 'Synthetic lifecycle UI', 'goal': 'No external execution'}, token)
+    lifecycle_task = int(json.loads(raw)['id'])
+    # Explicitly synthetic exhausted Worker; no model or external command runs.
+    docker('exec', pg_name, 'psql', '-U', 'artex', '-d', 'artex', '-v', 'ON_ERROR_STOP=1', '-c',
+           f"WITH n AS (INSERT INTO exploration_nodes(exploration_id,kind,payload,state) SELECT exploration_id,'intent','{{\"summary\":\"synthetic budget fixture\"}}','exhausted' FROM tasks WHERE id={lifecycle_task} RETURNING id) INSERT INTO worker_budgets(intent_id,task_id,normal_limit,wrapup_limit,normal_used,wrapup_used,phase) SELECT id,{lifecycle_task},150,10,150,10,'exhausted' FROM n")
+    lifecycle = docker('run', '--rm', '--network', network, '--entrypoint', 'node', *artifact_args,
+                       '-v', str(Path(__file__).resolve().parent) + ':/smoke:ro',
+                       '-e', 'BASE_URL=http://' + app_name + ':8787', '-e', 'AUTH_TOKEN=' + token,
+                       '-e', 'LIFECYCLE_TASK_ID=' + str(lifecycle_task), image, '/smoke/lifecycle-ui-smoke.cjs', check=False)
+    if lifecycle.returncode:
+        print((lifecycle.stdout + lifecycle.stderr).replace(token, '[redacted]'), file=sys.stderr)
+        raise RuntimeError('lifecycle UI smoke failed')
+    print(lifecycle.stdout.strip(), flush=True)
     # Record a local request through the capture proxy, then read and search it.
     docker('exec', app_name, 'curl', '-fsS', '--noproxy', '', '--proxy', 'http://127.0.0.1:8788', 'http://127.0.0.1:8787/api/health?smoke=postgres-capture')
     for _ in range(40):

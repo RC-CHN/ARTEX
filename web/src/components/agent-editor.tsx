@@ -310,7 +310,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                 {showConfig && (
                   <>
                     <div className="grid gap-1.5">
-                      <Label htmlFor="max-turns" className="text-xs">最大循环次数（0=不限）</Label>
+                      <Label htmlFor="max-turns" className="text-xs">{agentKey==="worker"?"新 Worker 意图累计轮数（0=不限）":"最大循环次数（0=不限）"}</Label>
                       <Input id="max-turns" type="number" min={0} className="h-8 w-32"
                         value={maxTurns} onChange={(e) => setMaxTurns(e.target.value)} />
                     </div>
