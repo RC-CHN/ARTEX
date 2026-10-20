@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/RC-CHN/ARTEX/db"
@@ -138,12 +139,11 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	findings, _ := t.Store.ListByKind(db.KindFinding, 1000) // 纯漏洞（事实是独立的 KindFact，不进报告）
-	counts := map[string]int{}
-	for _, ty := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
-		ns, _ := s.m.Assets().QueryByType(ty, 100000, 0)
-		if len(ns) > 0 {
-			counts[ty] = len(ns)
-		}
+	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	counts, err := s.m.Assets().CountsByTypeForTask(taskID)
+	if err != nil {
+		writeErr(w, 500, "读取本任务资产统计失败")
+		return
 	}
 	md := report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),

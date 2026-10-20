@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/RC-CHN/ARTEX/internal/operation"
 	"github.com/RC-CHN/ARTEX/resourcelib"
 )
 
@@ -28,6 +29,8 @@ func resourceInt(r *http.Request, key string) int64 {
 }
 func resourceErr(w http.ResponseWriter, err error) {
 	code := 400
+	var inUse *resourcelib.InUse
+	var fault *operation.Error
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		code = 404
@@ -35,28 +38,41 @@ func resourceErr(w http.ResponseWriter, err error) {
 		code = 403
 	case errors.Is(err, resourcelib.ErrConflict):
 		code = 409
+	case errors.As(err, &inUse), errors.Is(err, operation.ErrKeyReuse):
+		code = 409
+	case errors.As(err, &fault):
+		if fault.CurrentRevision > 0 {
+			code = 409
+		}
 	case errors.Is(err, resourcelib.ErrLimit):
 		code = 413
 	}
-	message := err.Error()
-	if code == 400 {
-		var input *resourcelib.InputError
-		if !errors.As(err, &input) {
-			message = "资源操作失败，请检查输入或稍后重试"
-		}
-	}
-	var conflict *resourcelib.Conflict
-	if errors.As(err, &conflict) {
-		writeJSON(w, code, map[string]any{"error": message, "current_revision": conflict.CurrentRevision, "current_version_id": conflict.CurrentVersionID})
+	result, e := resourceToolError(err)
+	if e != nil {
+		writeErr(w, 408, "操作中断；先查询结果，再决定是否重试。")
 		return
 	}
-	writeErr(w, code, message)
+	var body map[string]any
+	_ = json.Unmarshal([]byte(result.Flatten()), &body)
+	body["error"] = body["message"]
+	writeJSON(w, code, body)
 }
 func resourceDecode(w http.ResponseWriter, r *http.Request, v any) bool {
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10))
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
-		writeErr(w, 400, "非法资源参数")
+		message := "请求不是有效 JSON 对象；请检查字段名、类型和必填项。"
+		var typeErr *json.UnmarshalTypeError
+		var sizeErr *http.MaxBytesError
+		switch {
+		case errors.As(err, &typeErr):
+			message = "字段 " + typeErr.Field + " 的类型错误，应为 " + typeErr.Type.String() + "。"
+		case errors.As(err, &sizeErr):
+			message = "请求超过 128 KiB 上限，请分批提交。"
+		case strings.HasPrefix(err.Error(), "json: unknown field "):
+			message = err.Error() + "；请移除未知字段。"
+		}
+		writeJSON(w, 400, map[string]any{"error": message, "message": message, "code": "invalid_input", "executed": false, "next_action": "按接口定义修正参数后重新提交；本次未执行。"})
 		return false
 	}
 	if err := d.Decode(new(any)); err != io.EOF {
@@ -70,6 +86,8 @@ func (s *Server) registerLibraryRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/resources", s.createOwnedResource)
 	mux.HandleFunc("GET /api/resources/{id}", s.getOwnedResource)
 	mux.HandleFunc("PUT /api/resources/{id}", s.updateOwnedResource)
+	mux.HandleFunc("DELETE /api/resources/{id}", s.deleteOwnedResource)
+	mux.HandleFunc("GET /api/resources/{id}/references", s.resourceReferences)
 	mux.HandleFunc("GET /api/resources/{id}/versions", s.ownedResourceVersions)
 	mux.HandleFunc("GET /api/resources/{id}/versions/{version}/download", s.downloadOwnedResource)
 	mux.HandleFunc("GET /api/resources/{id}/events", s.ownedResourceEvents)
@@ -88,6 +106,17 @@ func (s *Server) registerLibraryRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/resources/{id}/tasks", s.grantOwnedResource)
 	mux.HandleFunc("DELETE /api/resources/{id}/tasks/{task}", s.revokeOwnedResource)
 	mux.HandleFunc("GET /api/tasks/{id}/resources", s.taskOwnedResources)
+	mux.HandleFunc("GET /api/tasks/{id}/deployments", s.taskDeployments)
+	mux.HandleFunc("POST /api/tasks/{id}/deployments", s.taskDeployments)
+	mux.HandleFunc("GET /api/tasks/{id}/handoff", s.taskHandoff)
+	mux.HandleFunc("GET /api/tasks/{id}/worker-budgets", s.workerBudgets)
+	mux.HandleFunc("POST /api/tasks/{id}/worker-budgets", s.workerBudgets)
+	mux.HandleFunc("GET /api/task-record-exports", s.recordExportsAPI)
+	mux.HandleFunc("POST /api/task-record-exports", s.recordExportsAPI)
+	mux.HandleFunc("GET /api/task-record-exports/{id}", s.recordExportAPI)
+	mux.HandleFunc("POST /api/task-record-exports/{id}/{action}", s.recordExportAPI)
+	mux.HandleFunc("DELETE /api/task-record-exports/{id}", s.recordExportAPI)
+	mux.HandleFunc("GET /api/task-record-exports/{id}/download", s.downloadRecordExport)
 }
 func (s *Server) listOwnedResources(w http.ResponseWriter, r *http.Request) {
 	v, e := s.resourceLibrary().List(r.Context(), r.URL.Query().Get("q"), r.URL.Query().Get("kind"), resourceInt(r, "before"))

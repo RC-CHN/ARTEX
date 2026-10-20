@@ -276,6 +276,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	if m.pg != nil {
 		s.background(s.mainRequestLoop)
 		s.background(func() { s.resourceMaintenance(s.ctx) })
+		s.background(s.recordExportLoop)
 	}
 	s.background(s.reconcileConcurrency)
 	s.startTaskArchiveWorker()

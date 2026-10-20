@@ -83,3 +83,35 @@ func TestBundledInstructionsDoNotClaimEveryEnvironmentHasTools(t *testing.T) {
 		}
 	}
 }
+
+func TestUpgradeOnlyUneditedResourceSkill(t *testing.T) {
+	dir := t.TempDir()
+	old, err := os.ReadFile("testdata/resource-creator-v0128.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "resource-creator"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "resource-creator", "SKILL.md")
+	if err := os.WriteFile(file, old, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SeedDefaults(dir); err != nil {
+		t.Fatal(err)
+	}
+	now, err := os.ReadFile(file)
+	if err != nil || !strings.Contains(string(now), "manage_deployments") {
+		t.Fatalf("missing upgrade: %v", err)
+	}
+	custom := append(old, []byte("\noperator note")...)
+	if err := os.WriteFile(file, custom, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SeedDefaults(dir); err != nil {
+		t.Fatal(err)
+	}
+	if now, _ = os.ReadFile(file); string(now) != string(custom) {
+		t.Fatal("operator edit overwritten")
+	}
+}
