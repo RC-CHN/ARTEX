@@ -1,6 +1,31 @@
 package db
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
+
+func TestToolUsageBatchAndCanceledWrite(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	key := "zz_test_tool_usage_batch"
+	defer d.Exec(`DELETE FROM tool_usage WHERE tool_key=$1`, key)
+	if err = d.InsertToolUsageBatch(t.Context(), []ToolUsage{{ToolKey: key}, {ToolKey: key, TaskID: 42, SessionID: "fixture"}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err = d.InsertToolUsageBatch(ctx, []ToolUsage{{ToolKey: key}}); err == nil {
+		t.Fatal("canceled batch committed")
+	}
+	var count int
+	if err = d.QueryRow(`SELECT count(*) FROM tool_usage WHERE tool_key=$1`, key).Scan(&count); err != nil || count != 2 {
+		t.Fatal(count, err)
+	}
+}
 
 func TestToolUsageLedger(t *testing.T) {
 	d, err := Open(testDSN(t))

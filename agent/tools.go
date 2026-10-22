@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/RC-CHN/ARTEX/db"
+	"github.com/RC-CHN/ARTEX/norma/llm"
 	acperm "github.com/RC-CHN/ARTEX/norma/permission"
 	actool "github.com/RC-CHN/ARTEX/norma/tool"
 )
@@ -359,8 +360,15 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 // an empty context and always needs this first).
 func (t *ToolSet) graphOverviewData() map[string]any {
 	out := map[string]any{}
+	queryErrors := []string{}
+	check := func(name string, err error) {
+		if err != nil {
+			queryErrors = append(queryErrors, name)
+		}
+	}
 	// goals summary folded in so the planner needn't call list_goals each round.
-	goals, _ := t.ts.ListByKind(db.KindGoal, 100)
+	goals, err := t.ts.ListByKind(db.KindGoal, 100)
+	check("goals", err)
 	gsum := make([]map[string]any, 0, len(goals))
 	for _, g := range goals {
 		var p map[string]any
@@ -370,7 +378,8 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	out["goals"] = gsum
 	// hints: 人类/主 agent 通过 add_hint 挂上图的战略提示；folded in so the
 	// planner reads them every round when generating intents (否则只写不读).
-	hints, _ := t.ts.ListByKind(db.KindHint, 50)
+	hints, err := t.ts.ListByKind(db.KindHint, 50)
+	check("hints", err)
 	hsum := make([]map[string]any, 0, len(hints))
 	for _, h := range hints {
 		var p map[string]any
@@ -386,7 +395,8 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// derived_from — possibly several facts combined) and its yields (the
 	// facts/findings it produced). factFrom maps a fact → the intent that
 	// produced it. This is the relationship layer the flat lists lacked.
-	edges, _ := t.ts.Edges(5000)
+	edges, err := t.ts.Edges(5000)
+	check("edges", err)
 	parentsOf := map[int64][]int64{}
 	yieldsOf := map[int64][]int64{}
 	factFrom := map[int64]int64{}
@@ -404,7 +414,8 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// §6 render-time revival check: a covered member that has become hot again (a new
 	// intent derived from it) must reappear this round — so `hidden` folds a member out
 	// only when it is covered AND still cold.
-	covered, _ := t.ts.CoveredMembers()
+	covered, err := t.ts.CoveredMembers()
+	check("covered", err)
 	// Render-time hot set (ancestor of a live intent / fact under a live intent).
 	// §6 revival check: a covered member that revived (now hot) must NOT stay folded
 	// — hidden() only folds a member out when it is covered AND still cold. Computed
@@ -412,17 +423,27 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	var hotAtRender map[int64]bool
 	if cg, _, err := loadColdGraph(t.ts); err == nil {
 		hotAtRender = cg.hotSet()
+	} else {
+		check("graph", err)
 	}
-	hidden := func(id int64) bool { _, c := covered[id]; return c && !hotAtRender[id] }
+	hidden := func(id int64) bool { _, c := covered[id]; return c && hotAtRender != nil && !hotAtRender[id] }
 	const openIntentsCap = 30
-	fr, _ := t.ts.Frontier(openIntentsCap) // priority DESC, id ASC —— 优先级最高的前 N 条；真实总数见 frontier_open
+	fr, err := t.ts.Frontier(openIntentsCap)
+	check("fr", err) // priority DESC, id ASC —— 优先级最高的前 N 条；真实总数见 frontier_open
 	out["open_intents"] = compactIntents(fr, parentsOf, yieldsOf)
-	all, _ := t.ts.ListByKind(db.KindIntent, 300)
-	var running, recentDone []*db.Node
+	all, err := t.ts.ListByKind(db.KindIntent, 300)
+	check("all", err)
+	running, runningTotal, runningErr := t.ts.RunningIntents(300)
+	if runningErr != nil {
+		out["incomplete"] = true
+		check("running_intents", runningErr)
+	} else {
+		out["running_intents_total"] = runningTotal
+		out["running_intents_truncated"] = len(running) < runningTotal
+	}
+	var recentDone []*db.Node
 	for _, n := range all {
 		switch n.State {
-		case "running":
-			running = append(running, n)
 		case "done", "blocked", "exhausted":
 			if hidden(n.ID) {
 				continue // in a cold_digest and still cold — shown via cold_digests (§6.2)
@@ -436,21 +457,33 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// 让 planner 去重时别把"没显示"当成"没派过"，无需在提示词里另行解释。
 	if dt, err := t.ts.CountFinishedIntents(); err == nil {
 		out["done_intents_total"] = dt
+	} else {
+		check("done_intents_total", err)
 	}
 	// frontier_open：开放意图真实总数（open_intents 只是其中优先级最高的前 N 条截断视图）。
 	if fo, err := t.ts.CountOpenIntents(); err == nil {
 		out["frontier_open"] = fo
 	} else {
-		out["frontier_open"] = len(fr)
+		out["frontier_open"] = nil
+		check("frontier_open", err)
 	}
 	// findings (confirmed vulns) and facts (worker exploration results) are
 	// now distinct node kinds. recent_facts surfaces fact summaries (esp.
 	// negative results) so the planner sees them in one call; full content
 	// via node_detail(id).
-	vulnNodes, _ := t.ts.ListByKind(db.KindFinding, 1000)
-	factNodes, _ := t.ts.ListByKind(db.KindFact, 1000) // newest first
-	out["findings_total"] = len(vulnNodes)             // 确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
-	out["facts"] = len(factNodes)                      // 探索事实/结论数（含否定结论）
+	vulnNodes, err := t.ts.ListByKind(db.KindFinding, 1000)
+	check("vulnNodes", err)
+	factNodes, err := t.ts.ListByKind(db.KindFact, 1000)
+	check("factNodes", err)                // newest first
+	out["findings_total"] = len(vulnNodes) // 确认漏洞总数（目标判定看它）；明细见 finding_list（最新一窗）
+	out["facts"] = len(factNodes)          // 探索事实/结论数（含否定结论）
+	if counts, err := t.ts.Stats(); err == nil {
+		out["findings_total"] = counts[db.KindFinding]
+		out["facts"] = counts[db.KindFact]
+	} else {
+		out["incomplete"] = true
+		out["totals_unavailable"] = true
+	}
 	// findings 是任务里最高价值的产物 → 概览带最新一窗（≤10 条，vulnNodes 已按 id 降序即最新在前），
 	// 让 planner 每轮判目标时一眼看到最近确认的漏洞；全量/更早的用 list_findings 取。
 	// 每条只留 {id, summary, from_intent?}：from_intent 是产生本漏洞的意图。
@@ -556,6 +589,11 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 				out["coverage"] = m
 			}
 		}
+	}
+	if len(queryErrors) > 0 {
+		out["incomplete"] = true
+		out["query_errors"] = queryErrors
+		out["next_action"] = "部分查询失败，缺失字段不能视为无记录；重试 graph_overview 后再做依赖完整态势的决定。"
 	}
 	return out
 }
@@ -908,14 +946,44 @@ func compactFinding(n *db.Node) map[string]any {
 }
 
 func (t *ToolSet) listFindings() actool.CoreTool {
-	return t.readExpTool("list_findings", "列本任务及直接关联任务的【确认漏洞】(紧凑：id+task_id+intent_id+vulnclass+severity+摘要+状态)。关联任务条目带 source_task_id/inherited=true 且只读。这里只含漏洞；普通探索事实用 list_facts，详情用 node_detail(id)。",
-		obj(map[string]any{}),
-		func(context.Context, json.RawMessage) (actool.Result, error) {
-			f, _ := t.ts.ListByKindWithSources(db.KindFinding, 500)
+	return t.readExpTool("list_findings", "列本任务及直接关联任务的【确认漏洞】(紧凑：id+task_id+intent_id+vulnclass+severity+摘要+状态)。关联任务条目带 source_task_id/inherited=true 且只读。这里只含漏洞；普通探索事实用 list_facts，详情用 node_detail(id)。默认保留旧数组格式，每任务至多500条；paged=true 返回 {findings,total,has_more,next_before}，支持 limit(默认20，上限100)、before 游标和 q 摘要搜索。",
+		obj(map[string]any{"paged": map[string]any{"type": "boolean"}, "limit": intp("分页条数，1–100"), "before": intp("上一页 next_before"), "q": str("摘要搜索")}),
+		func(_ context.Context, raw json.RawMessage) (actool.Result, error) {
+			var in struct {
+				Paged  bool
+				Limit  int
+				Before int64
+				Q      string
+			}
+			if err := json.Unmarshal(raw, &in); err != nil {
+				return actool.Fail("invalid_input", "参数不是有效 JSON。", "使用空对象，或 {\"paged\":true,\"limit\":20}。"), nil
+			}
+			var f []*db.Node
+			var err error
+			var more bool
+			var total int
+			if in.Paged {
+				limit := in.Limit
+				if limit <= 0 {
+					limit = 20
+				}
+				if limit > 100 {
+					limit = 100
+				}
+				f, more, total, err = t.ts.ListByKindPageWithSources(db.KindFinding, in.Before, limit, strings.TrimSpace(in.Q))
+			} else {
+				f, err = t.ts.ListByKindWithSources(db.KindFinding, 500)
+			}
+			if err != nil {
+				return actool.Fail("query_failed", "漏洞查询未完成。", "稍后重试；此次失败不代表没有漏洞。"), nil
+			}
 			if err := t.ts.PopulateFindingTrafficIDs(f); err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			intentOf, _ := t.ts.FindingIntentsWithSources() // finding id -> 产生它的 intent id
+			intentOf, err := t.ts.FindingIntentsWithSources()
+			if err != nil {
+				return actool.Fail("query_failed", "漏洞来源查询未完成。", "稍后重试，不要把查询失败当成无记录。"), nil
+			} // finding id -> 产生它的 intent id
 			taskID := t.taskID
 			if taskID <= 0 {
 				taskID, _ = t.ts.TaskID()
@@ -936,7 +1004,18 @@ func (t *ToolSet) listFindings() actool.CoreTool {
 				}
 				out = append(out, m)
 			}
-			return jsonResult(out)
+			if in.Paged {
+				next := int64(0)
+				if more && len(f) > 0 {
+					next = f[len(f)-1].ID
+				}
+				return jsonResult(map[string]any{"findings": out, "total": total, "has_more": more, "next_before": next})
+			}
+			result, err := jsonResult(out)
+			if len(f) >= 500 {
+				result.Extra = []llm.Message{llm.UserText("list_findings 返回旧版有界数组（每任务至多500条），可能不完整；需要完整结果请用 paged=true，并按 has_more / next_before 翻页。")}
+			}
+			return result, err
 		})
 }
 

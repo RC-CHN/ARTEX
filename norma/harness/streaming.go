@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 
 	"github.com/RC-CHN/ARTEX/norma/llm"
@@ -32,12 +33,13 @@ const (
 )
 
 type tracked struct {
-	block  llm.ContentBlock
-	safe   bool
-	status toolStatus
-	result llm.ContentBlock
-	extra  []llm.Message // messages the tool injects after its result (Result.Extra)
-	prog   []string
+	block   llm.ContentBlock
+	safe    bool
+	status  toolStatus
+	result  llm.ContentBlock
+	extra   []llm.Message // messages the tool injects after its result (Result.Extra)
+	prog    []string
+	started bool // admission passed; cancellation cannot assert side effects stopped
 }
 
 func newStreamExec(l *loop) *streamExec {
@@ -100,29 +102,54 @@ func (e *streamExec) processQueue() {
 }
 
 func (e *streamExec) run(t *tracked) {
-	e.l.sem <- struct{}{} // bound concurrent tool execution
-	defer func() { <-e.l.sem }()
-	if e.ctx.Err() != nil {
-		e.mu.Lock()
-		t.result = llm.ToolResultText(t.block.ID, "tool execution interrupted", true)
-		t.status = stCompleted
-		e.mu.Unlock()
-		e.ping()
+	select {
+	case e.l.sem <- struct{}{}: // bound concurrent tool execution
+	case <-e.ctx.Done():
+		e.complete(t, interruptedTool(t.block.ID, false), nil)
 		return
 	}
+	defer func() { <-e.l.sem }()
+	e.mu.Lock()
+	if e.ctx.Err() != nil {
+		e.mu.Unlock()
+		e.complete(t, interruptedTool(t.block.ID, false), nil)
+		return
+	}
+	t.started = true
+	e.mu.Unlock()
 	res, extra := e.l.execOne(e.ctx, t.block, func(p tool.ProgressInfo) {
 		e.mu.Lock()
-		t.prog = append(t.prog, p.Message)
+		if t.status != stYielded {
+			t.prog = append(t.prog, p.Message)
+		}
 		e.mu.Unlock()
 		e.ping()
 	})
+	e.complete(t, res, extra)
+	e.processQueue() // a slot freed
+}
+
+// Once a receipt has been yielded it is immutable, including across cancellation.
+// A late tool result must not contradict the receipt already seen by the user or
+// change the transcript depending on when results()/extraMessages() is called.
+func (e *streamExec) complete(t *tracked, res llm.ContentBlock, extra []llm.Message) {
 	e.mu.Lock()
-	t.result = res
-	t.extra = extra
-	t.status = stCompleted
+	if t.status != stYielded {
+		t.result = res
+		t.extra = extra
+		t.status = stCompleted
+	}
 	e.mu.Unlock()
 	e.ping()
-	e.processQueue() // a slot freed
+}
+
+func interruptedTool(id string, started bool) llm.ContentBlock {
+	status, next := "not_started", "The tool did not start. Resume only when execution is authorized."
+	if started {
+		status, next = "unknown", "Cancellation was requested; side effects may already exist. Verify current state before retrying a write; reuse its original idempotency key where supported."
+	}
+	b, _ := json.Marshal(map[string]any{"code": "tool_interrupted", "message": "tool execution interrupted", "execution_status": status, "retryable": false, "next_action": next})
+	return llm.ToolResultText(id, string(b), true)
 }
 
 // drain yields all ready progress and completed results in FIFO order. Stops at
@@ -213,7 +240,7 @@ func (e *streamExec) drainSynthetic(msg string) bool {
 			continue
 		}
 		t.status = stYielded
-		t.result = llm.ToolResultText(t.block.ID, msg, true)
+		t.result = interruptedTool(t.block.ID, t.started)
 		r := t.result
 		evs = append(evs, Event{Kind: KindToolResult, ToolResult: &r})
 	}
@@ -236,7 +263,7 @@ func (e *streamExec) results() []llm.ContentBlock {
 		if t.status == stCompleted || t.status == stYielded {
 			out[i] = t.result
 		} else {
-			out[i] = llm.ToolResultText(t.block.ID, "tool execution interrupted", true)
+			out[i] = interruptedTool(t.block.ID, t.started)
 		}
 	}
 	return out

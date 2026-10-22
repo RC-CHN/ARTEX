@@ -3,11 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
-	actool "github.com/RC-CHN/ARTEX/norma/tool"
 	"github.com/RC-CHN/ARTEX/agent"
 	"github.com/RC-CHN/ARTEX/db"
+	actool "github.com/RC-CHN/ARTEX/norma/tool"
 )
 
 func names(tools []actool.CoreTool) map[string]actool.CoreTool {
@@ -53,6 +54,14 @@ func TestWireTools(t *testing.T) {
 	ctx := context.Background()
 
 	worker := names(agent.ToolResolve(ctx, "worker", base))
+	// Simulate the old empty schema while preserving an operator description.
+	if _, err := pg.Exec(`UPDATE tools SET description='fixture description',schema='{"type":"object","properties":{}}' WHERE key='list_findings'`); err != nil {
+		t.Fatal(err)
+	}
+	upgraded := names(agent.ToolResolve(ctx, "worker", base))["list_findings"]
+	if upgraded == nil || upgraded.InputSchema()["properties"].(map[string]any)["paged"] == nil || !strings.HasPrefix(upgraded.Description(), "fixture description") {
+		t.Fatal("old tool catalog lost pagination or operator edits")
+	}
 	if _, ok := worker["record_fact"]; !ok {
 		t.Error("worker lost record_fact")
 	}

@@ -29,6 +29,9 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{"ok": ready, "service": "artex", "version": BuildVersion,
 		"execution": map[string]any{"ready": ready, "code": code}, "runner_recovery": s.recoverySnapshot()}
+	if s.toolUsage != nil {
+		out["tool_usage_queue"] = s.toolUsage.snapshot()
+	}
 	if s.m != nil {
 		if tr := s.m.Traffic(); tr != nil {
 			out["traffic_backend"] = tr.Backend()

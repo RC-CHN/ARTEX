@@ -47,6 +47,7 @@ func (s *Server) Close() {
 		// Seal persistence after those producers finish, then keep PG alive until
 		// every accepted update has completed.
 		s.persistence.close()
+		s.toolUsage.close()
 		s.runnerJournal.Close()
 	})
 }

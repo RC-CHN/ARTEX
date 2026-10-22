@@ -762,6 +762,22 @@ func scanNodes(rows *sql.Rows) ([]*Node, error) {
 	return out, rows.Err()
 }
 
+// RunningIntents filters before limiting; old active work must not disappear
+// merely because many newer intents were created.
+func (s *ExplorationStore) RunningIntents(limit int) ([]*Node, int, error) {
+	var total int
+	if err := s.db.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state='running'`, s.expID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes WHERE exploration_id=$1 AND kind='intent' AND state='running' ORDER BY id DESC LIMIT $2`, s.expID, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	nodes, err := scanNodes(rows)
+	return nodes, total, err
+}
+
 // ListByKind lists nodes of a kind (newest first).
 func (s *ExplorationStore) ListByKind(kind string, limit int) ([]*Node, error) {
 	if limit <= 0 {

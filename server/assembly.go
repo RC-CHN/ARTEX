@@ -222,7 +222,11 @@ func seedPrompts(pg *db.DB) {
 // tool-assembly time each built-in tool is filtered by its agent binding / enabled
 // flag and, if kept, wrapped so the model sees the DB-overridden description/schema
 // and缺省入参 get injected. MCP/skill/host tools have no row and pass through.
-func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
+func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool, usage ...toolUsageRecorder) {
+	var recorder toolUsageRecorder = pg
+	if len(usage) > 0 {
+		recorder = usage[0]
+	}
 	agent.FindingTrafficBindingEnabled = func() bool { return pg.GetBool(settingAgentTrafficBinding, false) }
 	// Seed the built-in domain tools (first-insert only; DO NOTHING preserves edits).
 	// No startup prune: rows we didn't seed are left alone so future user-defined
@@ -266,10 +270,28 @@ func wireTools(pg *db.DB, domainReg map[string]actool.CoreTool) {
 				_ = json.Unmarshal(row.Schema, &schema)
 			}
 			desc := row.Description
+			if t.Name() == "list_findings" {
+				// Old catalogs have an empty schema. Add optional fields without
+				// overwriting operator descriptions/defaults/bindings.
+				if schema == nil {
+					schema = map[string]any{"type": "object"}
+				}
+				props, _ := schema["properties"].(map[string]any)
+				if props == nil {
+					props = map[string]any{}
+					schema["properties"] = props
+				}
+				for key, value := range t.InputSchema()["properties"].(map[string]any) {
+					if _, ok := props[key]; !ok {
+						props[key] = value
+					}
+				}
+				desc += "\n可选 paged=true 返回 findings/total/has_more/next_before，按 before 游标分页；默认仍返回旧数组。"
+			}
 			if t.Name() == "manage_resource" || t.Name() == "manage_resources_batch" {
 				desc += "\n" + resourceAtomicGuidance
 			}
-			return meterTool(agent.DecorateTool(t, desc, schema), pg, row.Key, agentKey, runInfo)
+			return meterTool(agent.DecorateTool(t, desc, schema), recorder, row.Key, agentKey, runInfo)
 		}
 		out := tools[:0:0]
 		for _, t := range tools {
