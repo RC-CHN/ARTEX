@@ -15,7 +15,7 @@ import (
 func TestReasonHintCoversEveryTerminalReason(t *testing.T) {
 	all := []harness.TerminalReason{
 		harness.ReasonCompleted, harness.ReasonBlockingLimit, harness.ReasonImageError,
-		harness.ReasonModelError, harness.ReasonAbortedStreaming, harness.ReasonAbortedTools,
+		harness.ReasonModelError, harness.ReasonExecutionError, harness.ReasonEmptyResponse, harness.ReasonAbortedStreaming, harness.ReasonAbortedTools,
 		harness.ReasonPromptTooLong, harness.ReasonStopHookPrevented, harness.ReasonHookStopped,
 		harness.ReasonMaxTurns, harness.ReasonTimeout,
 	}
@@ -23,6 +23,53 @@ func TestReasonHintCoversEveryTerminalReason(t *testing.T) {
 		if strings.TrimSpace(reasonHint[reason]) == "" {
 			t.Errorf("terminal reason %q has no explanation", reason)
 		}
+	}
+}
+
+func TestTerminalRecoveryFeedbackUsesActualCountAndMode(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		attempts   int
+		legacy     bool
+		want       []string
+		forbid     []string
+	}{
+		{"continue", "continue", 3, true, []string{"已尝试 3 次", "保留工具"}, []string{"仅文字补答", "禁止工具调用"}},
+		{"text_only", "text_only", 1, true, []string{"已尝试 1 次", "仅文字补答", "禁止工具调用"}, []string{"保留工具"}},
+		{"old_bool_only", "", 0, true, []string{"次数未记录", "恢复模式未记录"}, []string{"已尝试 1 次", "仅文字补答", "禁止工具调用"}},
+		{"count_without_old_bool", "continue", 2, false, []string{"已尝试 2 次", "保留工具"}, []string{"禁止工具调用"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			term := &harness.Terminal{Reason: harness.ReasonEmptyResponse, Err: errors.New("synthetic empty reply"),
+				SummaryRecoveryAttempted: tc.legacy, SummaryRecoveryAttempts: tc.attempts, SummaryRecoveryMode: tc.mode, SummaryMissing: true}
+			trace := &runTrace{}
+			trace.start("edited", "Edit", `{"file_path":"RESOURCE.md"}`)
+			trace.done("edited")
+			summary, detail := terminalText(t.Context(), term, trace)
+			if !terminalIsError(t.Context(), term) || !strings.Contains(summary, "异常结束") || !strings.Contains(summary, "产物保留") {
+				t.Fatalf("empty reply hidden as completion: %q", summary)
+			}
+			for _, want := range append(tc.want, "empty_response", "Edit", "已正常返回", "系统回执不代表任务已完成") {
+				if !strings.Contains(detail, want) {
+					t.Errorf("missing %q: %s", want, detail)
+				}
+			}
+			for _, forbidden := range append(tc.forbid, "模型正常结束", "基本没真正探成", "还没有发出工具调用") {
+				if strings.Contains(detail, forbidden) {
+					t.Errorf("misleading %q: %s", forbidden, detail)
+				}
+			}
+		})
+	}
+}
+
+func TestModelErrorDoesNotDenyPriorToolEffects(t *testing.T) {
+	trace := &runTrace{}
+	trace.start("saved", "Write", `{"file_path":"RESOURCE.md"}`)
+	trace.done("saved")
+	_, detail := terminalText(t.Context(), &harness.Terminal{Reason: harness.ReasonModelError, Err: errors.New("synthetic EOF")}, trace)
+	if strings.Contains(detail, "基本没真正探成") || !strings.Contains(detail, "核对执行记录与产物") || !strings.Contains(detail, "已正常返回") {
+		t.Fatalf("model failure misstates completed tool effects: %s", detail)
 	}
 }
 

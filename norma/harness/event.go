@@ -39,6 +39,7 @@ const (
 	ReasonBlockingLimit     TerminalReason = "blocking_limit"      // hard context limit hit pre-request
 	ReasonImageError        TerminalReason = "image_error"         // unsupported media (multimodal)
 	ReasonModelError        TerminalReason = "model_error"         // provider/API failure
+	ReasonEmptyResponse     TerminalReason = "empty_response"      // no useful output after bounded recovery
 	ReasonExecutionError    TerminalReason = "execution_error"     // runtime outcome unsafe to retry
 	ReasonAbortedStreaming  TerminalReason = "aborted_streaming"   // canceled during streaming
 	ReasonAbortedTools      TerminalReason = "aborted_tools"       // canceled during tool execution
@@ -67,8 +68,12 @@ const (
 // Terminal is the final state of a Query, delivered as the KindResult event.
 type Terminal struct {
 	SummaryRecoveryAttempted bool
-	SummaryRecoveryFailed    bool
-	SummaryMissing           bool
+	SummaryRecoveryAttempts  int
+	// SummaryRecoveryMode describes the latest attempted recovery, not every
+	// recovery in a run that may later enter budget settlement.
+	SummaryRecoveryMode   string // continue | text_only
+	SummaryRecoveryFailed bool
+	SummaryMissing        bool
 	// InterruptedToolInput was still being generated when the model stream
 	// failed or was cancelled. It was never submitted to the tool executor.
 	InterruptedToolInput *llm.ContentBlock

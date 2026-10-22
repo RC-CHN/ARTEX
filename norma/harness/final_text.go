@@ -1,10 +1,15 @@
 package harness
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/RC-CHN/ARTEX/norma/llm"
 )
+
+// ErrEmptyResponse is distinct from a provider error: completed tool effects
+// must not be replayed just because the model failed to produce useful output.
+var ErrEmptyResponse = errors.New("model produced no text or tool calls after recovery without successful tool progress")
 
 // These reminders belong to one model request, not the resumed conversation.
 const finalTextOnlyPrompt = "上一轮没有最终文字答复。本轮只用文字向用户汇报已有结果、可核对的记录 ID 或产物路径、未完成项与阻碍；没有完成也请明确说明。禁止调用任何工具，禁止继续执行工作，不推测或编造结果。"

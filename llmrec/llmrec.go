@@ -156,6 +156,8 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 			stopReason                          string
 			streamErr                           error
 			textBytes, thinkingBytes, toolCalls int
+			diagnostics                         *llm.StreamDiagnostics
+			consumerStopped                     bool
 		)
 
 		finished := false
@@ -169,7 +171,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				status = "error"
 			}
 			// Lightweight metering row — always written.
-			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, stopReason, textBytes, thinkingBytes, toolCalls)
+			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, stopReason, textBytes, thinkingBytes, toolCalls, diagnostics, consumerStopped)
 			// Heavy trace row — only when body recording is on.
 			if recordBodies {
 				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err)
@@ -193,6 +195,19 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 			// would zero out the input already counted at start (mirrors the SDK's own
 			// llm.Accumulator; see norma/llm/accumulate.go).
 			switch ev.Type {
+			case llm.SEStreamDiagnostics:
+				if ev.Diagnostics != nil {
+					// Snapshot values: custom providers may reuse their event struct.
+					previousErrors := 0
+					if diagnostics != nil {
+						previousErrors = diagnostics.ParseErrors
+					}
+					copy := *ev.Diagnostics
+					// Final response's stop evidence, total ignored malformed frames
+					// across the provider's bounded empty-response retries.
+					copy.ParseErrors = previousErrors + min(max(copy.ParseErrors, 0), 2147483647-previousErrors)
+					diagnostics = &copy
+				}
 			case llm.SEToolUseStart:
 				toolCalls++
 			case llm.SETextDelta:
@@ -214,6 +229,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				usage.Add(ev.Usage)
 			}
 			if !yield(ev, err) {
+				consumerStopped = true
 				return
 			}
 		}
@@ -262,7 +278,7 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 			toolCalls++
 		}
 	}
-	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, stopReason, textBytes, thinkingBytes, toolCalls)
+	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, stopReason, textBytes, thinkingBytes, toolCalls, nil, false)
 	if recordBodies {
 		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err)
 	}
@@ -281,7 +297,7 @@ func thinkingText(msg llm.Message) string {
 
 // recordUsage appends one lightweight metering row to llm_usage (no bodies). Skips
 // zero-token calls with no model, which carry nothing worth metering.
-func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status, stopReason string, textBytes, thinkingBytes, toolCalls int) {
+func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status, stopReason string, textBytes, thinkingBytes, toolCalls int, diagnostics *llm.StreamDiagnostics, consumerStopped bool) {
 	runtimeobs.Default.Record(runtimeobs.ModelRequest, time.Duration(latencyMs)*time.Millisecond, status != "ok")
 	if r.pg == nil {
 		return
@@ -290,7 +306,7 @@ func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage 
 		usage.CacheReadTokens == 0 && usage.CacheWriteTokens == 0 {
 		return
 	}
-	err := r.pg.InsertLLMUsage(&db.LLMUsage{
+	row := &db.LLMUsage{
 		TaskID:        taskID,
 		ExplorationID: expID,
 		Worker:        worker,
@@ -303,7 +319,19 @@ func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage 
 		CacheWrite:    usage.CacheWriteTokens,
 		Status:        status,
 		StopReason:    stopReason, TextBytes: textBytes, ThinkingBytes: thinkingBytes, ToolCalls: toolCalls,
-	})
+	}
+	if diagnostics != nil {
+		end := string(diagnostics.StreamEnd)
+		row.FinishReasonSeen, row.StreamEnd, row.ParseErrors = &diagnostics.FinishReasonSeen, &end, &diagnostics.ParseErrors
+	}
+	if consumerStopped {
+		end := string(llm.StreamEndConsumerStop)
+		row.StreamEnd = &end
+		// The consumer may have stopped in a later attempt than the last
+		// diagnostics event. Do not mislabel earlier stop evidence as current.
+		row.FinishReasonSeen, row.ParseErrors = nil, nil
+	}
+	err := r.pg.InsertLLMUsage(row)
 	if err != nil {
 		log.Printf("[llmusage] insert: %v", err)
 	}

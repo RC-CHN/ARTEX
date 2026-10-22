@@ -172,7 +172,15 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 				}
 				u := ev.Terminal.Usage // cumulative token usage for this session
 				cancelCode, _, _, _ := AbortReason(ctx)
-				meta, _ := json.Marshal(map[string]any{"terminal_reason": reason, "turns": ev.Terminal.Turns, "summary_missing": strings.TrimSpace(ev.Terminal.Text) == "", "summary_recovery_attempted": ev.Terminal.SummaryRecoveryAttempted, "summary_recovery_failed": ev.Terminal.SummaryRecoveryFailed, "cancel_code": cancelCode, "elapsed_ms": time.Since(lastTool.startedAt).Milliseconds()})
+				meta, _ := json.Marshal(map[string]any{
+					"terminal_reason": reason, "turns": ev.Terminal.Turns,
+					"summary_missing":            strings.TrimSpace(ev.Terminal.Text) == "",
+					"summary_recovery_attempted": ev.Terminal.SummaryRecoveryAttempted,
+					"summary_recovery_attempts":  ev.Terminal.SummaryRecoveryAttempts,
+					"summary_recovery_mode":      ev.Terminal.SummaryRecoveryMode,
+					"summary_recovery_failed":    ev.Terminal.SummaryRecoveryFailed,
+					"cancel_code":                cancelCode, "elapsed_ms": time.Since(lastTool.startedAt).Milliseconds(),
+				})
 				rec(db.Activity{Kind: "result", IsError: terminalIsError(ctx, ev.Terminal),
 					Summary: firstLine(sum, 400), Detail: detail, Metadata: meta,
 					InputTokens: &u.InputTokens, OutputTokens: &u.OutputTokens,

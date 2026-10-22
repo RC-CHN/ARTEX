@@ -24,16 +24,43 @@ const (
 	SEToolInputJSON     StreamEventType = "tool_input_delta"
 	SEMessageDelta      StreamEventType = "message_delta" // carries stop_reason / usage
 	SEMessageStop       StreamEventType = "message_stop"
+	SEStreamDiagnostics StreamEventType = "stream_diagnostics" // operational metadata; not a content/block boundary
 )
+
+// StreamEnd describes the transport/consumer boundary, not whether the model
+// actually finished its answer. In particular, EOF and [DONE] without a decoded
+// finish_reason are distinct observations, not proof of truncation or success.
+type StreamEnd string
+
+const (
+	StreamEndDone         StreamEnd = "done"
+	StreamEndEOF          StreamEnd = "eof"
+	StreamEndReadError    StreamEnd = "read_error"
+	StreamEndRequestError StreamEnd = "request_error"
+	StreamEndConsumerStop StreamEnd = "consumer_stop"
+)
+
+// StreamDiagnostics contains only structural observations from one HTTP stream
+// attempt. It never contains provider payloads, headers or error messages.
+// FinishReasonSeen refers to a non-empty finish_reason decoded for the selected
+// choice. ParseErrors counts frames ignored because JSON/type decoding failed;
+// unknown but valid frames do not count. Consumers must ignore this event when
+// accumulating content or deciding whether a tool-input block has finished.
+type StreamDiagnostics struct {
+	FinishReasonSeen bool      `json:"finish_reason_seen"`
+	StreamEnd        StreamEnd `json:"stream_end"`
+	ParseErrors      int       `json:"parse_errors"`
+}
 
 // StreamEvent is one normalized model-level streaming event (FR-03.5).
 type StreamEvent struct {
-	Type       StreamEventType
-	Text       string // text/thinking/tool_input JSON fragment
-	ToolID     string // tool_use_start
-	ToolName   string // tool_use_start
-	StopReason string // message_delta
-	Usage      Usage  // message_start / message_delta
+	Type        StreamEventType
+	Text        string             // text/thinking/tool_input JSON fragment
+	ToolID      string             // tool_use_start
+	ToolName    string             // tool_use_start
+	StopReason  string             // message_delta
+	Usage       Usage              // message_start / message_delta
+	Diagnostics *StreamDiagnostics // stream_diagnostics; nil for other events
 }
 
 // Format selects the wire protocol of a Provider.

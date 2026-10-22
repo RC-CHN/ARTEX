@@ -27,6 +27,9 @@ func (s SideQuestionService) Answer(ctx context.Context, req llm.CompletionReque
 				err = streamErr
 				break
 			}
+			if ev.Type == llm.SEStreamDiagnostics {
+				continue
+			}
 			switch ev.Type {
 			case llm.SETextDelta:
 				out.Text += ev.Text

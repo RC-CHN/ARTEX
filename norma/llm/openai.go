@@ -291,6 +291,9 @@ func (p *openaiProvider) Stream(ctx context.Context, req CompletionRequest) iter
 	return func(yield func(StreamEvent, error) bool) {
 		body, err := p.buildBody(req, true)
 		if err != nil {
+			if !yield(StreamEvent{Type: SEStreamDiagnostics, Diagnostics: &StreamDiagnostics{StreamEnd: StreamEndRequestError}}, nil) {
+				return
+			}
 			yield(StreamEvent{}, err)
 			return
 		}
@@ -301,6 +304,9 @@ func (p *openaiProvider) Stream(ctx context.Context, req CompletionRequest) iter
 				r.Header.Set("accept", "text/event-stream")
 			}, "openai")
 			if err != nil {
+				if !yield(StreamEvent{Type: SEStreamDiagnostics, Diagnostics: &StreamDiagnostics{StreamEnd: StreamEndRequestError}}, nil) {
+					return
+				}
 				yield(StreamEvent{}, err)
 				return
 			}
@@ -313,15 +319,18 @@ func (p *openaiProvider) Stream(ctx context.Context, req CompletionRequest) iter
 			started := map[int]bool{}
 			var stopReason string
 			var usage Usage
+			diagnostics := StreamDiagnostics{}
 			emitted := false
 			consumerStopped := false
 			var streamErr error
 			for {
 				_, data, serr := scan.next()
 				if serr == io.EOF {
+					diagnostics.StreamEnd = StreamEndEOF
 					break
 				}
 				if serr != nil {
+					diagnostics.StreamEnd = StreamEndReadError
 					streamErr = serr
 					break
 				}
@@ -330,11 +339,16 @@ func (p *openaiProvider) Stream(ctx context.Context, req CompletionRequest) iter
 					continue
 				}
 				if data == "[DONE]" {
+					diagnostics.StreamEnd = StreamEndDone
 					break
 				}
-				evs, sr, u, ok := parseOpenAIFrame(data, started)
+				evs, sr, u, ok, malformed := parseOpenAIFrameDiagnostics(data, started)
+				if malformed {
+					diagnostics.ParseErrors++
+				}
 				if sr != "" {
 					stopReason = sr
+					diagnostics.FinishReasonSeen = true
 				}
 				if ok {
 					usage = u
@@ -353,6 +367,11 @@ func (p *openaiProvider) Stream(ctx context.Context, req CompletionRequest) iter
 			resp.Body.Close()
 
 			if consumerStopped {
+				// Go iterators may not yield after the consumer returns false. The
+				// recorder observes that boundary itself as consumer_stop.
+				return
+			}
+			if !yield(StreamEvent{Type: SEStreamDiagnostics, Diagnostics: &diagnostics}, nil) {
 				return
 			}
 			if streamErr != nil {
@@ -512,6 +531,12 @@ func pickReasoning(fields ...string) string {
 }
 
 func parseOpenAIFrame(data string, started map[int]bool) (evs []StreamEvent, stopReason string, usage Usage, hasUsage bool) {
+	evs, stopReason, usage, hasUsage, _ = parseOpenAIFrameDiagnostics(data, started)
+	return
+}
+
+// Decode once so always-on diagnostics do not add another JSON parse per token.
+func parseOpenAIFrameDiagnostics(data string, started map[int]bool) (evs []StreamEvent, stopReason string, usage Usage, hasUsage, malformed bool) {
 	var f struct {
 		Choices []struct {
 			Delta struct {
@@ -533,14 +558,14 @@ func parseOpenAIFrame(data string, started map[int]bool) (evs []StreamEvent, sto
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal([]byte(data), &f); err != nil {
-		return nil, "", Usage{}, false
+		return nil, "", Usage{}, false, true
 	}
 	if f.Usage != nil {
 		usage = Usage{InputTokens: f.Usage.PromptTokens, OutputTokens: f.Usage.CompletionTokens, CacheReadTokens: f.Usage.PromptTokensDetails.CachedTokens}
 		hasUsage = true
 	}
 	if len(f.Choices) == 0 {
-		return nil, "", usage, hasUsage
+		return nil, "", usage, hasUsage, false
 	}
 	ch := f.Choices[0]
 	if think := pickReasoning(ch.Delta.ReasoningContent, ch.Delta.Reasoning, ch.Delta.ReasoningText); think != "" {
@@ -565,7 +590,7 @@ func parseOpenAIFrame(data string, started map[int]bool) (evs []StreamEvent, sto
 	if ch.FinishReason != "" {
 		stopReason = mapOpenAIFinish(ch.FinishReason)
 	}
-	return evs, stopReason, usage, hasUsage
+	return evs, stopReason, usage, hasUsage, false
 }
 
 func mapOpenAIFinish(r string) string {

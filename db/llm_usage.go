@@ -29,6 +29,11 @@ type LLMUsage struct {
 	ThinkingBytes int    `json:"thinking_bytes"`
 	ToolCalls     int    `json:"tool_calls"`
 	Status        string `json:"status"` // ok | error
+	// Nil means the adapter did not observe/report this field (including old
+	// archive rows and non-streaming calls), rather than a negative observation.
+	FinishReasonSeen *bool   `json:"finish_reason_seen"`
+	StreamEnd        *string `json:"stream_end"`
+	ParseErrors      *int    `json:"parse_errors"`
 }
 
 const llmUsageSchema = `
@@ -51,6 +56,9 @@ ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS stop_reason TEXT;
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS text_bytes BIGINT;
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS thinking_bytes BIGINT;
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_calls INTEGER;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS finish_reason_seen BOOLEAN;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS stream_end TEXT;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS parse_errors INTEGER;
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
@@ -86,10 +94,11 @@ func (d *DB) InsertLLMUsageContext(ctx context.Context, u *LLMUsage) error {
 		expID = u.ExplorationID
 	}
 	_, err := d.ExecContext(ctx, `
-INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, stop_reason, text_bytes, thinking_bytes, tool_calls)
-VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, stop_reason, text_bytes, thinking_bytes, tool_calls, finish_reason_seen, stream_end, parse_errors)
+VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
 		u.TaskID, expID, u.Worker, u.Model, u.ProfileName,
-		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status, usageStopReason(u.StopReason), u.TextBytes, u.ThinkingBytes, u.ToolCalls)
+		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status, usageStopReason(u.StopReason), u.TextBytes, u.ThinkingBytes, u.ToolCalls,
+		u.FinishReasonSeen, usageStreamEnd(u.StreamEnd), usageParseErrors(u.ParseErrors))
 	return err
 }
 
@@ -355,4 +364,24 @@ func usageStopReason(s string) string {
 		return s
 	}
 	return "other"
+}
+
+// Metadata is an allowlist, even when an external/custom provider constructs a
+// diagnostic event. Do not persist an arbitrary string that could contain text.
+func usageStreamEnd(s *string) any {
+	if s == nil {
+		return nil
+	}
+	switch *s {
+	case "done", "eof", "read_error", "request_error", "consumer_stop":
+		return *s
+	}
+	return "other"
+}
+
+func usageParseErrors(n *int) any {
+	if n == nil {
+		return nil
+	}
+	return min(max(*n, 0), 2147483647)
 }

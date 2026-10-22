@@ -169,7 +169,7 @@ func TestFinalTextContinueKeepsToolsAndEphemeralPrompt(t *testing.T) {
 	}
 }
 
-func TestFinalTextContinueOnlyOneReminder(t *testing.T) {
+func TestFinalTextContinueOneReminderWithoutProgress(t *testing.T) {
 	for _, syncMode := range []bool{false, true} {
 		for _, resumeWithTool := range []bool{false, true} {
 			t.Run(fmt.Sprintf("sync=%v/tool=%v", syncMode, resumeWithTool), func(t *testing.T) {
@@ -177,19 +177,23 @@ func TestFinalTextContinueOnlyOneReminder(t *testing.T) {
 				calls := 0
 				term := drain(t, QueryInput{Tools: tool.NewRegistry(finalContinueProbe("probe", &effects)), PermissionMode: permission.ModeBypass, RequireFinalText: true, ContinueAfterEmptyReply: true, NonStreaming: syncMode}, finalContinueDeps(func(context.Context, llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 					calls++
-					if calls > 3 {
-						t.Fatal("second empty reply received another recovery")
+					limit := 2
+					if resumeWithTool {
+						limit = 4
+					}
+					if calls > limit {
+						t.Fatal("consecutive empty replies received unbounded recovery")
 					}
 					if calls == 2 && resumeWithTool {
 						return finalContinueCall("once", "probe", `{}`), "tool_use", llm.Usage{}, nil
 					}
 					return finalContinueThinking(), "", llm.Usage{}, nil
 				}))
-				wantCalls, wantEffects := 2, int32(0)
+				wantCalls, wantEffects, wantRecoveries := 2, int32(0), 1
 				if resumeWithTool {
-					wantCalls, wantEffects = 3, 1
+					wantCalls, wantEffects, wantRecoveries = 4, 1, 2
 				}
-				if calls != wantCalls || effects.Load() != wantEffects || !term.SummaryRecoveryAttempted || !term.SummaryMissing || term.Reason != ReasonCompleted {
+				if calls != wantCalls || effects.Load() != wantEffects || !term.SummaryRecoveryAttempted || !term.SummaryMissing || term.Reason != ReasonEmptyResponse || !errors.Is(term.Err, ErrEmptyResponse) || term.SummaryRecoveryAttempts != wantRecoveries || term.SummaryRecoveryMode != "continue" {
 					t.Fatalf("calls=%d effects=%d terminal=%+v", calls, effects.Load(), term)
 				}
 			})

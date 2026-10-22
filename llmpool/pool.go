@@ -73,8 +73,8 @@ func (p *Pool) Head() *Member { return p.members[0] }
 // Stream implements llm.Provider with failover.
 //
 // The one hard rule: a member may only be abandoned BEFORE it has yielded any
-// event. Once text or a tool_use has reached the caller, re-sending the same
-// request to another model would duplicate output and corrupt the conversation
+// non-diagnostic event. Once text or a tool_use has reached the caller, re-sending
+// the same request to another model would duplicate output and corrupt the conversation
 // history — so a mid-stream failure is surfaced as-is and left to the agent
 // harness's resume logic. Fortunately the failures this exists for (402 no
 // credit, 401 bad key, 429, 5xx) all surface during request establishment,
@@ -89,9 +89,13 @@ func (p *Pool) Stream(ctx context.Context, req llm.CompletionRequest) iter.Seq2[
 			for ev, err := range m.Prov.Stream(ctx, req) {
 				if err != nil && !emitted && shouldFailover(ctx, err) {
 					failed = err
-					break // safe window: nothing reached the caller yet
+					break // safe window: no non-diagnostic event reached the caller
 				}
-				emitted = true
+				// Structural diagnostics are forwarded for observability, but they do
+				// not commit model output or make a pre-response failover unsafe.
+				if ev.Type != llm.SEStreamDiagnostics {
+					emitted = true
+				}
 				if !yield(ev, err) {
 					return // caller stopped consuming (cancel / early exit)
 				}

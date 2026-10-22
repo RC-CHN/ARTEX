@@ -109,11 +109,13 @@ type QueryInput struct {
 	// enforce a cumulative budget across resumes. An unavailable ledger fails
 	// closed. This is separate from TokenBudget's continuation-nudge behavior.
 	TurnBudget TurnBudget
-	// RequireFinalText allows one budgeted recovery after a stop without final text.
+	// RequireFinalText allows a budgeted recovery after a stop without final text.
 	RequireFinalText bool
 	// ContinueAfterEmptyReply keeps tools and the normal loop available during
-	// that recovery. It does not override explicit budgets or their settlement.
-	// False preserves the text-only recovery used by workers.
+	// that recovery. Successful tool progress renews the single recovery allowance;
+	// without such progress, another empty reply ends with ReasonEmptyResponse.
+	// It does not override explicit budgets or their settlement. False preserves
+	// the one text-only recovery used by workers.
 	ContinueAfterEmptyReply bool
 }
 
@@ -248,6 +250,9 @@ type budgetTracker struct {
 type loop struct {
 	summaryOnly              bool
 	summaryRecoveryAttempted bool
+	summaryRecoveryAttempts  int
+	summaryRecoveryMode      string
+	finalTextRecoveryUsed    bool
 	summaryRecoveryFailed    bool
 	finalTextRecoveryPrompt  string // request-local; never recorded or compacted
 	failureStreaks           map[string]failureStreak
@@ -386,6 +391,8 @@ func (l *loop) finish(reason TerminalReason, err error, text string) {
 	l.yield(Event{Kind: KindResult, Terminal: &Terminal{
 		InterruptedToolInput:     l.interruptedToolInput,
 		SummaryRecoveryAttempted: l.summaryRecoveryAttempted,
+		SummaryRecoveryAttempts:  l.summaryRecoveryAttempts,
+		SummaryRecoveryMode:      l.summaryRecoveryMode,
 		SummaryRecoveryFailed:    l.summaryRecoveryFailed,
 		SummaryMissing:           l.in.RequireFinalText && strings.TrimSpace(text) == "",
 		Reason:                   reason,
@@ -482,6 +489,12 @@ func (l *loop) run() {
 		recovering := l.finalTextRecoveryPrompt != ""
 		if recovering {
 			l.summaryRecoveryAttempted = true
+			l.summaryRecoveryAttempts++
+			l.finalTextRecoveryUsed = true
+			l.summaryRecoveryMode = "continue"
+			if l.summaryOnly {
+				l.summaryRecoveryMode = "text_only"
+			}
 		}
 		usageBefore := l.usage
 		asst, exec, stopReason, streamErr, consumerStopped, aborted := l.streamAndExecute(schemas)
@@ -650,8 +663,20 @@ func (l *loop) run() {
 				l.lastContinue = ContinueTokenBudget
 				continue
 			}
-			if strings.TrimSpace(asst.Text()) == "" && l.beginFinalTextRecovery() {
-				continue
+			// Stop hooks and host notices may cancel while processing the final
+			// response. Cancellation takes precedence over empty-reply recovery.
+			if l.ctx.Err() != nil {
+				l.finish(ReasonAbortedStreaming, l.ctx.Err(), "")
+				return
+			}
+			if strings.TrimSpace(asst.Text()) == "" {
+				if l.beginFinalTextRecovery() {
+					continue
+				}
+				if l.in.RequireFinalText && l.in.ContinueAfterEmptyReply && l.finalTextRecoveryUsed {
+					l.finish(ReasonEmptyResponse, ErrEmptyResponse, "")
+					return
+				}
 			}
 			l.finish(ReasonCompleted, nil, asst.Text())
 			return
@@ -663,6 +688,17 @@ func (l *loop) run() {
 		l.messages = append(l.messages, resultMsg)
 		l.record(resultMsg, llm.Usage{})
 		l.noteRepeatedFailures(toolUses, results)
+		// Main may recover again after demonstrated tool progress. Failed or
+		// rejected calls do not replenish the allowance; Worker and settlement
+		// text-only recovery remain bounded to their existing behavior.
+		if l.in.RequireFinalText && l.in.ContinueAfterEmptyReply && !l.settling.Load() {
+			for _, result := range results {
+				if result.Type == llm.BlockToolResult && !result.IsError {
+					l.finalTextRecoveryUsed = false
+					break
+				}
+			}
+		}
 		// Extra messages a tool injected after its result (e.g. the Skill tool's
 		// instructions as an independent user message) are appended next so the
 		// next model round sees them as standing guidance.
@@ -736,7 +772,7 @@ func (l *loop) run() {
 // beginFinalTextRecovery consumes an ordinary remaining attempt. It never replays
 // earlier tool calls and never extends configured run/settlement limits.
 func (l *loop) beginFinalTextRecovery() bool {
-	if !l.in.RequireFinalText || l.summaryRecoveryAttempted || l.finalTextRecoveryPrompt != "" || l.ctx.Err() != nil {
+	if !l.in.RequireFinalText || l.finalTextRecoveryUsed || l.finalTextRecoveryPrompt != "" || l.ctx.Err() != nil {
 		return false
 	}
 	if l.settling.Load() {
@@ -1019,6 +1055,11 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 		if l.ctx.Err() != nil {
 			err = l.ctx.Err()
 			break
+		}
+		// Transport diagnostics are metadata, not a content-block boundary.
+		// In particular they must not finalize a partial tool before a stream error.
+		if ev.Type == llm.SEStreamDiagnostics {
+			continue
 		}
 		if ev.Type == llm.SEToolInputJSON {
 			if building {
