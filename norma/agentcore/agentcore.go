@@ -156,13 +156,14 @@ type Options struct {
 	// Settlement, when set with a Prompt, runs a bounded wrap-up phase when a budget
 	// (MaxTurns/MaxDuration) is hit — injecting the prompt and hiding DisabledTools —
 	// so a budget-terminated run checkpoints its findings. See harness.Settlement.
-	Settlement       *harness.Settlement
-	TurnBudget       harness.TurnBudget
-	RequireFinalText bool
-	MaxTokens        int
-	Temperature      *float64
-	MaxConcurrency   int
-	WorkingDir       string
+	Settlement              *harness.Settlement
+	TurnBudget              harness.TurnBudget
+	RequireFinalText        bool
+	ContinueAfterEmptyReply bool
+	MaxTokens               int
+	Temperature             *float64
+	MaxConcurrency          int
+	WorkingDir              string
 
 	// ToolOutputDir, when set, makes oversized tool output spill to a file there
 	// (full content preserved) and the tool return a head + pointer instead of
@@ -516,37 +517,38 @@ func (s *Session) Prompt(ctx context.Context, input string) iter.Seq2[harness.Ev
 		reminderExtra = s.opts.SystemReminderFunc()
 	}
 	in := harness.QueryInput{
-		Provider:           s.opts.Provider,
-		System:             s.system(),
-		DynamicBoundary:    s.opts.DynamicBoundary,
-		Messages:           s.messages,
-		SystemReminder:     buildSystemReminder(reminderExtra),
-		Tools:              s.registry,
-		DeferredTools:      s.opts.DeferredTools,
-		MaxTokens:          s.opts.MaxTokens,
-		Temperature:        s.opts.Temperature,
-		MaxTurns:           s.opts.MaxTurns,
-		MaxDuration:        s.opts.MaxDuration,
-		Settlement:         s.opts.Settlement,
-		TurnBudget:         s.opts.TurnBudget,
-		RequireFinalText:   s.opts.RequireFinalText,
-		MaxConcurrency:     s.opts.MaxConcurrency,
-		WorkingDir:         s.opts.WorkingDir,
-		Todos:              s.opts.Todos,
-		ToolOutputDir:      s.opts.ToolOutputDir,
-		MaxToolOutputChars: s.opts.MaxToolOutputChars,
-		Tasks:              s.tasks,
-		Notifications:      s.notifications(),
-		BashEnv:            s.opts.BashEnv,
-		PermissionMode:     s.opts.PermissionMode,
-		Allowed:            s.opts.AllowedTools,
-		Disallowed:         s.opts.DisallowedTools,
-		CanUseTool:         s.opts.CanUseTool,
-		Hooks:              s.opts.Hooks,
-		Compactor:          s.compactor,
-		TokenBudget:        s.opts.TokenBudget,
-		EscalateMaxTokens:  s.opts.EscalateMaxTokens,
-		NonStreaming:       s.opts.NonStreaming,
+		Provider:                s.opts.Provider,
+		System:                  s.system(),
+		DynamicBoundary:         s.opts.DynamicBoundary,
+		Messages:                s.messages,
+		SystemReminder:          buildSystemReminder(reminderExtra),
+		Tools:                   s.registry,
+		DeferredTools:           s.opts.DeferredTools,
+		MaxTokens:               s.opts.MaxTokens,
+		Temperature:             s.opts.Temperature,
+		MaxTurns:                s.opts.MaxTurns,
+		MaxDuration:             s.opts.MaxDuration,
+		Settlement:              s.opts.Settlement,
+		TurnBudget:              s.opts.TurnBudget,
+		RequireFinalText:        s.opts.RequireFinalText,
+		ContinueAfterEmptyReply: s.opts.ContinueAfterEmptyReply,
+		MaxConcurrency:          s.opts.MaxConcurrency,
+		WorkingDir:              s.opts.WorkingDir,
+		Todos:                   s.opts.Todos,
+		ToolOutputDir:           s.opts.ToolOutputDir,
+		MaxToolOutputChars:      s.opts.MaxToolOutputChars,
+		Tasks:                   s.tasks,
+		Notifications:           s.notifications(),
+		BashEnv:                 s.opts.BashEnv,
+		PermissionMode:          s.opts.PermissionMode,
+		Allowed:                 s.opts.AllowedTools,
+		Disallowed:              s.opts.DisallowedTools,
+		CanUseTool:              s.opts.CanUseTool,
+		Hooks:                   s.opts.Hooks,
+		Compactor:               s.compactor,
+		TokenBudget:             s.opts.TokenBudget,
+		EscalateMaxTokens:       s.opts.EscalateMaxTokens,
+		NonStreaming:            s.opts.NonStreaming,
 	}
 	if s.writer != nil {
 		in.Recorder = s.writer

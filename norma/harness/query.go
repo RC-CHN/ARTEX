@@ -109,8 +109,12 @@ type QueryInput struct {
 	// enforce a cumulative budget across resumes. An unavailable ledger fails
 	// closed. This is separate from TokenBudget's continuation-nudge behavior.
 	TurnBudget TurnBudget
-	// RequireFinalText allows one budgeted text-only recovery after an empty natural stop.
+	// RequireFinalText allows one budgeted recovery after a stop without final text.
 	RequireFinalText bool
+	// ContinueAfterEmptyReply keeps tools and the normal loop available during
+	// that recovery. It does not override explicit budgets or their settlement.
+	// False preserves the text-only recovery used by workers.
+	ContinueAfterEmptyReply bool
 }
 
 type TurnDecision struct {
@@ -227,6 +231,9 @@ func Query(ctx context.Context, in QueryInput, deps QueryDeps) iter.Seq2[Event, 
 		defer cancel(nil)
 		l := &loop{ctx: runCtx, cancelRun: cancel, in: in, deps: deps, yield: yield, sem: make(chan struct{}, conc)}
 		l.messages = append([]llm.Message(nil), in.Messages...)
+		if in.ContinueAfterEmptyReply {
+			l.messages = withoutLegacyFinalTextPrompt(l.messages)
+		}
 		l.run()
 	}
 }
@@ -242,6 +249,7 @@ type loop struct {
 	summaryOnly              bool
 	summaryRecoveryAttempted bool
 	summaryRecoveryFailed    bool
+	finalTextRecoveryPrompt  string // request-local; never recorded or compacted
 	failureStreaks           map[string]failureStreak
 	interruptedToolInput     *llm.ContentBlock
 	ctx                      context.Context
@@ -471,11 +479,13 @@ func (l *loop) run() {
 			l.recordNewBoundary()
 		}
 
-		if l.summaryOnly {
+		recovering := l.finalTextRecoveryPrompt != ""
+		if recovering {
 			l.summaryRecoveryAttempted = true
 		}
 		usageBefore := l.usage
 		asst, exec, stopReason, streamErr, consumerStopped, aborted := l.streamAndExecute(schemas)
+		l.finalTextRecoveryPrompt = ""
 		var budgetErr error
 		if l.in.TurnBudget != nil {
 			budgetErr = l.in.TurnBudget.AfterTurn(l.ctx, usageDelta(usageBefore, l.usage))
@@ -512,11 +522,15 @@ func (l *loop) run() {
 				l.finish(ReasonAbortedStreaming, l.ctx.Err(), "")
 				return
 			}
-			// A final-text recovery is a single attempt, including on overflow.
-			if l.summaryOnly {
+			// A recovery failure never repeats this request or its tool effects.
+			if recovering {
+				l.summaryRecoveryFailed = true
+				if !l.summaryOnly {
+					l.finish(ReasonModelError, streamErr, "")
+					return
+				}
 				// The main work already completed. Failure of this optional reply
 				// must not turn it into a model-error retry of prior side effects.
-				l.summaryRecoveryFailed = true
 				reason := ReasonCompleted
 				if l.settling.Load() {
 					reason = l.settleReason
@@ -722,7 +736,7 @@ func (l *loop) run() {
 // beginFinalTextRecovery consumes an ordinary remaining attempt. It never replays
 // earlier tool calls and never extends configured run/settlement limits.
 func (l *loop) beginFinalTextRecovery() bool {
-	if !l.in.RequireFinalText || l.summaryOnly || l.ctx.Err() != nil {
+	if !l.in.RequireFinalText || l.summaryRecoveryAttempted || l.finalTextRecoveryPrompt != "" || l.ctx.Err() != nil {
 		return false
 	}
 	if l.settling.Load() {
@@ -739,10 +753,11 @@ func (l *loop) beginFinalTextRecovery() bool {
 		}
 		l.turnCount++
 	}
-	l.summaryOnly = true
-	msg := llm.UserText("上一轮正常结束但没有最终文字答复。本轮只用文字向用户汇报已有结果、可核对的记录 ID 或产物路径、未完成项与阻碍；没有完成也请明确说明。禁止调用任何工具，禁止继续执行工作，不推测或编造结果。")
-	l.messages = append(l.messages, msg)
-	l.record(msg, llm.Usage{})
+	l.summaryOnly = !l.in.ContinueAfterEmptyReply || l.settling.Load()
+	l.finalTextRecoveryPrompt = finalTextOnlyPrompt
+	if !l.summaryOnly {
+		l.finalTextRecoveryPrompt = continueAfterEmptyReplyPrompt
+	}
 	l.lastContinue = ContinueFinalTextRecovery
 	return true
 }
@@ -768,6 +783,9 @@ func (l *loop) beginSettlement(reason TerminalReason, schemas *[]llm.ToolSchema)
 	if prompt == "" {
 		return false
 	}
+	// A durable budget may expire after an empty reply scheduled a recovery.
+	// The explicit settlement replaces that pending request-local reminder.
+	l.finalTextRecoveryPrompt = ""
 	msg := llm.UserText(prompt)
 	l.messages = append(l.messages, msg)
 	l.record(msg, llm.Usage{})
@@ -951,6 +969,10 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 	}
 	l.maybeInjectTodoReminder()
 	msgs := l.requestMessages()
+	if l.finalTextRecoveryPrompt != "" {
+		// Copy before append: ContextView may share its backing array with history.
+		msgs = append(append([]llm.Message(nil), msgs...), llm.UserText(l.finalTextRecoveryPrompt))
+	}
 	if l.in.SystemReminder != "" {
 		msgs = append([]llm.Message{llm.UserText(l.in.SystemReminder)}, msgs...)
 	}
