@@ -25,6 +25,15 @@ import (
 )
 
 func (s *Server) recordExportRoot() string { return filepath.Join(s.m.dir, "exports", "records") }
+
+// Optional operator-selected scratch storage. The original export root remains
+// the default and completed ZIPs always live there. The existing byte cap applies.
+func (s *Server) recordExportScratch() string {
+	if p := strings.TrimSpace(os.Getenv("ARTEX_RECORD_EXPORT_SCRATCH")); p != "" && filepath.IsAbs(p) {
+		return filepath.Join(p, "artex-record-export")
+	}
+	return s.recordExportRoot()
+}
 func (s *Server) recordExportPath(job db.RecordExport) string {
 	return filepath.Join(s.recordExportRoot(), fmt.Sprintf("%d-%s.zip", job.ID, job.Owner))
 }
@@ -107,7 +116,10 @@ func (s *Server) buildRecordExport(parent context.Context, job db.RecordExport) 
 	if err = os.MkdirAll(s.recordExportRoot(), 0700); err != nil {
 		return err
 	}
-	stage, err := os.MkdirTemp(s.recordExportRoot(), fmt.Sprintf(".%d-%s-", job.ID, job.Owner))
+	if err = os.MkdirAll(s.recordExportScratch(), 0700); err != nil {
+		return err
+	}
+	stage, err := os.MkdirTemp(s.recordExportScratch(), fmt.Sprintf(".%d-%s-", job.ID, job.Owner))
 	if err != nil {
 		return err
 	}
@@ -375,20 +387,26 @@ func (s *Server) gcOrphanRecordCopies() {
 	if err != nil {
 		return
 	}
-	entries, err := os.ReadDir(s.recordExportRoot())
-	if err != nil {
-		return
+	roots := []string{s.recordExportRoot()}
+	if scratch := s.recordExportScratch(); scratch != roots[0] {
+		roots = append(roots, scratch)
 	}
-	for _, entry := range entries {
-		match := recordCopyName.FindStringSubmatch(entry.Name())
-		if match == nil || keep[match[1]+"-"+match[2]] {
+	for _, root := range roots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
 			continue
 		}
-		info, err := entry.Info()
-		if err != nil || time.Since(info.ModTime()) < 10*time.Minute {
-			continue
+		for _, entry := range entries {
+			match := recordCopyName.FindStringSubmatch(entry.Name())
+			if match == nil || keep[match[1]+"-"+match[2]] {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil || time.Since(info.ModTime()) < 10*time.Minute {
+				continue
+			}
+			_ = os.RemoveAll(filepath.Join(root, entry.Name()))
 		}
-		_ = os.RemoveAll(filepath.Join(s.recordExportRoot(), entry.Name()))
 	}
 }
 func (s *Server) deleteRecordExportCopy(ctx context.Context, job db.RecordExport) error {

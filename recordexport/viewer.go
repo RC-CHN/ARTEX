@@ -13,8 +13,7 @@ import (
 	"time"
 )
 
-const pageStart = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><title>ARTEX 任务记录</title><style>body{font:16px system-ui;max-width:1100px;margin:32px auto;padding:0 20px;color:#16202b;background:#f7f9fc}input,select{padding:10px;font:inherit;max-width:90%}article,details{background:white;border:1px solid #d9e0e8;padding:14px;margin:8px 0;border-radius:8px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px ui-monospace,monospace}a{color:#075aab}small{color:#506070}.omission{border-color:#c58022}[hidden]{display:none!important}</style>`
-const pageEnd = `<script>const q=document.getElementById('q');if(q)q.addEventListener('input',()=>{const s=q.value.toLowerCase();for(const e of document.querySelectorAll('[data-record]'))e.hidden=!e.textContent.toLowerCase().includes(s)});</script></html>`
+const pageStart = `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'"><title>ARTEX 任务记录</title><style>body{font:16px system-ui;max-width:1100px;margin:32px auto;padding:0 20px;color:#16202b;background:#f7f9fc}input,select{padding:10px;font:inherit;max-width:90%}article,details{background:white;border:1px solid #d9e0e8;padding:14px;margin:8px 0;border-radius:8px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px ui-monospace,monospace}a{color:#075aab}small{color:#506070}.omission{border-color:#c58022}[hidden]{display:none!important}</style>`
 
 func linkPath(p string) string {
 	parts := strings.Split(p, "/")
@@ -28,11 +27,20 @@ func (b *Builder) Index() error {
 	if err != nil {
 		return err
 	}
+	defer w.Close()
 	_, err = fmt.Fprint(w, pageStart, `<h1>ARTEX 任务记录资料包</h1><p>离线查看；仅包含所选任务。数据库快照：`, html.EscapeString(b.Manifest.Cutoff.Format(time.RFC3339)), `</p><p><a href="./manifest.json" download>完整清单、SHA-256 与缺失说明</a></p><input id="q" aria-label="筛选文件" placeholder="按任务、会话、文件名或缺失原因筛选">`)
 	if err == nil && b.Manifest.Redacted {
 		_, err = io.WriteString(w, `<p>这是凭据字段过滤副本。二进制和过大的文件会列为缺失；自动过滤不保证已覆盖所有敏感内容，外发前仍需审阅。</p>`)
 	}
-	for _, f := range b.Manifest.Files {
+	if err != nil {
+		return err
+	}
+	if _, err = io.WriteString(w, `<p>搜索整个索引，每页显示200条；请完整解压资料包。</p><div id="records">`); err != nil {
+		return err
+	}
+	pages := newViewPages(b, w, "index")
+	files := append([]Entry(nil), b.Manifest.Files...)
+	for _, f := range files {
 		if err != nil {
 			break
 		}
@@ -41,16 +49,16 @@ func (b *Builder) Index() error {
 		if len(parts) == 4 && parts[0] == "tasks" && parts[2] == "transcripts" && strings.HasSuffix(parts[3], ".html") {
 			download = ""
 		}
-		_, err = fmt.Fprintf(w, `<article data-record><a href="%s"%s>%s</a><br><small>%d bytes · SHA-256 %s</small></article>`, html.EscapeString(linkPath(f.Path)), download, html.EscapeString(f.Path), f.Size, f.SHA256)
+		err = pages.add(fmt.Sprintf(`<article data-record><a href="%s"%s>%s</a><br><small>%d bytes · SHA-256 %s</small></article>`, html.EscapeString(linkPath(f.Path)), download, html.EscapeString(f.Path), f.Size, f.SHA256))
 	}
 	for _, m := range b.Manifest.Omissions {
 		if err != nil {
 			break
 		}
-		_, err = fmt.Fprintf(w, `<article class="omission" data-record><strong>未包含</strong> %s<br><small>%s</small></article>`, html.EscapeString(m.Path), html.EscapeString(m.Reason))
+		err = pages.add(fmt.Sprintf(`<article class="omission" data-record><strong>未包含</strong> %s<br><small>%s</small></article>`, html.EscapeString(m.Path), html.EscapeString(m.Reason)))
 	}
 	if err == nil {
-		_, err = io.WriteString(w, pageEnd)
+		err = pages.close()
 	}
 	return errors.Join(err, w.Close())
 }
@@ -101,9 +109,10 @@ func (b *Builder) Transcript(source, prefix string) error {
 		if _, err := fmt.Fprintln(md, "# 原始会话记录\n\n每条记录保留 UUID、角色、工具参数与返回内容。读取时点：", b.Manifest.Cutoff.Format(time.RFC3339)); err != nil {
 			return err
 		}
-		if _, err := io.WriteString(view, pageStart+`<h1>会话记录</h1><input id="q" aria-label="搜索记录" placeholder="搜索角色、工具、原文或 UUID">`); err != nil {
+		if _, err := io.WriteString(view, pageStart+`<h1>会话记录</h1><input id="q" aria-label="搜索记录" placeholder="搜索角色、工具、原文或 UUID"><p>搜索全部记录，每页显示200条；原始JSONL与Markdown保持完整。</p><div id="records">`); err != nil {
 			return err
 		}
+		pages := newViewPages(b, view, prefix)
 		dec := json.NewDecoder(&contextReader{ctx: b.ctx, r: io.LimitReader(f, before.Size())})
 		number := 0
 		for {
@@ -137,7 +146,10 @@ func (b *Builder) Transcript(source, prefix string) error {
 			if stamp.After(b.Manifest.Cutoff) {
 				continue
 			}
-			if _, err = raw.Write(append(append([]byte(nil), row...), '\n')); err != nil {
+			if _, err = raw.Write(row); err != nil {
+				return err
+			}
+			if _, err = raw.Write([]byte{'\n'}); err != nil {
 				return err
 			}
 			number++
@@ -163,7 +175,7 @@ func (b *Builder) Transcript(source, prefix string) error {
 			if _, err = fmt.Fprintf(md, "\n## %s\n\n````json\n%s\n````\n", label, display); err != nil {
 				return err
 			}
-			if _, err = fmt.Fprintf(view, `<details data-record id="record-%d"><summary>%s</summary><pre>%s</pre></details>`, number, html.EscapeString(label), html.EscapeString(string(display))); err != nil {
+			if err = pages.add(fmt.Sprintf(`<details data-record id="record-%d"><summary>%s</summary><pre>%s</pre></details>`, number, html.EscapeString(label), html.EscapeString(string(display)))); err != nil {
 				return err
 			}
 		}
@@ -171,8 +183,7 @@ func (b *Builder) Transcript(source, prefix string) error {
 		if e != nil || after.Size() < before.Size() || after.ModTime() != before.ModTime() && after.Size() == before.Size() {
 			b.Omit(prefix, "transcript_changed_during_copy_review_raw_records")
 		}
-		_, err := io.WriteString(view, pageEnd)
-		return err
+		return pages.close()
 	}
 	err = run()
 	return errors.Join(err, raw.Close(), md.Close(), view.Close())

@@ -395,8 +395,8 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// derived_from — possibly several facts combined) and its yields (the
 	// facts/findings it produced). factFrom maps a fact → the intent that
 	// produced it. This is the relationship layer the flat lists lacked.
-	edges, err := t.ts.Edges(5000)
-	check("edges", err)
+	structure, edges, err := loadColdStructure(t.ts)
+	check("graph", err)
 	parentsOf := map[int64][]int64{}
 	yieldsOf := map[int64][]int64{}
 	factFrom := map[int64]int64{}
@@ -421,10 +421,8 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 	// — hidden() only folds a member out when it is covered AND still cold. Computed
 	// every round (cheap for real graph sizes); nil map degrades safely.
 	var hotAtRender map[int64]bool
-	if cg, _, err := loadColdGraph(t.ts); err == nil {
-		hotAtRender = cg.hotSet()
-	} else {
-		check("graph", err)
+	if structure != nil {
+		hotAtRender = structure.hotSet()
 	}
 	hidden := func(id int64) bool { _, c := covered[id]; return c && hotAtRender != nil && !hotAtRender[id] }
 	const openIntentsCap = 30

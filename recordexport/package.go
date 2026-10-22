@@ -289,39 +289,48 @@ func (b *Builder) Finish(zipPath string) (checksum string, size int64, err error
 	}()
 	h := sha256.New()
 	zw := zip.NewWriter(io.MultiWriter(f, h))
-	err = filepath.WalkDir(b.Dir, func(p string, d fs.DirEntry, e error) error {
-		if e != nil {
-			return e
+	// The manifest is already the authoritative file list. Avoid walking the
+	// staged directory again (especially expensive on shared storage).
+	root, openErr := os.OpenRoot(b.Dir)
+	if openErr != nil {
+		err = openErr
+	} else {
+		for _, entry := range b.Manifest.Files {
+			if err = b.ctx.Err(); err != nil {
+				break
+			}
+			if !validName(entry.Path) {
+				err = fmt.Errorf("invalid staged export entry")
+				break
+			}
+			info, e := root.Lstat(entry.Path)
+			if e != nil {
+				err = e
+				break
+			}
+			if !info.Mode().IsRegular() {
+				err = fmt.Errorf("invalid staged export entry")
+				break
+			}
+			file, e := root.Open(entry.Path)
+			if e != nil {
+				err = e
+				break
+			}
+			head := &zip.FileHeader{Name: entry.Path, Method: zip.Deflate}
+			head.SetMode(0600)
+			head.SetModTime(b.Manifest.Cutoff)
+			w, e := zw.CreateHeader(head)
+			if e == nil {
+				_, e = io.Copy(w, &contextReader{ctx: b.ctx, r: file})
+			}
+			err = errors.Join(e, file.Close())
+			if err != nil {
+				break
+			}
 		}
-		if e = b.ctx.Err(); e != nil {
-			return e
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, e := filepath.Rel(b.Dir, p)
-		if e != nil {
-			return e
-		}
-		rel = filepath.ToSlash(rel)
-		if !validName(rel) || d.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("invalid staged export entry")
-		}
-		file, e := os.Open(p)
-		if e != nil {
-			return e
-		}
-		defer file.Close()
-		head := &zip.FileHeader{Name: rel, Method: zip.Deflate}
-		head.SetMode(0600)
-		head.SetModTime(b.Manifest.Cutoff)
-		w, e := zw.CreateHeader(head)
-		if e != nil {
-			return e
-		}
-		_, e = io.Copy(w, &contextReader{ctx: b.ctx, r: file})
-		return e
-	})
+		err = errors.Join(err, root.Close())
+	}
 	err = errors.Join(err, zw.Close(), f.Sync(), f.Close())
 	if err != nil {
 		return

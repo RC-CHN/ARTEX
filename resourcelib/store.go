@@ -241,8 +241,10 @@ func (s *Store) List(ctx context.Context, q, kind string, before int64) ([]Resou
 	return out, rows.Err()
 }
 
-// Every mutation uses the same lock order: quota -> task -> resource -> draft.
+// Every mutation uses the same lock order: shared GC -> quota -> task -> resource -> draft.
 // Bytes are received before acquiring locks, so slow uploads don't block users.
+const resourceGCLock int64 = 7337741011
+
 func (s *Store) begin(ctx context.Context, a Actor, id int64) (*sql.Tx, Resource, error) {
 	return s.beginResource(ctx, a, id, false)
 }
@@ -251,7 +253,23 @@ func (s *Store) beginResource(ctx context.Context, a Actor, id int64, allowDelet
 	if err != nil {
 		return nil, Resource{}, err
 	}
-	fail := func(e error) (*sql.Tx, Resource, error) { tx.Rollback(); return nil, Resource{}, e }
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, resourceGCLock); err != nil {
+		tx.Rollback()
+		return nil, Resource{}, err
+	}
+	r, err := lockResource(ctx, tx, a, id, allowDeleted)
+	if err != nil {
+		tx.Rollback()
+		return nil, Resource{}, err
+	}
+	return tx, r, nil
+}
+
+// A publisher can prepare its immutable directory under the shared GC lock,
+// then enter this short quota/access/CAS critical section in the same transaction.
+func lockResource(ctx context.Context, tx *sql.Tx, a Actor, id int64, allowDeleted bool) (Resource, error) {
+	var err error
+	fail := func(e error) (Resource, error) { return Resource{}, e }
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(7337741010)`); err != nil {
 		return fail(err)
 	}
@@ -262,7 +280,7 @@ func (s *Store) beginResource(ctx context.Context, a Actor, id int64, allowDelet
 		}
 	}
 	if id == 0 {
-		return tx, Resource{}, nil
+		return Resource{}, nil
 	}
 	r, err := scanResource(tx.QueryRowContext(ctx, `SELECT `+resourceCols+` FROM owned_resources WHERE id=$1 FOR UPDATE`, id))
 	if err != nil {
@@ -285,7 +303,7 @@ func (s *Store) beginResource(ctx context.Context, a Actor, id int64, allowDelet
 			}
 		}
 	}
-	return tx, r, nil
+	return r, nil
 }
 func event(ctx context.Context, tx *sql.Tx, id, version int64, kind, detail string, a Actor) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO owned_resource_events(resource_id,version_id,kind,detail,actor) VALUES($1,$2,$3,$4,$5)`, id, version, kind, detail, marshal(a))

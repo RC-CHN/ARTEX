@@ -241,3 +241,13 @@ func TestRecordExportToolsPackageAndBoundaries(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordExportCustomScratch(t *testing.T) {
+	scratch := t.TempDir()
+	t.Setenv("ARTEX_RECORD_EXPORT_SCRATCH", scratch)
+	TestRecordExportToolsPackageAndBoundaries(t)
+	entries, err := os.ReadDir(filepath.Join(scratch, "artex-record-export"))
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("scratch copies not reclaimed: entries=%d err=%v", len(entries), err)
+	}
+}

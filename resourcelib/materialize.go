@@ -102,26 +102,30 @@ func (s *Store) VersionPath(v Version) string {
 
 // publishTree uses only the bounded manifest. It never scans the resource library.
 // Hard links are private to the library; task working copies are separate inodes.
-func (s *Store) publishTree(ctx context.Context, v Version) error {
+func (s *Store) prepareTree(ctx context.Context, v Version) (prepared string, err error) {
 	parent := filepath.Join(s.Root, "versions")
 	if err := os.MkdirAll(parent, 0755); err != nil {
-		return err
+		return "", err
 	}
 	tmp, err := os.MkdirTemp(parent, ".publish-")
 	if err != nil {
-		return err
+		return "", err
 	}
-	defer os.RemoveAll(tmp)
+	defer func() {
+		if err != nil {
+			os.RemoveAll(tmp)
+		}
+	}()
 	for _, f := range v.Files {
 		if err = ctx.Err(); err != nil {
-			return err
+			return "", err
 		}
 		dest := filepath.Join(tmp, filepath.FromSlash(f.Path))
 		if err = os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-			return err
+			return "", err
 		}
 		if err = os.Link(s.BlobPath(f), dest); err != nil {
-			return err
+			return "", err
 		}
 	}
 	// Sync directories bottom-up before exposing the immutable tree.
@@ -135,20 +139,24 @@ func (s *Store) publishTree(ctx context.Context, v Version) error {
 		}
 		return nil
 	}); err != nil {
-		return err
+		return "", err
 	}
 	for i := len(dirs) - 1; i >= 0; i-- {
 		if err = syncDir(dirs[i]); err != nil {
-			return err
+			return "", err
 		}
 	}
 	if err = os.Chmod(tmp, 0755); err != nil {
+		return "", err
+	}
+	return tmp, nil
+}
+
+func (s *Store) commitTree(tmp string, v Version) error {
+	if err := os.Rename(tmp, s.VersionPath(v)); err != nil {
 		return err
 	}
-	if err = os.Rename(tmp, s.VersionPath(v)); err != nil {
-		return err
-	}
-	return syncDir(parent)
+	return syncDir(filepath.Dir(s.VersionPath(v)))
 }
 
 // Materialize supplies a complete disposable working copy, never a writable

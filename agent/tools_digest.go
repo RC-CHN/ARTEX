@@ -92,10 +92,10 @@ func hiddenMembersFor(store *db.ExplorationStore) func(int64) bool {
 		return func(int64) bool { return false }
 	}
 	var hot map[int64]bool
-	if cg, _, err := loadColdGraph(store); err == nil {
+	if cg, _, err := loadColdStructure(store); err == nil {
 		hot = cg.hotSet()
 	}
-	return func(id int64) bool { _, c := covered[id]; return c && !hot[id] }
+	return func(id int64) bool { _, c := covered[id]; return c && hot != nil && !hot[id] }
 }
 
 // resolveDigest finds a digest node by id in the current task, else in a direct

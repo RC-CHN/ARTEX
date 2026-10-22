@@ -335,11 +335,50 @@ func (s *Store) Publish(ctx context.Context, id, revision int64, note, validatio
 	if err != nil {
 		return Version{}, err
 	}
-	tx, r, err := s.begin(ctx, a, d.ResourceID)
+	// Authorize before touching files. Recheck access and the exact draft revision
+	// after preparation: another agent can edit/discard/publish in the meantime.
+	pre, r, err := s.begin(ctx, a, d.ResourceID)
+	if err != nil {
+		return Version{}, err
+	}
+	if !r.Enabled {
+		pre.Rollback()
+		return Version{}, ErrUnavailable
+	}
+	d, err = scanDraft(pre.QueryRowContext(ctx, `SELECT `+draftCols+` FROM owned_resource_drafts WHERE id=$1 FOR UPDATE`, id))
+	if err != nil {
+		pre.Rollback()
+		return Version{}, err
+	}
+	if d.State == "published" && d.Revision == revision+1 {
+		v, e := scanVersion(pre.QueryRowContext(ctx, `SELECT `+versionCols+` FROM owned_resource_versions WHERE id=$1`, d.PublishedVersionID))
+		pre.Rollback()
+		return v, e
+	}
+	pre.Rollback()
+	if d.State != "editing" || d.Revision != revision {
+		return Version{}, &Conflict{CurrentRevision: d.Revision, CurrentVersionID: d.PublishedVersionID}
+	}
+	if _, err = validateManifest(d.Manifest); err != nil {
+		return Version{}, err
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return Version{}, err
 	}
 	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, resourceGCLock); err != nil {
+		return Version{}, err
+	}
+	prepared, err := s.prepareTree(ctx, Version{Manifest: d.Manifest})
+	if err != nil {
+		return Version{}, err
+	}
+	defer os.RemoveAll(prepared)
+	r, err = lockResource(ctx, tx, a, d.ResourceID, false)
+	if err != nil {
+		return Version{}, err
+	}
 	if !r.Enabled {
 		return Version{}, ErrUnavailable
 	}
@@ -388,7 +427,7 @@ func (s *Store) Publish(ctx context.Context, id, revision int64, note, validatio
 		return v, err
 	}
 	// The directory is complete before the version becomes visible in the DB.
-	if err = s.publishTree(ctx, v); err != nil {
+	if err = s.commitTree(prepared, v); err != nil {
 		return v, err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE owned_resource_drafts SET state='published',published_version_id=$2,secret_cipher=NULL,revision=revision+1,updated_at=now() WHERE id=$1`, id, v.ID); err != nil {

@@ -110,7 +110,7 @@ func (c *Compactor) maintain(ts *db.ExplorationStore) (round int64, uncompressed
 	if err != nil {
 		return
 	}
-	g, _, err := loadColdGraph(ts)
+	g, _, err := loadColdStructure(ts)
 	if err != nil {
 		return
 	}
@@ -260,7 +260,7 @@ func (c *Compactor) foldBlock(ctx context.Context, ts *db.ExplorationStore, g *c
 		return
 	}
 	// Re-read fresh state and drop any member that revived while we compressed.
-	fresh, _, err := loadColdGraph(ts)
+	fresh, _, err := loadColdStructure(ts)
 	if err != nil {
 		return
 	}
@@ -329,6 +329,28 @@ func (c *Compactor) finish(expID int64) {
 }
 
 // --- helpers: db ↔ coldgraph ---
+
+// Read a fresh, payload-free graph for liveness/overview only. Compression still
+// loads full source nodes, and still rechecks liveness before committing.
+func loadColdStructure(ts *db.ExplorationStore) (*coldGraph, []db.Edge, error) {
+	nodes, err := ts.StructureNodes()
+	if err != nil {
+		return nil, nil, err
+	}
+	edges, err := ts.Edges(1 << 30)
+	if err != nil {
+		return nil, nil, err
+	}
+	cn := make([]cgNode, 0, len(nodes))
+	for _, n := range nodes {
+		cn = append(cn, cgNode{ID: n.ID, Kind: n.Kind, State: n.State})
+	}
+	ce := make([]cgEdge, 0, len(edges))
+	for _, e := range edges {
+		ce = append(ce, cgEdge{From: e.From, Rel: e.Rel, To: e.To})
+	}
+	return newColdGraph(cn, ce), edges, nil
+}
 
 // loadColdGraph reads the exploration's nodes + edges and builds the cold-graph
 // view plus an id→node index (for summaries/payload during compression).

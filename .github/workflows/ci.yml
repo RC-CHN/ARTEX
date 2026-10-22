@@ -203,6 +203,12 @@ jobs:
           cache-dependency-path: |
             go.sum
             norma/go.sum
+      - name: Offline export pagination and search in a real browser
+        run: |
+          ARTEX_DOGFOOD_OUTPUT="$RUNNER_TEMP/artex-offline-viewer" go test ./recordexport -run '^TestOfflineViewerShardsKeepEveryRecord$' -count=1
+          docker run --rm --network none --entrypoint node \
+            -v "$PWD/ci/offline-viewer-smoke.cjs:/test.cjs:ro" \
+            -v "$RUNNER_TEMP/artex-offline-viewer:/artifacts:ro" artex:ci /test.cjs
       - name: Containerized manager and clean execution environments
         run: bash ci/managed-runner-smoke.sh artex:ci
 

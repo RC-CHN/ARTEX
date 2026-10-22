@@ -151,6 +151,14 @@ jobs:
       - name: Containerized manager and clean execution environments
         if: matrix.arch == 'amd64'
         run: bash ci/managed-runner-smoke.sh artex:release
+      - name: Offline export pagination and search in a real browser
+        if: matrix.arch == 'amd64'
+        run: |
+          ARTEX_DOGFOOD_OUTPUT="$RUNNER_TEMP/artex-offline-viewer" go test ./recordexport -run '^TestOfflineViewerShardsKeepEveryRecord$' -count=1
+          docker run --rm --network none --entrypoint node \
+            -v "$PWD/ci/offline-viewer-smoke.cjs:/test.cjs:ro" \
+            -v "$RUNNER_TEMP/artex-offline-viewer:/artifacts:ro" artex:release /test.cjs
+
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io

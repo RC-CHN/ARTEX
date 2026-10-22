@@ -19,6 +19,11 @@ func (s *Store) Sweep(ctx context.Context, olderThan time.Time) (int, error) {
 	}
 	defer tx.Rollback()
 	var locked bool
+	// Publishers prepare directories concurrently outside the quota lock. Skip
+	// maintenance while any preparation/mutation is live; no filesystem leases.
+	if e = tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock($1)`, resourceGCLock).Scan(&locked); e != nil || !locked {
+		return 0, e
+	}
 	if e = tx.QueryRowContext(ctx, `SELECT pg_try_advisory_xact_lock(7337741010)`).Scan(&locked); e != nil || !locked {
 		return 0, e
 	}
