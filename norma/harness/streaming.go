@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/RC-CHN/ARTEX/norma/llm"
+	"github.com/RC-CHN/ARTEX/norma/runtimeobs"
 	"github.com/RC-CHN/ARTEX/norma/tool"
 )
 
@@ -16,11 +18,12 @@ import (
 // blocks every tool queued behind it until it finishes. Results are yielded in
 // arrival order; progress is yielded as soon as it arrives.
 type streamExec struct {
-	l      *loop
-	ctx    context.Context // fixed for this turn; settlement may replace loop.toolCtx
-	mu     sync.Mutex
-	tools  []*tracked
-	notify chan struct{} // pinged when a tool completes or emits progress
+	summaryOnly bool // captured for this executor; never read mutable loop phase
+	l           *loop
+	ctx         context.Context // fixed for this turn; settlement may replace loop.toolCtx
+	mu          sync.Mutex
+	tools       []*tracked
+	notify      chan struct{} // pinged when a tool completes or emits progress
 }
 
 type toolStatus int
@@ -33,17 +36,18 @@ const (
 )
 
 type tracked struct {
-	block   llm.ContentBlock
-	safe    bool
-	status  toolStatus
-	result  llm.ContentBlock
-	extra   []llm.Message // messages the tool injects after its result (Result.Extra)
-	prog    []string
-	started bool // admission passed; cancellation cannot assert side effects stopped
+	queuedAt time.Time
+	block    llm.ContentBlock
+	safe     bool
+	status   toolStatus
+	result   llm.ContentBlock
+	extra    []llm.Message // messages the tool injects after its result (Result.Extra)
+	prog     []string
+	started  bool // admission passed; cancellation cannot assert side effects stopped
 }
 
 func newStreamExec(l *loop) *streamExec {
-	return &streamExec{l: l, ctx: l.toolCtx, notify: make(chan struct{}, 1)}
+	return &streamExec{l: l, ctx: l.toolCtx, summaryOnly: l.summaryOnly, notify: make(chan struct{}, 1)}
 }
 
 func (e *streamExec) ping() {
@@ -56,11 +60,17 @@ func (e *streamExec) ping() {
 // add registers a completed tool_use block and tries to start it.
 func (e *streamExec) add(block llm.ContentBlock) {
 	e.mu.Lock()
+	if e.summaryOnly {
+		e.tools = append(e.tools, &tracked{block: block, status: stCompleted, result: llm.ToolResultText(block.ID, `{"code":"summary_only","execution_status":"not_started","retryable":false,"next_action":"Write a final text reply using existing records; tools are disabled in this recovery."}`, true)})
+		e.mu.Unlock()
+		e.ping()
+		return
+	}
 	safe := false
 	if t, ok := e.l.in.Tools.Get(block.Name); ok {
 		safe = t.IsConcurrencySafe(block.Input)
 	}
-	e.tools = append(e.tools, &tracked{block: block, safe: safe})
+	e.tools = append(e.tools, &tracked{block: block, safe: safe, queuedAt: time.Now()})
 	e.mu.Unlock()
 	e.processQueue()
 }
@@ -102,6 +112,7 @@ func (e *streamExec) processQueue() {
 }
 
 func (e *streamExec) run(t *tracked) {
+	start := time.Now()
 	select {
 	case e.l.sem <- struct{}{}: // bound concurrent tool execution
 	case <-e.ctx.Done():
@@ -115,8 +126,13 @@ func (e *streamExec) run(t *tracked) {
 		e.complete(t, interruptedTool(t.block.ID, false), nil)
 		return
 	}
+	if !t.queuedAt.IsZero() {
+		start = t.queuedAt
+	}
+	runtimeobs.Record(runtimeobs.ToolQueue, start, false)
 	t.started = true
 	e.mu.Unlock()
+	start = time.Now()
 	res, extra := e.l.execOne(e.ctx, t.block, func(p tool.ProgressInfo) {
 		e.mu.Lock()
 		if t.status != stYielded {
@@ -125,6 +141,7 @@ func (e *streamExec) run(t *tracked) {
 		e.mu.Unlock()
 		e.ping()
 	})
+	runtimeobs.Record(runtimeobs.ToolExecute, start, res.IsError)
 	e.complete(t, res, extra)
 	e.processQueue() // a slot freed
 }

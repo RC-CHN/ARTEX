@@ -109,6 +109,8 @@ type QueryInput struct {
 	// enforce a cumulative budget across resumes. An unavailable ledger fails
 	// closed. This is separate from TokenBudget's continuation-nudge behavior.
 	TurnBudget TurnBudget
+	// RequireFinalText allows one budgeted text-only recovery after an empty natural stop.
+	RequireFinalText bool
 }
 
 type TurnDecision struct {
@@ -237,10 +239,13 @@ type budgetTracker struct {
 }
 
 type loop struct {
-	failureStreaks       map[string]failureStreak
-	interruptedToolInput *llm.ContentBlock
-	ctx                  context.Context
-	cancelRun            context.CancelCauseFunc
+	summaryOnly              bool
+	summaryRecoveryAttempted bool
+	summaryRecoveryFailed    bool
+	failureStreaks           map[string]failureStreak
+	interruptedToolInput     *llm.ContentBlock
+	ctx                      context.Context
+	cancelRun                context.CancelCauseFunc
 	// toolCtx bounds tool execution with the run's MaxDuration deadline, so a tool
 	// that overruns the wall-clock budget is interrupted mid-flight (the model call
 	// stays on ctx — streams are never cut mid-flight). Derived from ctx, so a parent
@@ -371,13 +376,16 @@ func countBoundaries(msgs []llm.Message) int {
 
 func (l *loop) finish(reason TerminalReason, err error, text string) {
 	l.yield(Event{Kind: KindResult, Terminal: &Terminal{
-		InterruptedToolInput: l.interruptedToolInput,
-		Reason:               reason,
-		Err:                  err,
-		Usage:                l.usage,
-		Turns:                l.turnCount,
-		Messages:             l.messages,
-		Text:                 text,
+		InterruptedToolInput:     l.interruptedToolInput,
+		SummaryRecoveryAttempted: l.summaryRecoveryAttempted,
+		SummaryRecoveryFailed:    l.summaryRecoveryFailed,
+		SummaryMissing:           l.in.RequireFinalText && strings.TrimSpace(text) == "",
+		Reason:                   reason,
+		Err:                      err,
+		Usage:                    l.usage,
+		Turns:                    l.turnCount,
+		Messages:                 l.messages,
+		Text:                     text,
 	}}, nil)
 }
 
@@ -446,7 +454,7 @@ func (l *loop) run() {
 				l.record(msg, llm.Usage{})
 			}
 			if !d.Allowed {
-				if d.Settle && !l.settling.Load() && l.beginSettlement(ReasonMaxTurns, &schemas) {
+				if !l.summaryOnly && d.Settle && !l.settling.Load() && l.beginSettlement(ReasonMaxTurns, &schemas) {
 					continue
 				}
 				reason := ReasonMaxTurns
@@ -463,6 +471,9 @@ func (l *loop) run() {
 			l.recordNewBoundary()
 		}
 
+		if l.summaryOnly {
+			l.summaryRecoveryAttempted = true
+		}
 		usageBefore := l.usage
 		asst, exec, stopReason, streamErr, consumerStopped, aborted := l.streamAndExecute(schemas)
 		var budgetErr error
@@ -499,6 +510,18 @@ func (l *loop) run() {
 			}
 			if l.ctx.Err() != nil {
 				l.finish(ReasonAbortedStreaming, l.ctx.Err(), "")
+				return
+			}
+			// A final-text recovery is a single attempt, including on overflow.
+			if l.summaryOnly {
+				// The main work already completed. Failure of this optional reply
+				// must not turn it into a model-error retry of prior side effects.
+				l.summaryRecoveryFailed = true
+				reason := ReasonCompleted
+				if l.settling.Load() {
+					reason = l.settleReason
+				}
+				l.finish(reason, nil, "")
 				return
 			}
 			// Reactive recovery from prompt-too-long: one forced AutoCompact, then retry.
@@ -542,6 +565,21 @@ func (l *loop) run() {
 			}
 		}
 		toolUses := asst.ToolUses()
+		// Text-only recovery cannot trigger tools, hooks, keep-working nudges or
+		// another model request. Preserve rejected calls as explicit receipts.
+		if l.summaryOnly {
+			if exec != nil && exec.count() > 0 {
+				result := llm.Message{Role: llm.RoleUser, Content: exec.results()}
+				l.messages = append(l.messages, result)
+				l.record(result, llm.Usage{})
+			}
+			reason := ReasonCompleted
+			if l.settling.Load() {
+				reason = l.settleReason
+			}
+			l.finish(reason, nil, asst.Text())
+			return
+		}
 
 		// max_tokens truncation with no tool calls → escalate / resume-recovery.
 		// These continuations are retries of the same turn (they do not advance
@@ -560,6 +598,9 @@ func (l *loop) run() {
 			// budget reason (not "completed") — the run was budget-terminated; the
 			// settlement is just a checkpoint. Skip the keep-working nudges below.
 			if l.settling.Load() {
+				if strings.TrimSpace(asst.Text()) == "" && l.beginFinalTextRecovery() {
+					continue
+				}
 				l.finish(l.settleReason, nil, asst.Text())
 				return
 			}
@@ -593,6 +634,9 @@ func (l *loop) run() {
 			// Token budget: nudge to keep working until ~90% / diminishing returns.
 			if l.in.TokenBudget > 0 && l.checkBudgetContinue() {
 				l.lastContinue = ContinueTokenBudget
+				continue
+			}
+			if strings.TrimSpace(asst.Text()) == "" && l.beginFinalTextRecovery() {
 				continue
 			}
 			l.finish(ReasonCompleted, nil, asst.Text())
@@ -673,6 +717,34 @@ func (l *loop) run() {
 		l.turnCount = nextTurn
 		l.lastContinue = ContinueNextTurn
 	}
+}
+
+// beginFinalTextRecovery consumes an ordinary remaining attempt. It never replays
+// earlier tool calls and never extends configured run/settlement limits.
+func (l *loop) beginFinalTextRecovery() bool {
+	if !l.in.RequireFinalText || l.summaryOnly || l.ctx.Err() != nil {
+		return false
+	}
+	if l.settling.Load() {
+		if l.in.TurnBudget == nil && l.settleTurn+1 >= l.settleMaxTurns() {
+			return false
+		}
+		l.settleTurn++
+	} else {
+		if l.in.MaxTurns > 0 && l.turnCount >= l.in.MaxTurns {
+			return false
+		}
+		if l.in.MaxDuration > 0 && time.Since(l.startTime) >= l.in.MaxDuration {
+			return false
+		}
+		l.turnCount++
+	}
+	l.summaryOnly = true
+	msg := llm.UserText("上一轮正常结束但没有最终文字答复。本轮只用文字向用户汇报已有结果、可核对的记录 ID 或产物路径、未完成项与阻碍；没有完成也请明确说明。禁止调用任何工具，禁止继续执行工作，不推测或编造结果。")
+	l.messages = append(l.messages, msg)
+	l.record(msg, llm.Usage{})
+	l.lastContinue = ContinueFinalTextRecovery
+	return true
 }
 
 // settleMaxTurns is the wrap-up phase's own turn budget (default 2).
@@ -874,6 +946,9 @@ func (l *loop) requestMessages() []llm.Message {
 
 func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exec *streamExec, stopReason string, err error, consumerStopped, aborted bool) {
 	l.interruptedToolInput = nil
+	if l.summaryOnly {
+		schemas = nil
+	}
 	l.maybeInjectTodoReminder()
 	msgs := l.requestMessages()
 	if l.in.SystemReminder != "" {

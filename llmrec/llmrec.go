@@ -13,6 +13,7 @@ import (
 
 	"github.com/RC-CHN/ARTEX/db"
 	"github.com/RC-CHN/ARTEX/norma/llm"
+	"github.com/RC-CHN/ARTEX/norma/runtimeobs"
 	"github.com/RC-CHN/ARTEX/norma/transcript"
 )
 
@@ -149,11 +150,12 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 
 	return func(yield func(llm.StreamEvent, error) bool) {
 		var (
-			textBuf     strings.Builder
-			thinkingBuf strings.Builder
-			usage       llm.Usage
-			stopReason  string
-			streamErr   error
+			textBuf                             strings.Builder
+			thinkingBuf                         strings.Builder
+			usage                               llm.Usage
+			stopReason                          string
+			streamErr                           error
+			textBytes, thinkingBytes, toolCalls int
 		)
 
 		finished := false
@@ -167,7 +169,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				status = "error"
 			}
 			// Lightweight metering row — always written.
-			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
+			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, stopReason, textBytes, thinkingBytes, toolCalls)
 			// Heavy trace row — only when body recording is on.
 			if recordBodies {
 				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err)
@@ -191,11 +193,15 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 			// would zero out the input already counted at start (mirrors the SDK's own
 			// llm.Accumulator; see norma/llm/accumulate.go).
 			switch ev.Type {
+			case llm.SEToolUseStart:
+				toolCalls++
 			case llm.SETextDelta:
+				textBytes += len(ev.Text)
 				if recordBodies {
 					textBuf.WriteString(ev.Text)
 				}
 			case llm.SEThinkingDelta:
+				thinkingBytes += len(ev.Text)
 				if recordBodies {
 					thinkingBuf.WriteString(ev.Text)
 				}
@@ -245,7 +251,18 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 	if err != nil {
 		status = "error"
 	}
-	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status)
+	textBytes, thinkingBytes, toolCalls := 0, 0, 0
+	for _, b := range msg.Content {
+		switch b.Type {
+		case llm.BlockText:
+			textBytes += len(b.Text)
+		case llm.BlockThinking:
+			thinkingBytes += len(b.Thinking)
+		case llm.BlockToolUse:
+			toolCalls++
+		}
+	}
+	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, stopReason, textBytes, thinkingBytes, toolCalls)
 	if recordBodies {
 		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err)
 	}
@@ -264,7 +281,8 @@ func thinkingText(msg llm.Message) string {
 
 // recordUsage appends one lightweight metering row to llm_usage (no bodies). Skips
 // zero-token calls with no model, which carry nothing worth metering.
-func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status string) {
+func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status, stopReason string, textBytes, thinkingBytes, toolCalls int) {
+	runtimeobs.Default.Record(runtimeobs.ModelRequest, time.Duration(latencyMs)*time.Millisecond, status != "ok")
 	if r.pg == nil {
 		return
 	}
@@ -284,6 +302,7 @@ func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage 
 		CacheRead:     usage.CacheReadTokens,
 		CacheWrite:    usage.CacheWriteTokens,
 		Status:        status,
+		StopReason:    stopReason, TextBytes: textBytes, ThinkingBytes: thinkingBytes, ToolCalls: toolCalls,
 	})
 	if err != nil {
 		log.Printf("[llmusage] insert: %v", err)

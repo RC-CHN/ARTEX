@@ -13,6 +13,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/RC-CHN/ARTEX/norma/runtimeobs"
 )
 
 type contextReader struct {
@@ -103,6 +106,8 @@ func (s *Store) VersionPath(v Version) string {
 // publishTree uses only the bounded manifest. It never scans the resource library.
 // Hard links are private to the library; task working copies are separate inodes.
 func (s *Store) prepareTree(ctx context.Context, v Version) (prepared string, err error) {
+	start := time.Now()
+	defer func() { runtimeobs.Record(runtimeobs.ResourcePrepare, start, err != nil) }()
 	parent := filepath.Join(s.Root, "versions")
 	if err := os.MkdirAll(parent, 0755); err != nil {
 		return "", err

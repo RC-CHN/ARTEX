@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/RC-CHN/ARTEX/db"
+	"github.com/RC-CHN/ARTEX/norma/runtimeobs"
 )
 
 type toolUsageBatchRecorder interface {
@@ -45,7 +46,9 @@ func newToolUsageQueue(recorder toolUsageBatchRecorder, capacity int) *toolUsage
 				}
 			}
 			bounded, stop := context.WithTimeout(ctx, 2*time.Second)
+			start := time.Now()
 			err := recorder.InsertToolUsageBatch(bounded, batch)
+			runtimeobs.Record(runtimeobs.UsageWrite, start, err != nil)
 			stop()
 			if err != nil {
 				q.failed.Add(uint64(len(batch)))

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/RC-CHN/ARTEX/internal/operation"
+	"github.com/RC-CHN/ARTEX/norma/runtimeobs"
 )
 
 const (
@@ -270,7 +271,10 @@ func (s *Store) beginResource(ctx context.Context, a Actor, id int64, allowDelet
 func lockResource(ctx context.Context, tx *sql.Tx, a Actor, id int64, allowDeleted bool) (Resource, error) {
 	var err error
 	fail := func(e error) (Resource, error) { return Resource{}, e }
-	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(7337741010)`); err != nil {
+	start := time.Now()
+	_, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(7337741010)`)
+	runtimeobs.Record(runtimeobs.ResourceCommit, start, err != nil)
+	if err != nil {
 		return fail(err)
 	}
 	if a.TaskID > 0 {

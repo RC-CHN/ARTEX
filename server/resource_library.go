@@ -41,7 +41,7 @@ func resourceErr(w http.ResponseWriter, err error) {
 	case errors.As(err, &inUse), errors.Is(err, operation.ErrKeyReuse):
 		code = 409
 	case errors.As(err, &fault):
-		if fault.CurrentRevision > 0 {
+		if fault.CurrentRevision > 0 || fault.Code == "budget_conflict" {
 			code = 409
 		}
 	case errors.Is(err, resourcelib.ErrLimit):
@@ -111,6 +111,8 @@ func (s *Server) registerLibraryRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/tasks/{id}/handoff", s.taskHandoff)
 	mux.HandleFunc("GET /api/tasks/{id}/worker-budgets", s.workerBudgets)
 	mux.HandleFunc("POST /api/tasks/{id}/worker-budgets", s.workerBudgets)
+	mux.HandleFunc("GET /api/tasks/{id}/token-budget", s.taskTokenBudget)
+	mux.HandleFunc("POST /api/tasks/{id}/token-budget", s.taskTokenBudget)
 	mux.HandleFunc("GET /api/task-record-exports", s.recordExportsAPI)
 	mux.HandleFunc("POST /api/task-record-exports", s.recordExportsAPI)
 	mux.HandleFunc("GET /api/task-record-exports/{id}", s.recordExportAPI)

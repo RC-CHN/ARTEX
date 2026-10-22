@@ -19,6 +19,7 @@ type workerTurnBudget struct {
 	store            *db.ExplorationStore
 	taskID, intentID int64
 	announced        bool
+	taskWarned       bool
 }
 
 func (b *workerTurnBudget) BeforeTurn(ctx context.Context, settling bool) (harness.TurnDecision, error) {
@@ -32,6 +33,9 @@ func (b *workerTurnBudget) BeforeTurn(ctx context.Context, settling bool) (harne
 	if !allowed {
 		if d.Settle {
 			d.Notice = fmt.Sprintf("【Worker 预算已到】本意图累计常规轮数 %d/%d；进入收尾，还可用 %d 轮。保存已有结果、部署清单、证据路径及未完成事项，然后纯文本汇报。若仍需探索，使用 ask_main_agent 明确请求追加预算；不能自行续期。", state.NormalUsed, state.NormalLimit, max(0, state.WrapupLimit-state.WrapupUsed))
+			if state.TaskBudget != nil && state.TaskBudget.Reached {
+				d.Notice = fmt.Sprintf("【任务累计软预算已到】已记录输入＋输出 token %d/%d，包含本任务各 Agent 与压缩调用。现在进入现有收尾阶段，保存结果并汇报；单独追加 Worker 轮数不能解除任务软预算。需要继续时向主 Agent 说明，由人类调整任务预算。", state.TaskBudget.Used, state.TaskBudget.Limit)
+			}
 		} else {
 			d.Notice = "【Worker 收尾预算耗尽】已保存的进度保留，暂停继续执行。需主 Agent 或人类明确追加预算后再恢复。"
 		}
@@ -51,6 +55,10 @@ func (b *workerTurnBudget) BeforeTurn(ctx context.Context, settling bool) (harne
 		d.Notice = fmt.Sprintf("【Worker 预算】本意图累计常规执行轮次 %d/%s；收尾额度 %d，已用 %d。暂停、重试、压缩和恢复不重置；底层网络重试和压缩调用不另计轮次。用 get_worker_budget 查看；需要追加时通过 ask_main_agent 说明证据、剩余工作和所需轮数。", state.NormalUsed, limit, state.WrapupLimit, state.WrapupUsed)
 	}
 	b.announced = true
+	if state.TaskBudget != nil && !b.taskWarned && state.TaskBudget.Used >= state.TaskBudget.Limit*8/10 {
+		b.taskWarned = true
+		d.Notice += fmt.Sprintf("\n【任务累计预算提醒】已记录输入＋输出 token %d/%d；达到后将停止自动领取新工作，并在轮次边界收尾。", state.TaskBudget.Used, state.TaskBudget.Limit)
+	}
 	return d, nil
 }
 func (b *workerTurnBudget) AfterTurn(ctx context.Context, u llm.Usage) error {
@@ -101,6 +109,11 @@ func (t *ToolSet) getWorkerBudget() actool.CoreTool {
 		if err != nil {
 			return budgetToolError(err)
 		}
+		taskBudget, err := t.ts.TaskTokenBudget(ctx, info.TaskID, true)
+		if err != nil {
+			return budgetToolError(err)
+		}
+		b.TaskBudget = &taskBudget
 		return jsonResult(b)
 	})
 }

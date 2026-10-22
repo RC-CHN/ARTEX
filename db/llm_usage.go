@@ -24,6 +24,10 @@ type LLMUsage struct {
 	OutputTokens  int    `json:"output_tokens"`
 	CacheRead     int    `json:"cache_read"`
 	CacheWrite    int    `json:"cache_write"`
+	StopReason    string `json:"stop_reason"`
+	TextBytes     int    `json:"text_bytes"`
+	ThinkingBytes int    `json:"thinking_bytes"`
+	ToolCalls     int    `json:"tool_calls"`
 	Status        string `json:"status"` // ok | error
 }
 
@@ -43,6 +47,10 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     cache_write    INTEGER NOT NULL DEFAULT 0,
     status         TEXT
 );
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS stop_reason TEXT;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS text_bytes BIGINT;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS thinking_bytes BIGINT;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_calls INTEGER;
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
@@ -78,10 +86,10 @@ func (d *DB) InsertLLMUsageContext(ctx context.Context, u *LLMUsage) error {
 		expID = u.ExplorationID
 	}
 	_, err := d.ExecContext(ctx, `
-INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status)
-VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11)`,
+INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, stop_reason, text_bytes, thinking_bytes, tool_calls)
+VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		u.TaskID, expID, u.Worker, u.Model, u.ProfileName,
-		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status)
+		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status, usageStopReason(u.StopReason), u.TextBytes, u.ThinkingBytes, u.ToolCalls)
 	return err
 }
 
@@ -338,4 +346,13 @@ func ParseExpID(s string) int64 {
 		return 0
 	}
 	return n
+}
+
+// Never persist arbitrary provider strings in operational metadata.
+func usageStopReason(s string) string {
+	switch s {
+	case "", "end_turn", "stop", "tool_use", "tool_calls", "max_tokens", "length", "completed", "content_filter", "stop_sequence", "refusal":
+		return s
+	}
+	return "other"
 }

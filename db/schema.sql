@@ -1552,6 +1552,9 @@ CREATE TABLE IF NOT EXISTS task_deployment_events (
 CREATE INDEX IF NOT EXISTS idx_deployment_events ON task_deployment_events(task_id,id);
 
 -- Intent budgets survive retries and cold archiving (which removes graph nodes).
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS token_budget_limit BIGINT NOT NULL DEFAULT 0 CHECK(token_budget_limit>=0);
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS token_budget_revision BIGINT NOT NULL DEFAULT 1;
+
 CREATE TABLE IF NOT EXISTS worker_budgets (
  intent_id BIGINT PRIMARY KEY, task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
  normal_limit INTEGER NOT NULL CHECK(normal_limit>=0), wrapup_limit INTEGER NOT NULL CHECK(wrapup_limit>0),

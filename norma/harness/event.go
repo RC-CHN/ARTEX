@@ -54,6 +54,7 @@ const (
 type ContinueReason string
 
 const (
+	ContinueFinalTextRecovery       ContinueReason = "final_text_recovery"
 	ContinueNextTurn                ContinueReason = "next_turn"
 	ContinueReactiveCompactRetry    ContinueReason = "reactive_compact_retry"
 	ContinueMaxOutputTokensEscalate ContinueReason = "max_output_tokens_escalate"
@@ -65,6 +66,9 @@ const (
 
 // Terminal is the final state of a Query, delivered as the KindResult event.
 type Terminal struct {
+	SummaryRecoveryAttempted bool
+	SummaryRecoveryFailed    bool
+	SummaryMissing           bool
 	// InterruptedToolInput was still being generated when the model stream
 	// failed or was cancelled. It was never submitted to the tool executor.
 	InterruptedToolInput *llm.ContentBlock

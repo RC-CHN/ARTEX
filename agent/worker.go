@@ -492,8 +492,9 @@ func (w *Worker) execute(ctx context.Context, name string, taskID int64, as *db.
 		// 命中预算(轮次 OR 时长)→ SDK 跑一轮收尾(隐藏 Bash),把已识别的写回,避免烂尾。
 		// clamped(被任务 deadline 夹逼)时用 PromptByReason:因超时=任务到点→任务超时词,
 		// 因步数=夹逼窗口内步数先耗尽→回落 per-run 词。非 clamped 维持纯 per-run。
-		Settlement: settle,
-		TurnBudget: budget,
+		Settlement:       settle,
+		TurnBudget:       budget,
+		RequireFinalText: true,
 		// large tool output spills to cmd-output/ with a head + pointer (SDK tool.Capture);
 		// full output preserved on disk. 截断上限用 SDK 默认(30000 字符)。
 		ToolOutputDir: cmdOutDir(runDir),

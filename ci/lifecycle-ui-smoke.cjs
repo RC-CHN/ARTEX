@@ -23,6 +23,19 @@ async function main() {
     if(process.env.EXPECT_HTTP_ORIGIN==='1')assert.equal(secureContext,false,'fixture must cover an ordinary HTTP origin');
     await page.getByRole('tab',{name:'记录与收尾',exact:true}).click();
     await page.getByRole('heading',{name:'Worker 预算'}).waitFor();
+    await page.getByLabel('累计 Token 上限',{exact:true}).fill('1000000');
+    await page.getByRole('button',{name:'保存软预算',exact:true}).click();
+    await page.getByText(/已记录 .*1,000,000/).waitFor();
+    const beforeConflict=await api(`/tasks/${taskId}/token-budget`);
+    await api(`/tasks/${taskId}/token-budget`,'POST',{limit:2000000,expected_revision:beforeConflict.revision});
+    await page.getByLabel('累计 Token 上限',{exact:true}).fill('0');
+    await page.getByRole('button',{name:'保存软预算',exact:true}).click();
+    await page.getByRole('alert').filter({hasText:/预算已变更/}).waitFor();
+    await page.getByRole('button',{name:'刷新累计用量',exact:true}).click();
+    await page.getByLabel('累计 Token 上限',{exact:true}).evaluate(async input=>{for(let i=0;i<100&&input.value!=='2000000';i++)await new Promise(r=>setTimeout(r,50));if(input.value!=='2000000')throw Error('budget refresh failed');});
+    await page.getByLabel('累计 Token 上限',{exact:true}).fill('0');
+    await page.getByRole('button',{name:'保存软预算',exact:true}).click();
+    await page.getByText(/已记录 .*不限/).waitFor();
     await page.getByRole('button',{name:'追加预算',exact:true}).click();
     await page.getByLabel('执行轮数',{exact:true}).fill('20');
     await page.getByLabel('收尾轮数',{exact:true}).fill('10');
@@ -54,7 +67,7 @@ async function main() {
     await page.getByRole('heading',{name:resourceName,exact:true}).waitFor({state:'detached'});
     assert.equal((await api('/resources?q='+encodeURIComponent(resourceName))).some(r=>r.id===resource.id),false);
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({lifecycle:{budget_grant:true,deployment_create_update:true,record_export_download:true,resource_delete:true,browser_errors:0,secure_context:secureContext}}));
+    console.log(JSON.stringify({lifecycle:{task_budget_cas:true,budget_grant:true,deployment_create_update:true,record_export_download:true,resource_delete:true,browser_errors:0,secure_context:secureContext}}));
   } catch(e) {console.error(JSON.stringify({browser_errors:errors}));console.error((await page.locator('body').innerText()).slice(0,5000));throw e;}
   finally {await browser.close();}
 }

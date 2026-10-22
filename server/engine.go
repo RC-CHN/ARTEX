@@ -886,6 +886,9 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		if ectx.Err() != nil || e.IsDeleting(t.ID) {
 			return
 		}
+		if e.taskBudgetBlocks(ectx, t) {
+			return
+		}
 		log.Printf("[planner] task %s 规划中…(%s 触发)", t.ID, src)
 		// round marker: each Plan() is one planner round; emit a boundary so the
 		// UI can separate rounds in the transcript (kind='round').
@@ -998,7 +1001,7 @@ func (e *Engine) runWorkerStep(ctx context.Context, t *Task, name string, worker
 	if e.executionAvailable != nil && !e.executionAvailable("worker") {
 		return false
 	}
-	intent := e.claimNext(t, name)
+	intent := e.claimNext(ctx, t, name)
 	if intent == nil {
 		return false
 	}
@@ -1276,8 +1279,25 @@ func sleepCtx(ctx context.Context, d time.Duration) (done bool) {
 	}
 }
 
-func (e *Engine) claimNext(t *Task, name string) *db.Node {
+func (e *Engine) taskBudgetBlocks(ctx context.Context, t *Task) bool {
+	if e.m == nil || e.m.pg == nil {
+		return false
+	}
+	id, err := strconv.ParseInt(t.ID, 10, 64)
+	if err != nil {
+		return true
+	}
+	bounded, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	b, err := e.m.pg.TaskTokenBudget(bounded, id, false)
+	return err != nil || b.Reached
+}
+
+func (e *Engine) claimNext(ctx context.Context, t *Task, name string) *db.Node {
 	fr, _ := t.Store.Frontier(20)
+	if len(fr) > 0 && e.taskBudgetBlocks(ctx, t) {
+		return nil
+	}
 	for _, in := range fr {
 		if ok, _ := t.Store.ClaimIntent(in.ID, name); ok {
 			return in

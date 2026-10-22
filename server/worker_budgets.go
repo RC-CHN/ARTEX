@@ -7,6 +7,33 @@ import (
 	"github.com/RC-CHN/ARTEX/db"
 )
 
+func (s *Server) taskTokenBudget(w http.ResponseWriter, r *http.Request) {
+	id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	var b db.TaskTokenBudget
+	var err error
+	if r.Method == http.MethodGet {
+		b, err = s.m.pg.TaskTokenBudget(r.Context(), id, true)
+	} else {
+		var in struct {
+			Limit    *int64 `json:"limit"`
+			Revision int64  `json:"expected_revision"`
+		}
+		if !resourceDecode(w, r, &in) {
+			return
+		}
+		if in.Limit == nil {
+			writeErr(w, 400, "limit is required; 0 means unlimited")
+			return
+		}
+		b, err = s.m.pg.SetTaskTokenBudget(r.Context(), id, *in.Limit, in.Revision)
+	}
+	if err != nil {
+		resourceErr(w, err)
+		return
+	}
+	writeJSON(w, 200, b)
+}
+
 func (s *Server) workerBudgets(w http.ResponseWriter, r *http.Request) {
 	taskID, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if r.Method == http.MethodGet {

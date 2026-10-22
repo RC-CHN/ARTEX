@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { RecordExports } from "@/components/record-exports";
+import { TaskTokenBudget } from "@/components/task-token-budget";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -88,6 +89,7 @@ export function HandoffTab({ taskId }: { taskId: string }) {
         </div>
       </div>
       <WorkerBudgets taskId={taskId} />
+      <TaskTokenBudget key={taskId} taskId={taskId} />
       <RecordExports taskId={taskId} />
       {error && (
         <p role="alert" className="text-destructive text-sm">

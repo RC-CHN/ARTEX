@@ -95,3 +95,63 @@ func TestWorkerBudget150And10Dogfood(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkerTaskSoftBudgetDogfood(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	if err := d.EnsureLLMUsageTable(); err != nil {
+		t.Fatal(err)
+	}
+	task, err := d.CreateTaskWithOptions("synthetic cumulative threshold", "synthetic", db.TaskCreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.SetTaskTokenBudget(t.Context(), task.ID, 1000, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err = d.InsertLLMUsage(&db.LLMUsage{TaskID: fmt.Sprint(task.ID), InputTokens: 800, Worker: "main", Status: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	ts := d.Exploration(task.ExplorationID)
+	id, err := ts.AddIntent(map[string]any{"summary": "synthetic"}, 1, nil, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, err := ts.GetNode(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls, effects := 0, 0
+	p := consultationProvider{complete: func(_ context.Context, r llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+		calls++
+		raw, _ := json.Marshal(r.Messages)
+		if calls == 1 {
+			if !strings.Contains(string(raw), "任务累计预算提醒") {
+				t.Fatal("missing advance warning")
+			}
+			if err := d.InsertLLMUsage(&db.LLMUsage{TaskID: fmt.Sprint(task.ID), InputTokens: 100, OutputTokens: 100, Worker: "worker", Status: "ok"}); err != nil {
+				t.Fatal(err)
+			}
+			return consultationCall("SyntheticCheckpoint", "1", map[string]any{})
+		}
+		if calls != 2 || !strings.Contains(string(raw), "任务累计软预算已到") {
+			t.Fatal("no bounded wrapup", calls, string(raw))
+		}
+		for _, tool := range r.Tools {
+			if tool.Name == "Bash" {
+				t.Fatal("Bash advertised during settlement")
+			}
+		}
+		return consultationText("Synthetic checkpoint recorded; threshold reached, remaining scope incomplete.")
+	}}
+	probe := actool.Build(actool.Spec{Name: "SyntheticCheckpoint", Schema: obj(map[string]any{}), Run: func(context.Context, json.RawMessage, *actool.ToolContext) (actool.Result, error) {
+		effects++
+		return actool.Text("saved synthetic checkpoint"), nil
+	}})
+	dir := t.TempDir()
+	w := NewWorker(p, "synthetic", dir, transcript.NewStore(filepath.Join(dir, "transcripts")), 0, 150, probe)
+	reason, _, err := w.Execute(t.Context(), "worker", task.ID, nil, ts, intent, nil, nil, nil, nil)
+	if err != nil || reason != harness.ReasonMaxTurns || calls != 2 || effects != 1 {
+		t.Fatal(reason, calls, effects, err)
+	}
+}

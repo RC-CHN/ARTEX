@@ -175,6 +175,10 @@ func TestRecordExportToolsPackageAndBoundaries(t *testing.T) {
 			t.Fatal("missing omission list")
 		}
 		prefix := fmt.Sprintf("tasks/%d/", id)
+		var handoff map[string]any
+		if err = json.Unmarshal(seen[prefix+"handoff.json"], &handoff); err != nil || handoff["scope"] != "exported_database_snapshot" || handoff["external_cleanup_verified"] != false {
+			t.Fatal("invalid handoff", handoff, err)
+		}
 		if len(seen[prefix+"transcripts/"+session+".html"]) == 0 || len(seen[prefix+"database/llm_records.jsonl"]) == 0 {
 			t.Fatal("missing transcripts/model records")
 		}

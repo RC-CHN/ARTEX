@@ -35,7 +35,7 @@ func (t *runTrace) done(id string) {
 
 var reasonHint = map[harness.TerminalReason]string{
 	harness.ReasonCompleted:         "模型正常结束了本轮，但没有留下文字总结；事实和资产以本轮工具调用记录为准",
-	harness.ReasonMaxTurns:          "达到步数上限(MaxTurns)：SDK 已执行收尾并写回事实和资产，意图会标记为 exhausted，供规划者换方向继续，而不是作为失败处理",
+	harness.ReasonMaxTurns:          "达到步数上限(MaxTurns)：SDK 已进入收尾阶段，实际写回以工具回执为准；意图会标记为 exhausted，供规划者换方向继续，而不是作为失败处理",
 	harness.ReasonTimeout:           "达到单次运行的墙钟预算(MaxDuration)：到点会打断在跑的工具并就地进收尾，把已识别的事实和资产写回，意图会标记为 exhausted",
 	harness.ReasonModelError:        "模型或 API 调用失败（网络、鉴权、限流、供应商 5xx 等），重试用尽后意图标记为 blocked——传输层故障导致这条意图基本没真正探成；查其执行过程（get_worker_trace）后再决定重派或换法",
 	harness.ReasonExecutionError:    "执行环境失联或返回无法安全重试的错误；命令可能已经产生作用，本轮已停止，需要核对执行记录与产物后再决定是否续跑",
@@ -78,7 +78,7 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 			sum = "（运行被中断：" + short + "；停在" + stage + progressSuffix(term, tr) + "，未完成）"
 		}
 	} else if reason == harness.ReasonMaxTurns || reason == harness.ReasonTimeout {
-		sum = "（达到运行预算上限(" + string(reason) + ")，已收尾写回事实" + progressSuffix(term, tr) + "；本次无文字总结）"
+		sum = "（达到运行预算上限(" + string(reason) + ")，已结束本轮，实际写回以工具回执为准" + progressSuffix(term, tr) + "；本次无文字总结）"
 	} else {
 		hint := terminalReasonHint(reason)
 		sum = "（无文字总结，终态 " + terminalReasonLabel(reason) + "：" + firstLine(hint, 80) + "）"
@@ -104,6 +104,15 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 		b.WriteString("- **取消前已生成的部分输出**:\n\n")
 		b.WriteString(term.Text)
 		b.WriteString("\n\n")
+	}
+	if term.SummaryRecoveryAttempted {
+		b.WriteString("- **文字补答**: 已尝试 1 次仅文字补答，禁止工具调用，用量已计入；最终结果仍以上述终态为准\n")
+	}
+	if term.SummaryRecoveryFailed {
+		b.WriteString("- **补答请求**: 请求失败，原执行结果保留；没有重新执行之前的工作\n")
+	}
+	if term.SummaryMissing {
+		b.WriteString("- **总结状态**: 缺少模型最终文字；系统回执不代表任务已完成\n")
 	}
 	if term.Turns > 0 {
 		fmt.Fprintf(&b, "- **已执行**: %d 轮模型回合\n", term.Turns)

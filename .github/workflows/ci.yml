@@ -149,11 +149,11 @@ jobs:
         working-directory: norma
         run: |
           go test ./... -count=1 -timeout=10m
-          go test -race ./agentcore ./harness ./tool ./mcp ./llm -count=1 -timeout=10m
+          go test -race ./agentcore ./harness ./tool ./mcp ./llm ./runtimeobs -count=1 -timeout=10m
           go test -race ./noaadapter -run 'Test(Reassemble|CompressReplay|Concurrent|SessionConcurrent|StateStoreConcurrent|ArchiverConcurrent|ChaosAgent|LongSessionViewStaysValid)' -count=1 -timeout=5m
       - name: Repeated settlement and cancellation races
         working-directory: norma
-        run: go test -race ./harness -run '^Test(Settlement.*|ParentCancelStillAbortsNoSettlement|StreamingExecutorKeepsItsTurnCancellationDuringSettlement)$' -count=20 -timeout=2m
+        run: go test -race ./harness -run '^Test(FinalText.*|CanceledTool.*|Settlement.*|ParentCancelStillAbortsNoSettlement|StreamingExecutorKeepsItsTurnCancellationDuringSettlement)$' -count=20 -timeout=2m
 
   frontend:
     if: ${{ !inputs.skip-frontend }}

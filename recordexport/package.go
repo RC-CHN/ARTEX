@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/RC-CHN/ARTEX/norma/runtimeobs"
 )
 
 var ErrCapacity = errors.New("record export exceeds file/byte capacity")
@@ -268,6 +270,8 @@ func (b *Builder) copyFile(root *os.Root, source, dest string, before fs.FileInf
 	return nil
 }
 func (b *Builder) Finish(zipPath string) (checksum string, size int64, err error) {
+	start := time.Now()
+	defer func() { runtimeobs.Record(runtimeobs.ExportPackage, start, err != nil) }()
 	if b.omissionOverflow {
 		return "", 0, ErrCapacity
 	}

@@ -14,16 +14,17 @@ const DefaultWorkerTurns = 150
 const DefaultWorkerWrapupTurns = 10
 
 type WorkerBudget struct {
-	IntentID     int64  `json:"intent_id"`
-	TaskID       int64  `json:"task_id"`
-	NormalLimit  int    `json:"normal_limit"`
-	WrapupLimit  int    `json:"wrapup_limit"`
-	NormalUsed   int    `json:"normal_used"`
-	WrapupUsed   int    `json:"wrapup_used"`
-	Phase        string `json:"phase"`
-	InputTokens  int64  `json:"input_tokens"`
-	OutputTokens int64  `json:"output_tokens"`
-	Revision     int64  `json:"revision"`
+	IntentID     int64            `json:"intent_id"`
+	TaskID       int64            `json:"task_id"`
+	NormalLimit  int              `json:"normal_limit"`
+	WrapupLimit  int              `json:"wrapup_limit"`
+	NormalUsed   int              `json:"normal_used"`
+	WrapupUsed   int              `json:"wrapup_used"`
+	Phase        string           `json:"phase"`
+	InputTokens  int64            `json:"input_tokens"`
+	OutputTokens int64            `json:"output_tokens"`
+	Revision     int64            `json:"revision"`
+	TaskBudget   *TaskTokenBudget `json:"task_budget,omitempty"`
 }
 
 const workerBudgetCols = `intent_id,task_id,normal_limit,wrapup_limit,normal_used,wrapup_used,phase,input_tokens,output_tokens,revision`
@@ -78,7 +79,14 @@ func (s *ExplorationStore) ReserveWorkerTurn(ctx context.Context, taskID, intent
 		return b, false, err
 	}
 	oldPhase := b.Phase
-	if wrapup || b.Phase != "normal" || (b.NormalLimit > 0 && b.NormalUsed >= b.NormalLimit) {
+	taskBudget, err := taskTokenBudget(ctx, tx, taskID, false)
+	if err != nil {
+		return b, false, err
+	}
+	if taskBudget.Limit > 0 {
+		b.TaskBudget = &taskBudget
+	}
+	if taskBudget.Reached || wrapup || b.Phase != "normal" || (b.NormalLimit > 0 && b.NormalUsed >= b.NormalLimit) {
 		b.Phase = "wrapup"
 	}
 	allowed := false

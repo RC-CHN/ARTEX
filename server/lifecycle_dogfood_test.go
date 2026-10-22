@@ -59,6 +59,9 @@ func TestLifecycleToolDogfood(t *testing.T) {
 	call("manage_deployments", map[string]any{"action": "get", "id": d["id"]}, false)
 	call("resource_references", map[string]any{"resource_id": id}, false)
 	check := call("check_task_handoff", map[string]any{}, false)
+	if check["references"] == nil || check["task_budget"] == nil {
+		t.Fatal("handoff lacks navigation/budget", check)
+	}
 	if len(check["checks"].([]any)) == 0 {
 		t.Fatal("cleanup gap missing")
 	}

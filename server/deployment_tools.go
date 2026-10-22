@@ -33,7 +33,15 @@ func (s *Server) deploymentTools() []actool.CoreTool {
 			if err != nil {
 				return resourceToolError(err)
 			}
-			return jsonResult(map[string]any{"task_id": a.TaskID, "checks": checks, "scope": "recorded_state", "external_cleanup_verified": false, "next_action": "按 checks 中的具体提示处理；无检查项只代表已记录的事项无待处理项。"})
+			refs, err := s.m.pg.TaskHandoffReferences(ctx, a.TaskID)
+			if err != nil {
+				return resourceToolError(err)
+			}
+			budget, err := s.m.pg.TaskTokenBudget(ctx, a.TaskID, true)
+			if err != nil {
+				return resourceToolError(err)
+			}
+			return jsonResult(map[string]any{"references": refs, "task_budget": budget, "task_id": a.TaskID, "checks": checks, "scope": "recorded_state", "external_cleanup_verified": false, "next_action": "按 checks 中的具体提示处理；无检查项只代表已记录的事项无待处理项。"})
 		}),
 	}
 }

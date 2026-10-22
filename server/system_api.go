@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/RC-CHN/ARTEX/db"
+	"github.com/RC-CHN/ARTEX/norma/runtimeobs"
 	"github.com/RC-CHN/ARTEX/report"
 )
 
@@ -28,7 +29,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		ready, code = false, "shutting_down"
 	}
 	out := map[string]any{"ok": ready, "service": "artex", "version": BuildVersion,
-		"execution": map[string]any{"ready": ready, "code": code}, "runner_recovery": s.recoverySnapshot()}
+		"execution": map[string]any{"ready": ready, "code": code}, "runner_recovery": s.recoverySnapshot(), "performance": runtimeobs.Default.Snapshot()}
 	if s.toolUsage != nil {
 		out["tool_usage_queue"] = s.toolUsage.snapshot()
 	}

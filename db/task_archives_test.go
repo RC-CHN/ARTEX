@@ -145,6 +145,9 @@ func TestTaskArchiveDatabaseRoundTrip(t *testing.T) {
 		fmt.Sprintf("archive-chain-%d", task.ID)).Scan(&llmProfileID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = d.SetTaskTokenBudget(t.Context(), task.ID, 123456, 1); err != nil {
+		t.Fatal(err)
+	}
 	exhaustedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
 	chainCreatedAt := exhaustedAt.Add(-time.Hour)
 	if _, err := d.Exec(`UPDATE tasks SET company_id=$2,llm_profile_id=$3,active_llm_profile_id=$3 WHERE id=$1`, task.ID, companyID, llmProfileID); err != nil {
@@ -281,6 +284,10 @@ VALUES($1,$2,0,'quota_exhausted','balance exhausted',$3,$4,$3)`, task.ID, llmPro
 	live, err := d.GetTask(task.ID)
 	if err != nil || live == nil {
 		t.Fatalf("restored task = %+v, %v", live, err)
+	}
+	budget, err := d.TaskTokenBudget(t.Context(), task.ID, true)
+	if err != nil || budget.Limit != 123456 || budget.Revision != 2 {
+		t.Fatal("archive reset budget", budget, err)
 	}
 	if live.Name != "cold task" || !live.Paused {
 		t.Fatalf("restored task metadata mismatch: %+v", live)

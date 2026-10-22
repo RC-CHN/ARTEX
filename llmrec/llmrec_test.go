@@ -126,3 +126,31 @@ FROM llm_usage WHERE profile_name=$1`, profile).Scan(&count, &input, &output, &w
 		}
 	}
 }
+
+func TestResponseShapeStoredWithoutBodies(t *testing.T) {
+	dsn := os.Getenv("ARTEX_PG_DSN")
+	if dsn == "" {
+		t.Skip("requires isolated test PG")
+	}
+	d, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if err = d.EnsureLLMUsageTable(); err != nil {
+		t.Fatal(err)
+	}
+	profile := "shape-" + uuid.NewString()
+	r := Wrap(completeProvider{}, d, "synthetic", profile, "", "", func() bool { return false })
+	if _, _, _, err = r.Complete(t.Context(), llm.CompletionRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	var stop string
+	var text, thinking, tools int
+	if err = d.QueryRow(`SELECT stop_reason,text_bytes,thinking_bytes,tool_calls FROM llm_usage WHERE profile_name=$1`, profile).Scan(&stop, &text, &thinking, &tools); err != nil {
+		t.Fatal(err)
+	}
+	if stop != "stop" || text != 6 || thinking != 9 || tools != 0 {
+		t.Fatal(stop, text, thinking, tools)
+	}
+}

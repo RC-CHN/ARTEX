@@ -126,6 +126,7 @@ func (l *loop) execOne(toolCtx context.Context, use llm.ContentBlock, emitProgre
 		}
 		res = tool.Errorf("Error: " + err.Error())
 	}
+	res = tool.NormalizeError(res, t.IsReadOnly(input))
 	// Global output cap at the single post-tool choke point: EVERY tool —
 	// built-in, MCP, custom, host — is bounded here regardless of whether it
 	// remembered to Capture itself, so no tool can overflow the context window

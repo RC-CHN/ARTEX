@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RC-CHN/ARTEX/db"
+	"github.com/RC-CHN/ARTEX/norma/runtimeobs"
 	"github.com/RC-CHN/ARTEX/recordexport"
 	"github.com/RC-CHN/ARTEX/resourcelib"
 )
@@ -78,6 +79,8 @@ func (s *Server) recordExportLoop() {
 	}
 }
 func (s *Server) buildRecordExport(parent context.Context, job db.RecordExport) (err error) {
+	start := time.Now()
+	defer func() { runtimeobs.Record(runtimeobs.ExportBuild, start, err != nil) }()
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	// Admission protects originals against concurrent cold archive/deletion,
@@ -155,6 +158,9 @@ func (s *Server) buildRecordExport(parent context.Context, job db.RecordExport) 
 	for _, snapshot := range snapshots {
 		prefix := fmt.Sprintf("tasks/%d", snapshot.TaskID)
 		if err = b.JSON(prefix+"/snapshot.json", snapshot); err != nil {
+			return err
+		}
+		if err = exportHandoff(b, prefix); err != nil {
 			return err
 		}
 		if err = progress("files"); err != nil {
