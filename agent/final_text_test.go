@@ -73,7 +73,7 @@ func mainToolReceipt(r llm.CompletionRequest, id, contains string) error {
 	return fmt.Errorf("synthetic tool %s has no receipt", id)
 }
 
-func assertMainTerminal(t *testing.T, records []db.Activity, recovered bool) map[string]any {
+func assertMainTerminal(t *testing.T, records []db.Activity, missing bool) {
 	t.Helper()
 	for i := len(records) - 1; i >= 0; i-- {
 		if records[i].Kind != "result" {
@@ -83,23 +83,18 @@ func assertMainTerminal(t *testing.T, records []db.Activity, recovered bool) map
 		if err := json.Unmarshal(records[i].Metadata, &meta); err != nil {
 			t.Fatal(err)
 		}
-		if meta["summary_missing"] != false || meta["summary_recovery_attempted"] != recovered || meta["terminal_reason"] != "completed" {
+		if records[i].IsError || meta["summary_missing"] != missing || meta["summary_recovery_attempted"] != false || meta["terminal_reason"] != "completed" {
 			t.Fatalf("unexpected main terminal: %+v", meta)
 		}
-		if recovered {
-			if attempts, ok := meta["summary_recovery_attempts"].(float64); !ok || attempts < 1 || meta["summary_recovery_mode"] != "continue" {
-				t.Fatalf("main recovery metadata incomplete: %+v", meta)
-			}
-		} else if meta["summary_recovery_attempts"] != float64(0) || meta["summary_recovery_mode"] != "" {
-			t.Fatalf("recovery metadata leaked into another run: %+v", meta)
+		if meta["summary_recovery_attempts"] != float64(0) || meta["summary_recovery_mode"] != "" {
+			t.Fatalf("main unexpectedly attempted empty-reply recovery: %+v", meta)
 		}
-		return meta
+		return
 	}
 	t.Fatal("no structured main terminal")
-	return nil
 }
 
-func TestMainAgentEmptyCompletionDogfood(t *testing.T) {
+func TestMainAgentNaturalCompletionAndLegacyTranscriptDogfood(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
 	for _, nonstream := range []bool{true, false} {
@@ -119,42 +114,38 @@ func TestMainAgentEmptyCompletionDogfood(t *testing.T) {
 						return llm.Message{}, "", llm.Usage{}, fmt.Errorf("main tools disabled at call %d", calls)
 					}
 					raw, _ := json.Marshal(r.Messages)
-					if strings.Contains(string(raw), "禁止调用任何工具") || strings.Contains(string(raw), "禁止继续执行工作") {
+					if strings.Contains(string(raw), "禁止调用任何工具") || strings.Contains(string(raw), "禁止继续执行工作") || strings.Contains(string(raw), "上一轮没有向用户给出文字答复") {
 						return llm.Message{}, "", llm.Usage{}, fmt.Errorf("main inherited text-only recovery restriction")
 					}
 					switch calls {
 					case 1:
-						return mainThinkingOnly(stop)
-					case 2:
 						return consultationCall("Write", "write-fixture", map[string]any{"file_path": path, "content": document})
-					case 3:
+					case 2:
 						if err := mainToolReceipt(r, "write-fixture", ""); err != nil {
 							return llm.Message{}, "", llm.Usage{}, err
 						}
 						return consultationCall("Read", "read-fixture", map[string]any{"file_path": path})
-					case 4:
+					case 3:
 						if err := mainToolReceipt(r, "read-fixture", "synthetic before"); err != nil {
 							return llm.Message{}, "", llm.Usage{}, err
 						}
-						return mainThinkingOnly(stop)
-					case 5:
 						return consultationCall("Edit", "edit-fixture", map[string]any{"file_path": path, "old_string": "synthetic before", "new_string": "synthetic after"})
-					case 6:
+					case 4:
 						if err := mainToolReceipt(r, "edit-fixture", ""); err != nil {
 							return llm.Message{}, "", llm.Usage{}, err
 						}
 						return consultationCall("Read", "verify-fixture", map[string]any{"file_path": path})
-					case 7:
+					case 5:
 						if err := mainToolReceipt(r, "verify-fixture", "synthetic after"); err != nil {
 							return llm.Message{}, "", llm.Usage{}, err
 						}
-						return consultationText("Synthetic fixture updated and verified.")
-					case 8:
-						if !strings.Contains(string(raw), "Synthetic fixture updated and verified.") {
+						return mainThinkingOnly(stop)
+					case 6:
+						if !strings.Contains(string(raw), "verify-fixture") {
 							return llm.Message{}, "", llm.Usage{}, fmt.Errorf("main transcript did not resume")
 						}
 						return consultationCall("Read", "next-chat-read", map[string]any{"file_path": path})
-					case 9:
+					case 7:
 						if err := mainToolReceipt(r, "next-chat-read", "synthetic after"); err != nil {
 							return llm.Message{}, "", llm.Usage{}, err
 						}
@@ -169,13 +160,10 @@ func TestMainAgentEmptyCompletionDogfood(t *testing.T) {
 				var records []db.Activity
 				emit := func(a db.Activity) { records = append(records, a) }
 				text, err := m.Chat(t.Context(), task.ID, 0, nil, d.Exploration(task.ExplorationID), "synthetic", "create and verify the local synthetic fixture", emit, nil, nil, nil, nil)
-				if err != nil || calls != 7 || text != "Synthetic fixture updated and verified." {
+				if err != nil || calls != 5 || text != "" {
 					t.Fatalf("first chat: text=%q calls=%d err=%v", text, calls, err)
 				}
-				meta := assertMainTerminal(t, records, true)
-				if meta["summary_recovery_attempts"] != float64(2) {
-					t.Fatalf("successful tools did not renew recovery: %+v", meta)
-				}
+				assertMainTerminal(t, records, true)
 				if contents, err := os.ReadFile(path); err != nil || string(contents) != strings.Replace(document, "synthetic before", "synthetic after", 1) {
 					t.Fatalf("real file tool effects: %q %v", contents, err)
 				}
@@ -190,7 +178,7 @@ func TestMainAgentEmptyCompletionDogfood(t *testing.T) {
 				}
 				records = nil
 				text, err = m.Chat(t.Context(), task.ID, 0, nil, d.Exploration(task.ExplorationID), "synthetic", "read the existing local synthetic fixture", emit, nil, nil, nil, nil)
-				if err != nil || calls != 9 || text != "Next human turn can still use tools." {
+				if err != nil || calls != 7 || text != "Next human turn can still use tools." {
 					t.Fatalf("resumed chat: text=%q calls=%d err=%v", text, calls, err)
 				}
 				assertMainTerminal(t, records, false)
@@ -202,16 +190,22 @@ func TestMainAgentEmptyCompletionDogfood(t *testing.T) {
 	}
 }
 
-func TestMainAgentRepeatedEmptyReplyStopsWithoutLosingToolEffects(t *testing.T) {
+func TestMainAgentEmptyReplyCompletesWithoutRecoveryOrLosingToolEffects(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
 	for _, nonstream := range []bool{true, false} {
 		for _, tc := range []struct {
 			name       string
+			noThinking bool
 			saveFile   bool
 			failedEdit bool
 			wantCalls  int
-		}{{"no_tools", false, false, 2}, {"after_write", true, false, 3}, {"failed_edit_does_not_reset", true, true, 4}} {
+		}{
+			{name: "empty_message", noThinking: true, wantCalls: 1},
+			{name: "thinking_only", wantCalls: 1},
+			{name: "after_write", saveFile: true, wantCalls: 2},
+			{name: "after_failed_edit", saveFile: true, failedEdit: true, wantCalls: 3},
+		} {
 			t.Run(fmt.Sprintf("nonstream=%v/%s", nonstream, tc.name), func(t *testing.T) {
 				task, err := d.CreateTaskWithOptions("synthetic empty response guard", "synthetic", db.TaskCreateOptions{})
 				if err != nil {
@@ -223,7 +217,7 @@ func TestMainAgentRepeatedEmptyReplyStopsWithoutLosingToolEffects(t *testing.T) 
 				p := mainFinalProvider{consultationProvider{complete: func(_ context.Context, r llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 					calls++
 					if calls > tc.wantCalls {
-						return llm.Message{}, "", llm.Usage{}, fmt.Errorf("empty replies did not stop after one recovery without progress")
+						return llm.Message{}, "", llm.Usage{}, fmt.Errorf("main unexpectedly retried an empty reply")
 					}
 					if len(r.Tools) == 0 {
 						return llm.Message{}, "", llm.Usage{}, fmt.Errorf("main recovery disabled tools")
@@ -238,8 +232,11 @@ func TestMainAgentRepeatedEmptyReplyStopsWithoutLosingToolEffects(t *testing.T) 
 						}
 						phase--
 					}
-					if phase == 2 && tc.failedEdit {
+					if phase == 1 && tc.failedEdit {
 						return consultationCall("Edit", "failed-resource-edit", map[string]any{"file_path": path, "old_string": "absent string", "new_string": "must not be written"})
+					}
+					if tc.noThinking {
+						return llm.Message{Role: llm.RoleAssistant}, "end_turn", llm.Usage{}, nil
 					}
 					return mainThinkingOnly("end_turn")
 				}}}
@@ -247,21 +244,12 @@ func TestMainAgentRepeatedEmptyReplyStopsWithoutLosingToolEffects(t *testing.T) 
 				m.SetNonStreaming(func() bool { return nonstream })
 				var records []db.Activity
 				text, err := m.Chat(t.Context(), task.ID, 0, nil, d.Exploration(task.ExplorationID), "synthetic", "verify the synthetic recovery guard", func(a db.Activity) { records = append(records, a) }, nil, nil, nil, nil)
-				if err == nil || text != "" || calls != tc.wantCalls {
+				if err != nil || text != "" || calls != tc.wantCalls {
 					t.Fatalf("empty main completion: calls=%d text=%q err=%v", calls, text, err)
 				}
-				if len(records) == 0 || records[len(records)-1].Kind != "result" {
-					t.Fatal("no empty-response terminal")
-				}
+				assertMainTerminal(t, records, true)
 				result := records[len(records)-1]
-				var meta map[string]any
-				if err = json.Unmarshal(result.Metadata, &meta); err != nil {
-					t.Fatal(err)
-				}
-				if !result.IsError || meta["terminal_reason"] != "empty_response" || meta["summary_missing"] != true || meta["summary_recovery_attempted"] != true || meta["summary_recovery_attempts"] != float64(1) || meta["summary_recovery_mode"] != "continue" {
-					t.Fatalf("empty-response metadata: %+v error=%v", meta, result.IsError)
-				}
-				for _, forbidden := range []string{"模型正常结束", "基本没真正探成", "禁止工具调用"} {
+				for _, forbidden := range []string{"empty_response", "空回复恢复", "禁止工具调用"} {
 					if strings.Contains(result.Detail, forbidden) {
 						t.Fatalf("misleading empty-response receipt: %s", result.Detail)
 					}
@@ -270,7 +258,11 @@ func TestMainAgentRepeatedEmptyReplyStopsWithoutLosingToolEffects(t *testing.T) 
 					if contents, err := os.ReadFile(path); err != nil || string(contents) != "synthetic preserved resource" {
 						t.Fatalf("saved resource lost: %q %v", contents, err)
 					}
-					if strings.Contains(result.Detail, "还没有发出工具调用") || !strings.Contains(result.Detail, "产物保留") {
+					wantReceipt := "已正常返回"
+					if tc.failedEdit {
+						wantReceipt = "返回错误"
+					}
+					if strings.Contains(result.Detail, "还没有发出工具调用") || !strings.Contains(result.Detail, wantReceipt) {
 						t.Fatalf("prior work incorrectly discarded: %s", result.Detail)
 					}
 				}
@@ -345,6 +337,59 @@ func TestMainAgentUnlimitedDoesNotInheritWorkerOrTaskBudget(t *testing.T) {
 	}
 }
 
+func TestMainAgentExplicitTurnLimitKeepsSettlementWithoutEmptyRecovery(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+	for _, nonstream := range []bool{true, false} {
+		t.Run(fmt.Sprintf("nonstream=%v", nonstream), func(t *testing.T) {
+			task, err := d.CreateTaskWithOptions("synthetic explicit main limit", "synthetic", db.TaskCreateOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			path := filepath.Join(dir, "fixture.txt")
+			if err = os.WriteFile(path, []byte("synthetic bounded main"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			p := mainFinalProvider{consultationProvider{complete: func(_ context.Context, r llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+				calls++
+				if calls > 3 || len(r.Tools) == 0 {
+					return llm.Message{}, "", llm.Usage{}, fmt.Errorf("main settlement retried empty reply or hid tools")
+				}
+				raw, _ := json.Marshal(r.Messages)
+				if strings.Contains(string(raw), mainAgentWrapUpDefault) != (calls == 3) {
+					return llm.Message{}, "", llm.Usage{}, fmt.Errorf("main explicit settlement at wrong call %d", calls)
+				}
+				if calls > 1 {
+					if err := mainToolReceipt(r, fmt.Sprintf("limited-read-%d", calls-1), "synthetic bounded main"); err != nil {
+						return llm.Message{}, "", llm.Usage{}, err
+					}
+				}
+				if calls == 3 {
+					return mainThinkingOnly("end_turn")
+				}
+				return consultationCall("Read", fmt.Sprintf("limited-read-%d", calls), map[string]any{"file_path": path})
+			}}}
+			m := NewMainAgent(p, "synthetic", dir, nil, 0, 2)
+			m.SetNonStreaming(func() bool { return nonstream })
+			var records []db.Activity
+			text, err := m.Chat(t.Context(), task.ID, 0, nil, d.Exploration(task.ExplorationID), "synthetic", "verify explicit main limit", func(a db.Activity) { records = append(records, a) }, nil, nil, nil, nil)
+			if err != nil || calls != 3 || text != "" || len(records) == 0 {
+				t.Fatalf("bounded main: calls=%d text=%q err=%v", calls, text, err)
+			}
+			last := records[len(records)-1]
+			var meta map[string]any
+			if err = json.Unmarshal(last.Metadata, &meta); err != nil {
+				t.Fatal(err)
+			}
+			if last.Kind != "result" || last.IsError || meta["terminal_reason"] != "max_turns" || meta["summary_recovery_attempted"] != false || meta["summary_recovery_attempts"] != float64(0) {
+				t.Fatalf("explicit main limit changed: %+v", meta)
+			}
+		})
+	}
+}
+
 func TestMainAgentAutomaticConsultationKeeps24TurnBound(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
@@ -410,7 +455,7 @@ func TestMainAgentAutomaticConsultationKeeps24TurnBound(t *testing.T) {
 	}
 }
 
-func TestMainAgentEmptyRecoveryConcurrentTasksAndSegments(t *testing.T) {
+func TestMainAgentNaturalCompletionConcurrentTasksAndSegments(t *testing.T) {
 	d := testDB(t)
 	defer d.Close()
 	tasks := make([]*db.Task, 2)
@@ -426,7 +471,7 @@ func TestMainAgentEmptyRecoveryConcurrentTasksAndSegments(t *testing.T) {
 		task    *db.Task
 		segment int
 		marker  string
-		recover bool
+		empty   bool
 	}
 	cases := []scenario{{tasks[0], 0, "synthetic-alpha", true}, {tasks[0], 1, "synthetic-beta", false}, {tasks[1], 0, "synthetic-gamma", true}}
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
@@ -467,11 +512,8 @@ func TestMainAgentEmptyRecoveryConcurrentTasksAndSegments(t *testing.T) {
 				return llm.Message{}, "", llm.Usage{}, ctx.Err()
 			}
 		}
-		if current.recover {
-			if n == 1 {
-				return mainThinkingOnly("")
-			}
-			n--
+		if current.empty {
+			return mainThinkingOnly("")
 		}
 		path := filepath.Join(dir, current.marker+".txt")
 		switch n {
@@ -508,12 +550,24 @@ func TestMainAgentEmptyRecoveryConcurrentTasksAndSegments(t *testing.T) {
 	}
 	for range cases {
 		o := <-results
-		if o.err != nil || o.text != o.marker+" verified" {
+		wantText, wantCalls := o.marker+" verified", 3
+		if o.empty {
+			wantText, wantCalls = "", 1
+		}
+		mu.Lock()
+		gotCalls := calls[o.marker]
+		mu.Unlock()
+		if o.err != nil || o.text != wantText || gotCalls != wantCalls {
 			t.Errorf("concurrent %s: %q %v", o.marker, o.text, o.err)
 			continue
 		}
-		assertMainTerminal(t, o.records, o.recover)
-		if contents, err := os.ReadFile(filepath.Join(dir, o.marker+".txt")); err != nil || string(contents) != o.marker {
+		assertMainTerminal(t, o.records, o.empty)
+		contents, err := os.ReadFile(filepath.Join(dir, o.marker+".txt"))
+		if o.empty {
+			if !os.IsNotExist(err) {
+				t.Errorf("empty completion unexpectedly wrote file %s: %v", o.marker, err)
+			}
+		} else if err != nil || string(contents) != o.marker {
 			t.Errorf("concurrent file %s: %q %v", o.marker, contents, err)
 		}
 	}
