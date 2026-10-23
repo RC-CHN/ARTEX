@@ -34,19 +34,20 @@ func (t *runTrace) done(id string) {
 }
 
 var reasonHint = map[harness.TerminalReason]string{
-	harness.ReasonCompleted:         "模型正常结束了本轮，但没有留下文字总结；事实和资产以本轮工具调用记录为准",
-	harness.ReasonMaxTurns:          "达到步数上限(MaxTurns)：SDK 已进入收尾阶段，实际写回以工具回执为准；意图会标记为 exhausted，供规划者换方向继续，而不是作为失败处理",
-	harness.ReasonTimeout:           "达到单次运行的墙钟预算(MaxDuration)：到点会打断在跑的工具并就地进收尾，把已识别的事实和资产写回，意图会标记为 exhausted",
-	harness.ReasonModelError:        "模型或 API 调用失败（网络、鉴权、限流、供应商响应异常等）；此前工具可能已经执行，请核对执行记录与产物后再决定如何恢复",
-	harness.ReasonEmptyResponse:     "模型再次没有给出文字答复或工具调用，且上次恢复后没有成功工具进展，本轮异常结束；此前工具结果和产物保留，不能视为任务已完成",
-	harness.ReasonExecutionError:    "执行环境失联或返回无法安全重试的错误；命令可能已经产生作用，本轮已停止，需要核对执行记录与产物后再决定是否续跑",
-	harness.ReasonBlockingLimit:     "上下文长度达到硬上限，请求在发出前被拦截；应收窄意图粒度或压缩工具返回",
-	harness.ReasonPromptTooLong:     "提示词过长且上下文压缩重试已经用尽，无法继续执行",
-	harness.ReasonImageError:        "当前模型不支持本轮多模态内容；请切换支持视觉的模型或避免工具返回图片",
-	harness.ReasonStopHookPrevented: "Stop 钩子阻止本轮结束，随后未能继续；请检查任务 Guard 规则是否过严",
-	harness.ReasonHookStopped:       "工具或钩子主动停止继续执行，例如越界目标或禁用命令；请检查最后一条 tool_result 的拦截说明",
-	harness.ReasonAbortedStreaming:  "运行在模型输出流式生成阶段被取消",
-	harness.ReasonAbortedTools:      "运行在工具执行阶段被取消",
+	harness.ReasonCompleted:          "模型正常结束了本轮，但没有留下文字总结；事实和资产以本轮工具调用记录为准",
+	harness.ReasonMaxTurns:           "达到步数上限(MaxTurns)：SDK 已进入收尾阶段，实际写回以工具回执为准；意图会标记为 exhausted，供规划者换方向继续，而不是作为失败处理",
+	harness.ReasonTimeout:            "达到单次运行的墙钟预算(MaxDuration)：到点会打断在跑的工具并就地进收尾，把已识别的事实和资产写回，意图会标记为 exhausted",
+	harness.ReasonModelError:         "模型或 API 调用失败（网络、鉴权、限流、供应商响应异常等）；此前工具可能已经执行，请核对执行记录与产物后再决定如何恢复",
+	harness.ReasonIncompleteResponse: "模型响应不完整：缺少有效输出、协议结束标记或工具参数不完整；已有结果保留，未提交的工具没有执行，不代表任务已完成",
+	harness.ReasonEmptyResponse:      "模型再次没有给出文字答复或工具调用，且上次恢复后没有成功工具进展，本轮异常结束；此前工具结果和产物保留，不能视为任务已完成",
+	harness.ReasonExecutionError:     "执行环境失联或返回无法安全重试的错误；命令可能已经产生作用，本轮已停止，需要核对执行记录与产物后再决定是否续跑",
+	harness.ReasonBlockingLimit:      "上下文长度达到硬上限，请求在发出前被拦截；应收窄意图粒度或压缩工具返回",
+	harness.ReasonPromptTooLong:      "提示词过长且上下文压缩重试已经用尽，无法继续执行",
+	harness.ReasonImageError:         "当前模型不支持本轮多模态内容；请切换支持视觉的模型或避免工具返回图片",
+	harness.ReasonStopHookPrevented:  "Stop 钩子阻止本轮结束，随后未能继续；请检查任务 Guard 规则是否过严",
+	harness.ReasonHookStopped:        "工具或钩子主动停止继续执行，例如越界目标或禁用命令；请检查最后一条 tool_result 的拦截说明",
+	harness.ReasonAbortedStreaming:   "运行在模型输出流式生成阶段被取消",
+	harness.ReasonAbortedTools:       "运行在工具执行阶段被取消",
 }
 
 // terminalText renders a terminal event with no final text into a compact summary
@@ -82,6 +83,8 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 		sum = "（达到运行预算上限(" + string(reason) + ")，已结束本轮，实际写回以工具回执为准" + progressSuffix(term, tr) + "；本次无文字总结）"
 	} else if reason == harness.ReasonEmptyResponse {
 		sum = "（模型连续未回复，终态 empty_response：恢复后仍无进展，本轮异常结束；此前工具结果和产物保留）"
+	} else if reason == harness.ReasonIncompleteResponse {
+		sum = "（模型响应不完整，终态 incomplete_response：本轮异常结束，已有结果保留；未完成的工具调用没有提交执行）"
 	} else {
 		hint := terminalReasonHint(reason)
 		sum = "（无文字总结，终态 " + terminalReasonLabel(reason) + "：" + firstLine(hint, 80) + "）"
@@ -103,8 +106,8 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 	if term.Err != nil {
 		fmt.Fprintf(&b, "- **底层错误**: `%v`\n", term.Err)
 	}
-	if aborted && strings.TrimSpace(term.Text) != "" {
-		b.WriteString("- **取消前已生成的部分输出**:\n\n")
+	if (aborted || reason == harness.ReasonIncompleteResponse) && strings.TrimSpace(term.Text) != "" {
+		b.WriteString("- **中断前已生成的部分输出**:\n\n")
 		b.WriteString(term.Text)
 		b.WriteString("\n\n")
 	}

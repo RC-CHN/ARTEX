@@ -2,6 +2,7 @@ package llm
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 )
 
@@ -25,7 +26,17 @@ func NewAccumulator() *Accumulator { return &Accumulator{} }
 // Add folds one event into the accumulator.
 func (a *Accumulator) Add(ev StreamEvent) {
 	switch ev.Type {
+	case SEStreamDiagnostics:
+		// Each attempt has its own stop evidence and token usage. Diagnostics
+		// never finish a content/tool block; a following error may leave it partial.
+		a.StopReason = ev.StopReason
+		a.Usage.Add(ev.Usage)
+		if ev.Diagnostics != nil && ev.Diagnostics.DiscardThinking {
+			a.thinkBuf, a.thinkSig = nil, ""
+			a.blocks = slices.DeleteFunc(a.blocks, func(b ContentBlock) bool { return b.Type == BlockThinking })
+		}
 	case SEMessageStart:
+		a.StopReason = ""
 		a.Usage.Add(ev.Usage)
 	case SETextDelta:
 		if a.textBuf == nil {

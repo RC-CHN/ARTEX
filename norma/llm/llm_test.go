@@ -110,7 +110,7 @@ func captureBody(t *testing.T, cfg Config, stubSSE string) map[string]any {
 }
 
 func TestThinkingParamsAnthropic(t *testing.T) {
-	stub := sse(`data: {"type":"message_stop"}`, ``)
+	stub := sse(`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}`, ``, `data: {"type":"message_stop"}`, ``)
 	// set → fields present
 	m := captureBody(t, Config{Format: FormatAnthropic, ThinkingType: "enabled", ReasoningEffort: "high"}, stub)
 	if th, _ := m["thinking"].(map[string]any); th["type"] != "enabled" {

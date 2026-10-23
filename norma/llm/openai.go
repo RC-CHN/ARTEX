@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -270,8 +271,8 @@ func (p *openaiProvider) buildBody(req CompletionRequest, stream bool) ([]byte, 
 	return json.Marshal(body)
 }
 
-// emptyResponseRetries is the DEFAULT bound on how many times a completed-but-
-// empty response is re-requested before it is surfaced as-is (override per
+// emptyResponseRetries is the DEFAULT bound on how many times an empty or
+// reasoning-only normal stop is re-requested before an incomplete error (override per
 // Config with EmptyResponseRetries). Kept low and separate from the
 // network-level retries() knob: an empty-response retry re-sends the whole
 // prompt (expensive on large contexts), and the failure is effectively binary —
@@ -280,9 +281,9 @@ func (p *openaiProvider) buildBody(req CompletionRequest, stream bool) ([]byte, 
 const emptyResponseRetries = 2
 
 // isEmptyResponseRetryable reports whether a completed response that produced no
-// content blocks should be retried. Only a normal stop qualifies: a max_tokens
+// answer text or tool calls should be retried. Only a normal stop qualifies: a max_tokens
 // truncation is the harness's to escalate (retrying would fight that), and any
-// stop that actually carried content never reaches this check.
+// stop that actually carried answer text or tools never reaches this check.
 func isEmptyResponseRetryable(stopReason string) bool {
 	return stopReason == "end_turn" || stopReason == ""
 }
@@ -307,22 +308,33 @@ func (p *openaiProvider) Stream(ctx context.Context, req CompletionRequest) iter
 				if !yield(StreamEvent{Type: SEStreamDiagnostics, Diagnostics: &StreamDiagnostics{StreamEnd: StreamEndRequestError}}, nil) {
 					return
 				}
-				yield(StreamEvent{}, err)
+				yield(StreamEvent{}, incompleteRetryRequestError(ctx, err, attempt))
+				return
+			}
+			if attempt > 0 && !yield(StreamEvent{Type: SEMessageStart}, nil) {
+				resp.Body.Close()
 				return
 			}
 
-			// Consume one attempt's stream. State is fresh per attempt (a retry
-			// re-reads from a new response). emitted tracks whether any content
-			// event was yielded — a retry only happens when nothing was, so the
-			// consumer never sees duplicated content across attempts.
+			// Reasoning alone is not an answer or an action. Empty stops and stream
+			// interruptions may retry this exact request within the existing
+			// provider retry bound, but never after text or any tool fragment.
 			scan := newSSEScanner(resp.Body)
 			started := map[int]bool{}
 			var stopReason string
 			var usage Usage
 			diagnostics := StreamDiagnostics{}
-			emitted := false
+			committed, meaningful, observed := false, false, false
 			consumerStopped := false
 			var streamErr error
+			var upstreamCause error
+			var incomplete IncompleteResponseReason
+			var pendingTool bool
+			var toolInput strings.Builder
+			validToolInput := func() bool {
+				raw := strings.TrimSpace(toolInput.String())
+				return !pendingTool || raw == "" || json.Valid([]byte(raw))
+			}
 			for {
 				_, data, serr := scan.next()
 				if serr == io.EOF {
@@ -331,7 +343,7 @@ func (p *openaiProvider) Stream(ctx context.Context, req CompletionRequest) iter
 				}
 				if serr != nil {
 					diagnostics.StreamEnd = StreamEndReadError
-					streamErr = serr
+					incomplete = IncompleteStreamRead
 					break
 				}
 				data = strings.TrimSpace(data)
@@ -342,9 +354,12 @@ func (p *openaiProvider) Stream(ctx context.Context, req CompletionRequest) iter
 					diagnostics.StreamEnd = StreamEndDone
 					break
 				}
-				evs, sr, u, ok, malformed := parseOpenAIFrameDiagnostics(data, started)
+				evs, sr, u, ok, malformed, perr := parseOpenAIFrameDiagnostics(data, started)
 				if malformed {
 					diagnostics.ParseErrors++
+					diagnostics.StreamEnd = StreamEndProtocolError
+					incomplete = IncompleteMalformedFrame
+					break
 				}
 				if sr != "" {
 					stopReason = sr
@@ -353,14 +368,45 @@ func (p *openaiProvider) Stream(ctx context.Context, req CompletionRequest) iter
 				if ok {
 					usage = u
 				}
+				if perr != nil {
+					diagnostics.StreamEnd = StreamEndProtocolError
+					if observed || attempt > 0 {
+						incomplete, upstreamCause = IncompleteUpstreamError, perr
+					} else {
+						streamErr = perr
+					}
+					break
+				}
 				for _, ev := range evs {
-					emitted = true
+					// Any non-input event would make the harness dispatch the pending
+					// tool. Reject malformed input before exposing that boundary.
+					if ev.Type != SEToolInputJSON && !validToolInput() {
+						diagnostics.StreamEnd = StreamEndProtocolError
+						incomplete = IncompleteInvalidToolInput
+						break
+					}
+					switch ev.Type {
+					case SEToolUseStart:
+						pendingTool = true
+						toolInput.Reset()
+						committed, meaningful, observed = true, true, true
+					case SEToolInputJSON:
+						committed, observed = true, true
+						toolInput.WriteString(ev.Text)
+					case SETextDelta:
+						committed, observed = true, true
+						meaningful = meaningful || strings.TrimSpace(ev.Text) != ""
+						pendingTool = false
+					case SEThinkingDelta:
+						observed = observed || ev.Text != ""
+						pendingTool = false
+					}
 					if !yield(ev, nil) {
 						consumerStopped = true
 						break
 					}
 				}
-				if consumerStopped {
+				if consumerStopped || incomplete != "" {
 					break
 				}
 			}
@@ -371,23 +417,44 @@ func (p *openaiProvider) Stream(ctx context.Context, req CompletionRequest) iter
 				// recorder observes that boundary itself as consumer_stop.
 				return
 			}
-			if !yield(StreamEvent{Type: SEStreamDiagnostics, Diagnostics: &diagnostics}, nil) {
+			if incomplete == "" && streamErr == nil && diagnostics.StreamEnd == StreamEndEOF && !diagnostics.FinishReasonSeen {
+				incomplete = IncompleteMissingTerminal
+			}
+			if incomplete == "" && streamErr == nil && !validToolInput() {
+				incomplete = IncompleteInvalidToolInput
+			}
+			if incomplete == "" && streamErr == nil && !meaningful && stopReason != "max_tokens" {
+				incomplete = IncompleteEmptyOutput
+			}
+			retryableIncomplete := incomplete == IncompleteEmptyOutput || incomplete == IncompleteMissingTerminal || incomplete == IncompleteStreamRead
+			retryIncomplete := retryableIncomplete && !committed && isEmptyResponseRetryable(stopReason) && attempt < p.cfg.emptyRetries() && ctx.Err() == nil
+			diagnostics.DiscardThinking = retryIncomplete
+			// Usage and stop evidence must precede an error without finishing a
+			// pending tool. The successful terminal delta does not repeat usage.
+			if !yield(StreamEvent{Type: SEStreamDiagnostics, Diagnostics: &diagnostics, Usage: usage, StopReason: stopReason}, nil) {
+				return
+			}
+			if ctx.Err() != nil {
+				yield(StreamEvent{}, ctx.Err())
 				return
 			}
 			if streamErr != nil {
 				yield(StreamEvent{}, streamErr)
 				return
 			}
-			// Empty completion: re-request a few times before surfacing it. Safe
-			// to retry because nothing was yielded downstream this attempt.
-			if !emitted && isEmptyResponseRetryable(stopReason) && attempt < p.cfg.emptyRetries() {
+			if retryIncomplete {
 				if !backoffSleep(ctx, p.cfg.emptyRetryDelay(attempt)) {
 					yield(StreamEvent{}, ctx.Err())
 					return
 				}
 				continue
 			}
-			if !yield(StreamEvent{Type: SEMessageDelta, StopReason: stopReason, Usage: usage}, nil) {
+			if incomplete != "" {
+				streamErr = &IncompleteResponseError{Reason: incomplete, StopReason: stopReason, Diagnostics: diagnostics, cause: upstreamCause}
+				yield(StreamEvent{}, streamErr)
+				return
+			}
+			if !yield(StreamEvent{Type: SEMessageDelta, StopReason: stopReason}, nil) {
 				return
 			}
 			yield(StreamEvent{Type: SEMessageStop}, nil)
@@ -406,6 +473,8 @@ func (p *openaiProvider) Complete(ctx context.Context, req CompletionRequest) (M
 	if err != nil {
 		return Message{}, "", Usage{}, err
 	}
+	var totalUsage Usage
+	var lastPartial Message
 	for attempt := 0; ; attempt++ {
 		resp, err := doStream(ctx, p.cfg, p.cfg.BaseURL+"/chat/completions", body, func(r *http.Request) {
 			r.Header.Set("content-type", "application/json")
@@ -413,26 +482,44 @@ func (p *openaiProvider) Complete(ctx context.Context, req CompletionRequest) (M
 			r.Header.Set("accept", "application/json")
 		}, "openai")
 		if err != nil {
-			return Message{}, "", Usage{}, err
+			return lastPartial, "", totalUsage, incompleteRetryRequestError(ctx, err, attempt)
 		}
 		raw, rerr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if rerr != nil {
-			return Message{}, "", Usage{}, rerr
+			if ctx.Err() != nil {
+				return Message{}, "", totalUsage, ctx.Err()
+			}
+			return Message{}, "", totalUsage, &IncompleteResponseError{Reason: IncompleteStreamRead, Diagnostics: StreamDiagnostics{StreamEnd: StreamEndReadError}}
 		}
 		msg, stop, usage, perr := parseOpenAIResponse(raw)
-		if perr != nil {
-			return Message{}, "", Usage{}, perr
+		totalUsage.Add(usage)
+		if ctx.Err() != nil {
+			return msg, stop, totalUsage, ctx.Err()
 		}
-		// Empty completion (no content blocks): re-request a few times before
-		// returning it, mirroring the streaming path.
-		if len(msg.Content) == 0 && isEmptyResponseRetryable(stop) && attempt < p.cfg.emptyRetries() {
+		if perr != nil {
+			var incomplete *IncompleteResponseError
+			if attempt > 0 && !errors.As(perr, &incomplete) {
+				// Some gateways return HTTP 200 with an error object. This is
+				// still failure of the bounded recovery, not a new outer retry.
+				return lastPartial, stop, totalUsage, &IncompleteResponseError{Reason: IncompleteRetryRequest, StopReason: stop, Diagnostics: StreamDiagnostics{StreamEnd: StreamEndEOF}, cause: perr}
+			}
+			return msg, stop, totalUsage, perr
+		}
+		empty := strings.TrimSpace(msg.Text()) == "" && len(msg.ToolUses()) == 0 && stop != "max_tokens"
+		// No tools or answer exist in this atomic response, so retrying the same
+		// request cannot replay a tool effect. Thinking does not satisfy an answer.
+		if empty && isEmptyResponseRetryable(stop) && attempt < p.cfg.emptyRetries() {
+			lastPartial = msg
 			if !backoffSleep(ctx, p.cfg.emptyRetryDelay(attempt)) {
-				return Message{}, "", Usage{}, ctx.Err()
+				return msg, stop, totalUsage, ctx.Err()
 			}
 			continue
 		}
-		return msg, stop, usage, nil
+		if empty {
+			return msg, stop, totalUsage, &IncompleteResponseError{Reason: IncompleteEmptyOutput, StopReason: stop, Diagnostics: StreamDiagnostics{FinishReasonSeen: stop != "", StreamEnd: StreamEndEOF}}
+		}
+		return msg, stop, totalUsage, nil
 	}
 }
 
@@ -466,7 +553,7 @@ func parseOpenAIResponse(raw []byte) (Message, string, Usage, error) {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &r); err != nil {
-		return Message{}, "", Usage{}, fmt.Errorf("openai: decode response: %w (body: %s)", err, truncate(string(raw), 500))
+		return Message{}, "", Usage{}, &IncompleteResponseError{Reason: IncompleteMalformedFrame, Diagnostics: StreamDiagnostics{StreamEnd: StreamEndProtocolError, ParseErrors: 1}}
 	}
 	if r.Error != nil {
 		return Message{}, "", Usage{}, fmt.Errorf("openai: %s", r.Error.Message)
@@ -480,7 +567,7 @@ func parseOpenAIResponse(raw []byte) (Message, string, Usage, error) {
 		}
 	}
 	if len(r.Choices) == 0 {
-		return Message{}, "", usage, fmt.Errorf("openai: empty response (no choices; body: %s)", truncate(string(raw), 500))
+		return Message{}, "", usage, &IncompleteResponseError{Reason: IncompleteEmptyOutput, Diagnostics: StreamDiagnostics{StreamEnd: StreamEndEOF}}
 	}
 	ch := r.Choices[0]
 	var blocks []ContentBlock
@@ -495,14 +582,22 @@ func parseOpenAIResponse(raw []byte) (Message, string, Usage, error) {
 		// did answer, it just declined.
 		blocks = append(blocks, TextBlock(ch.Message.Refusal))
 	}
+	invalidToolInput := false
 	for _, tc := range ch.Message.ToolCalls {
 		in := tc.Function.Arguments
 		if strings.TrimSpace(in) == "" {
 			in = "{}"
 		}
+		if !json.Valid([]byte(in)) {
+			invalidToolInput = true
+		}
 		blocks = append(blocks, ContentBlock{Type: BlockToolUse, ID: tc.ID, Name: tc.Function.Name, Input: []byte(in)})
 	}
-	return Message{Role: RoleAssistant, Content: blocks}, mapOpenAIFinish(ch.FinishReason), usage, nil
+	msg, stop := Message{Role: RoleAssistant, Content: blocks}, mapOpenAIFinish(ch.FinishReason)
+	if invalidToolInput {
+		return msg, stop, usage, &IncompleteResponseError{Reason: IncompleteInvalidToolInput, StopReason: stop, Diagnostics: StreamDiagnostics{FinishReasonSeen: stop != "", StreamEnd: StreamEndEOF}}
+	}
+	return msg, stop, usage, nil
 }
 
 func truncate(s string, max int) string {
@@ -531,12 +626,12 @@ func pickReasoning(fields ...string) string {
 }
 
 func parseOpenAIFrame(data string, started map[int]bool) (evs []StreamEvent, stopReason string, usage Usage, hasUsage bool) {
-	evs, stopReason, usage, hasUsage, _ = parseOpenAIFrameDiagnostics(data, started)
+	evs, stopReason, usage, hasUsage, _, _ = parseOpenAIFrameDiagnostics(data, started)
 	return
 }
 
 // Decode once so always-on diagnostics do not add another JSON parse per token.
-func parseOpenAIFrameDiagnostics(data string, started map[int]bool) (evs []StreamEvent, stopReason string, usage Usage, hasUsage, malformed bool) {
+func parseOpenAIFrameDiagnostics(data string, started map[int]bool) (evs []StreamEvent, stopReason string, usage Usage, hasUsage, malformed bool, upstreamErr error) {
 	var f struct {
 		Choices []struct {
 			Delta struct {
@@ -556,16 +651,29 @@ func parseOpenAIFrameDiagnostics(data string, started map[int]bool) (evs []Strea
 				CachedTokens int `json:"cached_tokens"`
 			} `json:"prompt_tokens_details"`
 		} `json:"usage"`
+		Error *struct {
+			Message string          `json:"message"`
+			Type    string          `json:"type"`
+			Code    json.RawMessage `json:"code"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(data), &f); err != nil {
-		return nil, "", Usage{}, false, true
+		return nil, "", Usage{}, false, true, nil
 	}
 	if f.Usage != nil {
 		usage = Usage{InputTokens: f.Usage.PromptTokens, OutputTokens: f.Usage.CompletionTokens, CacheReadTokens: f.Usage.PromptTokensDetails.CachedTokens}
 		hasUsage = true
 	}
+	if f.Error != nil {
+		// An explicit API failure is not an empty content chunk, even if the
+		// gateway later sends [DONE]. Retain classification details only as the
+		// private cause when Stream has already exposed output or retried.
+		var code string
+		_ = json.Unmarshal(f.Error.Code, &code)
+		return nil, "", usage, hasUsage, false, fmt.Errorf("openai: %s (type=%s code=%s)", f.Error.Message, f.Error.Type, code)
+	}
 	if len(f.Choices) == 0 {
-		return nil, "", usage, hasUsage, false
+		return nil, "", usage, hasUsage, false, nil
 	}
 	ch := f.Choices[0]
 	if think := pickReasoning(ch.Delta.ReasoningContent, ch.Delta.Reasoning, ch.Delta.ReasoningText); think != "" {
@@ -590,7 +698,7 @@ func parseOpenAIFrameDiagnostics(data string, started map[int]bool) (evs []Strea
 	if ch.FinishReason != "" {
 		stopReason = mapOpenAIFinish(ch.FinishReason)
 	}
-	return evs, stopReason, usage, hasUsage, false
+	return evs, stopReason, usage, hasUsage, false, nil
 }
 
 func mapOpenAIFinish(r string) string {

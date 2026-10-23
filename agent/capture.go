@@ -167,12 +167,12 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 				}
 				flush() // flush any trailing thinking / non-final text
 				sum, detail := ev.Terminal.Text, ev.Terminal.Text
-				if strings.TrimSpace(sum) == "" || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
+				if strings.TrimSpace(sum) == "" || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming || ev.Terminal.Reason == harness.ReasonIncompleteResponse {
 					sum, detail = terminalText(ctx, ev.Terminal, lastTool)
 				}
 				u := ev.Terminal.Usage // cumulative token usage for this session
 				cancelCode, _, _, _ := AbortReason(ctx)
-				meta, _ := json.Marshal(map[string]any{
+				fields := map[string]any{
 					"terminal_reason": reason, "turns": ev.Terminal.Turns,
 					"summary_missing":            strings.TrimSpace(ev.Terminal.Text) == "",
 					"summary_recovery_attempted": ev.Terminal.SummaryRecoveryAttempted,
@@ -180,7 +180,17 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 					"summary_recovery_mode":      ev.Terminal.SummaryRecoveryMode,
 					"summary_recovery_failed":    ev.Terminal.SummaryRecoveryFailed,
 					"cancel_code":                cancelCode, "elapsed_ms": time.Since(lastTool.startedAt).Milliseconds(),
-				})
+				}
+				var incomplete *llm.IncompleteResponseError
+				if errors.As(ev.Terminal.Err, &incomplete) {
+					// Store fixed categories only, never provider payloads or tool input.
+					switch incomplete.Reason {
+					case llm.IncompleteMissingTerminal, llm.IncompleteMalformedFrame,
+						llm.IncompleteEmptyOutput, llm.IncompleteInvalidToolInput, llm.IncompleteStreamRead, llm.IncompleteRetryRequest, llm.IncompleteUpstreamError:
+						fields["response_failure"] = incomplete.Reason
+					}
+				}
+				meta, _ := json.Marshal(fields)
 				rec(db.Activity{Kind: "result", IsError: terminalIsError(ctx, ev.Terminal),
 					Summary: firstLine(sum, 400), Detail: detail, Metadata: meta,
 					InputTokens: &u.InputTokens, OutputTokens: &u.OutputTokens,

@@ -95,7 +95,7 @@ func TestOpenAIStreamHonorsConfiguredEmptyRetries(t *testing.T) {
 		Format: FormatOpenAI, BaseURL: srv.URL, APIKey: "k", Model: "m",
 		EmptyResponseRetries: 4, EmptyResponseInterval: time.Millisecond,
 	})
-	msg := collect(t, p, CompletionRequest{Messages: []Message{UserText("go")}})
+	msg := collectIncomplete(t, p, IncompleteEmptyOutput)
 	if len(msg.Content) != 0 {
 		t.Fatalf("want empty message after exhaustion, got %+v", msg.Content)
 	}
@@ -104,7 +104,7 @@ func TestOpenAIStreamHonorsConfiguredEmptyRetries(t *testing.T) {
 	}
 }
 
-// A disabled empty-response retry surfaces the first empty completion as-is.
+// Disabling retries still identifies the first empty response as incomplete.
 func TestOpenAIStreamEmptyRetryDisabled(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -116,7 +116,7 @@ func TestOpenAIStreamEmptyRetryDisabled(t *testing.T) {
 		Format: FormatOpenAI, BaseURL: srv.URL, APIKey: "k", Model: "m",
 		EmptyResponseRetries: -1,
 	})
-	collect(t, p, CompletionRequest{Messages: []Message{UserText("go")}})
+	collectIncomplete(t, p, IncompleteEmptyOutput)
 	if calls.Load() != 1 {
 		t.Fatalf("calls=%d, want 1 (retry disabled)", calls.Load())
 	}

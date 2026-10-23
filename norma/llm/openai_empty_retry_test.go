@@ -34,8 +34,8 @@ func TestOpenAIStreamEmptyResponseRetries(t *testing.T) {
 	}
 }
 
-// An always-empty stream is retried a bounded number of times, then surfaced as
-// an empty message rather than looping forever.
+// An always-empty stream is retried within the existing bound, then reported
+// as incomplete rather than falsely completing the agent run.
 func TestOpenAIStreamEmptyResponseExhausts(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +44,7 @@ func TestOpenAIStreamEmptyResponseExhausts(t *testing.T) {
 	}))
 	defer srv.Close()
 	p, _ := NewProvider(Config{Format: FormatOpenAI, BaseURL: srv.URL, APIKey: "k", Model: "m"})
-	msg := collect(t, p, CompletionRequest{Messages: []Message{UserText("go")}})
+	msg := collectIncomplete(t, p, IncompleteEmptyOutput)
 	if len(msg.Content) != 0 {
 		t.Fatalf("want empty message after exhaustion, got %+v", msg.Content)
 	}

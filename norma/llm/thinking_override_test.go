@@ -42,7 +42,7 @@ func thinkingType(m map[string]any) string {
 // A per-request Thinking="disabled" override must win over an enabled config AND
 // strip replayed thinking blocks (Anthropic rejects them when thinking is off).
 func TestAnthropicPerRequestThinkingDisabledStrips(t *testing.T) {
-	stub := sse(`data: {"type":"message_stop"}`, ``)
+	stub := sse(`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}`, ``, `data: {"type":"message_stop"}`, ``)
 	req := CompletionRequest{
 		Thinking: "disabled",
 		Messages: []Message{
@@ -66,7 +66,7 @@ func TestAnthropicPerRequestThinkingDisabledStrips(t *testing.T) {
 }
 
 func TestAnthropicPerRequestThinkingEnabledKeeps(t *testing.T) {
-	stub := sse(`data: {"type":"message_stop"}`, ``)
+	stub := sse(`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}`, ``, `data: {"type":"message_stop"}`, ``)
 	req := CompletionRequest{
 		Thinking: "enabled",
 		Messages: []Message{
@@ -83,7 +83,7 @@ func TestAnthropicPerRequestThinkingEnabledKeeps(t *testing.T) {
 }
 
 func TestAnthropicThinkingInheritsConfigWhenUnset(t *testing.T) {
-	stub := sse(`data: {"type":"message_stop"}`, ``)
+	stub := sse(`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}`, ``, `data: {"type":"message_stop"}`, ``)
 	req := CompletionRequest{Messages: []Message{UserText("hi")}} // Thinking == ""
 	_, m := captureReq(t, Config{Format: FormatAnthropic, ThinkingType: "enabled"}, req, stub)
 	if thinkingType(m) != "enabled" {

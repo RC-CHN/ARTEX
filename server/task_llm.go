@@ -82,7 +82,22 @@ func isTaskLLMChainExhausted(err error) bool {
 // network failure, or 5xx does not rotate providers; the response must explicitly
 // identify quota, credits, billing balance, or payment exhaustion.
 func isQuotaExhaustedError(err error) bool {
-	return err != nil && agent.IsQuotaExhaustedMessage(err.Error())
+	if err == nil {
+		return false
+	}
+	if agent.IsQuotaExhaustedMessage(err.Error()) {
+		return true
+	}
+	// Incomplete responses expose a fixed, payload-free message. Inspect their
+	// original failure only for classification; never display or persist it.
+	var incomplete *llm.IncompleteResponseError
+	return errors.As(err, &incomplete) && errors.Unwrap(incomplete) != nil &&
+		agent.IsQuotaExhaustedMessage(errors.Unwrap(incomplete).Error())
+}
+
+func isIncompleteModelResponse(err error) bool {
+	var incomplete *llm.IncompleteResponseError
+	return errors.As(err, &incomplete)
 }
 
 type taskLLMSelection struct {
@@ -225,10 +240,9 @@ func (r *taskLLMRuntime) Stream(ctx context.Context, req llm.CompletionRequest) 
 }
 
 // Complete is the non-streaming counterpart of Stream. A non-streaming call is
-// atomic — it never delivers partial output — so every failure is safe to retry
-// on the same provider or fail over to the next profile without risking
-// duplicated model output or tool execution (the "committed" bookkeeping the
-// streaming path needs is unnecessary here).
+// atomic — it never dispatches a partial tool call. Ordinary failures retain the
+// existing provider retry/failover policy; typed incomplete responses have already
+// consumed their response-recovery budget and must not restart it here.
 func (r *taskLLMRuntime) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
 	ctx = llmrec.WithTaskID(ctx, r.taskID)
 	return completeTaskLLM(ctx, r.taskID, req, r.streamHooks())
@@ -268,14 +282,22 @@ func completeTaskLLM(ctx context.Context, taskID string, req llm.CompletionReque
 		}
 		// profileID=0: 显式链已被清空;非额度错误:透传。二者都不改任务 failover 状态。
 		if selection.profileID == 0 || !isQuotaExhaustedError(callErr) {
-			return llm.Message{}, "", llm.Usage{}, callErr
+			return msg, sr, usage, callErr
 		}
 		transition, markErr := hooks.exhaust(selection, callErr)
 		if markErr != nil {
+			if isIncompleteModelResponse(callErr) {
+				return msg, sr, usage, &taskLLMError{taskID: taskID, cause: errors.Join(callErr, fmt.Errorf("mark profile quota exhausted: %w", markErr))}
+			}
 			return llm.Message{}, "", llm.Usage{}, fmt.Errorf("mark profile quota exhausted after %v: %w", callErr, markErr)
 		}
 		if transition.Advanced && !transition.Stale && hooks.transition != nil {
 			hooks.transition(selection, transition, callErr)
+		}
+		if isIncompleteModelResponse(callErr) {
+			// Save quota state for the next run without restarting an already
+			// exhausted response-recovery budget on another provider.
+			return msg, sr, usage, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: callErr}
 		}
 		if !transition.Stale && transition.NextProfileID == nil {
 			return llm.Message{}, "", llm.Usage{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: callErr}
@@ -357,10 +379,23 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 				yield(llm.StreamEvent{}, streamErr)
 				return
 			}
+			incomplete := isIncompleteModelResponse(streamErr)
+			if incomplete {
+				// Preserve usage even if this failed attempt produced only metadata.
+				for _, buffered := range pending {
+					if !yield(buffered, nil) {
+						return
+					}
+				}
+				pending = nil
+			}
 			transition, markErr := hooks.exhaust(selection, streamErr)
 			if markErr != nil {
 				cause := fmt.Errorf("mark profile quota exhausted after %v: %w", streamErr, markErr)
-				if committed {
+				if incomplete {
+					cause = errors.Join(streamErr, fmt.Errorf("mark profile quota exhausted: %w", markErr))
+				}
+				if committed || incomplete {
 					// Output may already have driven tool execution. Report the persistence
 					// failure, but classify it as router-handled so the worker does not
 					// replay the entire intent and duplicate those side effects.
@@ -373,7 +408,7 @@ func streamTaskLLM(ctx context.Context, taskID string, req llm.CompletionRequest
 			if transition.Advanced && !transition.Stale && hooks.transition != nil {
 				hooks.transition(selection, transition, streamErr)
 			}
-			if committed || (!transition.Stale && transition.NextProfileID == nil) {
+			if committed || incomplete || (!transition.Stale && transition.NextProfileID == nil) {
 				yield(llm.StreamEvent{}, &taskLLMError{taskID: taskID, chainExhausted: transition.ChainExhausted, cause: streamErr})
 				return
 			}
@@ -431,6 +466,10 @@ func sameProviderRetryPolicy(r agent.RetryConfig) (retries int, backoff func(int
 func isRetryableStreamError(err error) bool {
 	if err == nil {
 		return false
+	}
+	var incomplete *llm.IncompleteResponseError
+	if errors.As(err, &incomplete) {
+		return false // adapter already exhausted its bounded response recovery
 	}
 	if isQuotaExhaustedError(err) {
 		return false

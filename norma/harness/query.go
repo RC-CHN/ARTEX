@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"strconv"
@@ -535,6 +536,14 @@ func (l *loop) run() {
 				l.finish(ReasonAbortedStreaming, l.ctx.Err(), "")
 				return
 			}
+			var incomplete *llm.IncompleteResponseError
+			if errors.As(streamErr, &incomplete) {
+				// Provider recovery is already bounded to the uncommitted response.
+				// Keep prior effects and partial output; never replay this whole run
+				// or turn a malformed response into the text-only settlement path.
+				l.finish(ReasonIncompleteResponse, streamErr, asst.Text())
+				return
+			}
 			// A recovery failure never repeats this request or its tool effects.
 			if recovering {
 				l.summaryRecoveryFailed = true
@@ -1052,14 +1061,17 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 			err = e
 			break
 		}
+		// Transport diagnostics are metadata, not a content-block boundary.
+		// In particular they must not finalize a partial tool before a stream error.
+		// Providers deliver final accounting before their cancellation error, so
+		// retain it even when cancellation has already stopped content execution.
+		if ev.Type == llm.SEStreamDiagnostics {
+			acc.Add(ev) // per-attempt accounting without dispatching pending tool input
+			continue
+		}
 		if l.ctx.Err() != nil {
 			err = l.ctx.Err()
 			break
-		}
-		// Transport diagnostics are metadata, not a content-block boundary.
-		// In particular they must not finalize a partial tool before a stream error.
-		if ev.Type == llm.SEStreamDiagnostics {
-			continue
 		}
 		if ev.Type == llm.SEToolInputJSON {
 			if building {
@@ -1131,10 +1143,21 @@ func (l *loop) streamAndExecute(schemas []llm.ToolSchema) (asst llm.Message, exe
 func (l *loop) completeAndExecute(req llm.CompletionRequest) (asst llm.Message, exec *streamExec, stopReason string, err error, consumerStopped, aborted bool) {
 	exec = newStreamExec(l)
 	msg, sr, usage, cerr := l.deps.CallModelSync(l.ctx, req)
+	l.usage.Add(usage) // incomplete responses can still consume tokens
 	if cerr != nil {
-		return asst, exec, "", cerr, false, false
+		// Keep text/thinking for diagnosis and resumption, but an unsuccessful
+		// non-streaming response must not submit any of its tool calls.
+		asst = llm.Message{Role: msg.Role}
+		for _, b := range msg.Content {
+			if b.Type != llm.BlockToolUse {
+				asst.Content = append(asst.Content, b)
+			} else if l.interruptedToolInput == nil {
+				copy := b
+				l.interruptedToolInput = &copy
+			}
+		}
+		return asst, exec, sr, cerr, false, false
 	}
-	l.usage.Add(usage)
 	asst = msg
 	stopReason = sr
 	for _, b := range msg.Content {

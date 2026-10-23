@@ -171,7 +171,7 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 				status = "error"
 			}
 			// Lightweight metering row — always written.
-			r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, stopReason, textBytes, thinkingBytes, toolCalls, diagnostics, consumerStopped)
+			r.recordUsage(session, taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, stopReason, textBytes, thinkingBytes, toolCalls, diagnostics, consumerStopped)
 			// Heavy trace row — only when body recording is on.
 			if recordBodies {
 				r.record(req, session, taskID, worker, reqBody, capt, start, textBuf.String(), thinkingBuf.String(), usage, stopReason, err)
@@ -196,6 +196,11 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 			// llm.Accumulator; see norma/llm/accumulate.go).
 			switch ev.Type {
 			case llm.SEStreamDiagnostics:
+				// Providers report remaining attempt usage here even when an incomplete
+				// response cannot produce a successful final message delta. Empty
+				// stop reasons must replace an earlier retry's terminal marker.
+				usage.Add(ev.Usage)
+				stopReason = ev.StopReason
 				if ev.Diagnostics != nil {
 					// Snapshot values: custom providers may reuse their event struct.
 					previousErrors := 0
@@ -221,6 +226,9 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 					thinkingBuf.WriteString(ev.Text)
 				}
 			case llm.SEMessageStart:
+				// A new provider attempt must not inherit an earlier attempt's
+				// terminal marker if the consumer exits before its next diagnostics.
+				stopReason = ""
 				usage.Add(ev.Usage)
 			case llm.SEMessageDelta:
 				if ev.StopReason != "" {
@@ -278,7 +286,7 @@ func (r *Recorder) Complete(ctx context.Context, req llm.CompletionRequest) (llm
 			toolCalls++
 		}
 	}
-	r.recordUsage(taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, stopReason, textBytes, thinkingBytes, toolCalls, nil, false)
+	r.recordUsage(session, taskID, expID, worker, usage, int(time.Since(start).Milliseconds()), status, stopReason, textBytes, thinkingBytes, toolCalls, nil, false)
 	if recordBodies {
 		r.record(req, session, taskID, worker, reqBody, capt, start, msg.Text(), thinkingText(msg), usage, stopReason, err)
 	}
@@ -297,7 +305,7 @@ func thinkingText(msg llm.Message) string {
 
 // recordUsage appends one lightweight metering row to llm_usage (no bodies). Skips
 // zero-token calls with no model, which carry nothing worth metering.
-func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status, stopReason string, textBytes, thinkingBytes, toolCalls int, diagnostics *llm.StreamDiagnostics, consumerStopped bool) {
+func (r *Recorder) recordUsage(session, taskID string, expID int64, worker string, usage llm.Usage, latencyMs int, status, stopReason string, textBytes, thinkingBytes, toolCalls int, diagnostics *llm.StreamDiagnostics, consumerStopped bool) {
 	runtimeobs.Default.Record(runtimeobs.ModelRequest, time.Duration(latencyMs)*time.Millisecond, status != "ok")
 	if r.pg == nil {
 		return
@@ -307,6 +315,7 @@ func (r *Recorder) recordUsage(taskID string, expID int64, worker string, usage 
 		return
 	}
 	row := &db.LLMUsage{
+		SessionID:     session,
 		TaskID:        taskID,
 		ExplorationID: expID,
 		Worker:        worker,

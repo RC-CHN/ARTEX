@@ -106,7 +106,7 @@ func TestOpenAIMaxCompletionTokensNonStreaming(t *testing.T) {
 
 // Anthropic names the field itself; the OpenAI-only switch must not leak into it.
 func TestAnthropicIgnoresMaxTokensField(t *testing.T) {
-	stub := sse(`data: {"type":"message_stop"}`, ``)
+	stub := sse(`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}`, ``, `data: {"type":"message_stop"}`, ``)
 	req := CompletionRequest{MaxTokens: 1024, Messages: []Message{UserText("hi")}}
 	cfg := Config{Format: FormatAnthropic, MaxTokensField: MaxTokensFieldCompletion}
 	_, m := captureReq(t, cfg, req, stub)

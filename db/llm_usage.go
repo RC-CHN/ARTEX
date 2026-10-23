@@ -14,9 +14,10 @@ import (
 // only the dimensions needed to slice token spend (model / profile / task / agent),
 // never any prompt or response content.
 type LLMUsage struct {
-	TaskID        string `json:"task_id"`        // task registry id (matches llm_records.task_id)
-	ExplorationID int64  `json:"exploration_id"` // exploration id parsed from the session (0 = unknown/non-task)
-	Worker        string `json:"worker"`         // agent lane: worker / planner / mainagent / goals
+	SessionID     string `json:"session_id,omitempty"` // exact transcript session; absent for legacy callers/archives
+	TaskID        string `json:"task_id"`              // task registry id (matches llm_records.task_id)
+	ExplorationID int64  `json:"exploration_id"`       // exploration id parsed from the session (0 = unknown/non-task)
+	Worker        string `json:"worker"`               // agent lane: worker / planner / mainagent / goals
 	Model         string `json:"model"`
 	ProfileName   string `json:"profile_name"`
 	LatencyMs     int    `json:"latency_ms"`
@@ -59,9 +60,11 @@ ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS tool_calls INTEGER;
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS finish_reason_seen BOOLEAN;
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS stream_end TEXT;
 ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS parse_errors INTEGER;
+ALTER TABLE llm_usage ADD COLUMN IF NOT EXISTS session_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_llm_usage_task  ON llm_usage(task_id);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage(task_id, model);
 CREATE INDEX IF NOT EXISTS idx_llm_usage_exp   ON llm_usage(exploration_id);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_session ON llm_usage(session_id, id) WHERE session_id IS NOT NULL;
 `
 
 // EnsureLLMUsageTable creates the llm_usage metering table if it does not exist.
@@ -94,11 +97,11 @@ func (d *DB) InsertLLMUsageContext(ctx context.Context, u *LLMUsage) error {
 		expID = u.ExplorationID
 	}
 	_, err := d.ExecContext(ctx, `
-INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, stop_reason, text_bytes, thinking_bytes, tool_calls, finish_reason_seen, stream_end, parse_errors)
-VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+INSERT INTO llm_usage(task_id, exploration_id, worker, model, profile_name, latency_ms, input_tokens, output_tokens, cache_read, cache_write, status, stop_reason, text_bytes, thinking_bytes, tool_calls, finish_reason_seen, stream_end, parse_errors, session_id)
+VALUES (NULLIF($1,''),$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NULLIF($19,''))`,
 		u.TaskID, expID, u.Worker, u.Model, u.ProfileName,
 		u.LatencyMs, u.InputTokens, u.OutputTokens, u.CacheRead, u.CacheWrite, u.Status, usageStopReason(u.StopReason), u.TextBytes, u.ThinkingBytes, u.ToolCalls,
-		u.FinishReasonSeen, usageStreamEnd(u.StreamEnd), usageParseErrors(u.ParseErrors))
+		u.FinishReasonSeen, usageStreamEnd(u.StreamEnd), usageParseErrors(u.ParseErrors), u.SessionID)
 	return err
 }
 
@@ -373,7 +376,7 @@ func usageStreamEnd(s *string) any {
 		return nil
 	}
 	switch *s {
-	case "done", "eof", "read_error", "request_error", "consumer_stop":
+	case "done", "eof", "read_error", "request_error", "consumer_stop", "protocol_error":
 		return *s
 	}
 	return "other"

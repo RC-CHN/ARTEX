@@ -24,8 +24,11 @@ func (s *sseScanner) next() (event, data string, err error) {
 	var buf bytes.Buffer
 	for {
 		line, rerr := s.r.ReadString('\n')
-		if rerr != nil {
-			if rerr == io.EOF && (buf.Len() > 0 || event != "") {
+		if rerr != nil && rerr != io.EOF {
+			return "", "", rerr
+		}
+		if rerr == io.EOF && line == "" {
+			if buf.Len() > 0 || event != "" {
 				return event, strings.TrimRight(buf.String(), "\n"), nil
 			}
 			return "", "", rerr
@@ -47,6 +50,14 @@ func (s *sseScanner) next() (event, data string, err error) {
 			buf.WriteByte('\n')
 		default:
 			// comment / unknown field — ignore
+		}
+		// ReadString can return data together with EOF. Decode that last line
+		// before reporting EOF; otherwise a final finish_reason/[DONE] is lost.
+		if rerr == io.EOF {
+			if buf.Len() > 0 || event != "" {
+				return event, strings.TrimRight(buf.String(), "\n"), nil
+			}
+			return "", "", io.EOF
 		}
 	}
 }

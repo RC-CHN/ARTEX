@@ -15,7 +15,7 @@ import (
 func TestReasonHintCoversEveryTerminalReason(t *testing.T) {
 	all := []harness.TerminalReason{
 		harness.ReasonCompleted, harness.ReasonBlockingLimit, harness.ReasonImageError,
-		harness.ReasonModelError, harness.ReasonExecutionError, harness.ReasonEmptyResponse, harness.ReasonAbortedStreaming, harness.ReasonAbortedTools,
+		harness.ReasonModelError, harness.ReasonIncompleteResponse, harness.ReasonExecutionError, harness.ReasonEmptyResponse, harness.ReasonAbortedStreaming, harness.ReasonAbortedTools,
 		harness.ReasonPromptTooLong, harness.ReasonStopHookPrevented, harness.ReasonHookStopped,
 		harness.ReasonMaxTurns, harness.ReasonTimeout,
 	}
@@ -70,6 +70,31 @@ func TestModelErrorDoesNotDenyPriorToolEffects(t *testing.T) {
 	_, detail := terminalText(t.Context(), &harness.Terminal{Reason: harness.ReasonModelError, Err: errors.New("synthetic EOF")}, trace)
 	if strings.Contains(detail, "基本没真正探成") || !strings.Contains(detail, "核对执行记录与产物") || !strings.Contains(detail, "已正常返回") {
 		t.Fatalf("model failure misstates completed tool effects: %s", detail)
+	}
+}
+
+func TestIncompleteResponseFeedbackPreservesPriorEffectsAndPartialText(t *testing.T) {
+	trace := &runTrace{startedAt: time.Now()}
+	trace.start("saved", "Write", `{"file_path":"synthetic.txt"}`)
+	trace.done("saved")
+	term := &harness.Terminal{
+		Reason: harness.ReasonIncompleteResponse,
+		Text:   "synthetic partial answer",
+		Err:    &llm.IncompleteResponseError{Reason: llm.IncompleteMissingTerminal},
+	}
+	summary, detail := terminalText(t.Context(), term, trace)
+	if !terminalIsError(t.Context(), term) || !strings.Contains(summary, "异常结束") {
+		t.Fatalf("incomplete response hidden as success: %q", summary)
+	}
+	for _, want := range []string{"incomplete_response", "已有结果保留", "未完成的工具调用没有提交执行", "synthetic partial answer", "Write", "已正常返回"} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("missing %q in feedback: %s", want, detail)
+		}
+	}
+	for _, forbidden := range []string{"模型正常结束", "禁止工具调用", "已尝试", "还没有发出工具调用"} {
+		if strings.Contains(detail, forbidden) {
+			t.Errorf("misleading %q in feedback: %s", forbidden, detail)
+		}
 	}
 }
 

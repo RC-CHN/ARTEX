@@ -18,20 +18,21 @@ func TestOpenAIStreamDiagnosticsEndEvidence(t *testing.T) {
 	finish := `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"
 	done := "data: [DONE]\n\n"
 	for _, tc := range []struct {
-		name, body   string
-		wantEnd      StreamEnd
-		wantFinish   bool
-		parseErrors  int
-		readFailure  bool
-		requestError bool
+		name, body     string
+		wantEnd        StreamEnd
+		wantFinish     bool
+		parseErrors    int
+		readFailure    bool
+		requestError   bool
+		wantIncomplete IncompleteResponseReason
 	}{
-		{name: "done_without_finish", body: thinking + done, wantEnd: StreamEndDone},
-		{name: "eof_without_finish", body: thinking, wantEnd: StreamEndEOF},
-		{name: "finish_and_done", body: thinking + finish + done, wantEnd: StreamEndDone, wantFinish: true},
-		{name: "finish_then_eof", body: thinking + finish, wantEnd: StreamEndEOF, wantFinish: true},
-		{name: "malformed_frames", body: thinking + "data: {private-invalid-json\n\ndata: {\"choices\":42}\n\n" + finish + done, wantEnd: StreamEndDone, wantFinish: true, parseErrors: 2},
-		{name: "valid_unknown_frame", body: thinking + "data: {\"unknown\":\"private synthetic payload\"}\n\n" + done, wantEnd: StreamEndDone},
-		{name: "read_error", body: thinking, wantEnd: StreamEndReadError, readFailure: true},
+		{name: "done_without_finish", body: thinking + done, wantEnd: StreamEndDone, wantIncomplete: IncompleteEmptyOutput},
+		{name: "eof_without_finish", body: thinking, wantEnd: StreamEndEOF, wantIncomplete: IncompleteMissingTerminal},
+		{name: "finish_and_done", body: thinking + finish + done, wantEnd: StreamEndDone, wantFinish: true, wantIncomplete: IncompleteEmptyOutput},
+		{name: "finish_then_eof", body: thinking + finish, wantEnd: StreamEndEOF, wantFinish: true, wantIncomplete: IncompleteEmptyOutput},
+		{name: "malformed_frames", body: thinking + "data: {private-invalid-json\n\ndata: {\"choices\":42}\n\n" + finish + done, wantEnd: StreamEndProtocolError, parseErrors: 1, wantIncomplete: IncompleteMalformedFrame},
+		{name: "valid_unknown_frame", body: thinking + "data: {\"unknown\":\"private synthetic payload\"}\n\n" + done, wantEnd: StreamEndDone, wantIncomplete: IncompleteEmptyOutput},
+		{name: "read_error", body: thinking, wantEnd: StreamEndReadError, readFailure: true, wantIncomplete: IncompleteStreamRead},
 		{name: "http_failure", body: `{"error":"private upstream failure"}`, wantEnd: StreamEndRequestError, requestError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -69,14 +70,17 @@ func TestOpenAIStreamDiagnosticsEndEvidence(t *testing.T) {
 					}
 					diagnostics = append(diagnostics, event.Diagnostics)
 					raw, _ := json.Marshal(event)
-					if strings.Contains(string(raw), "private") || event.Text != "" || event.ToolID != "" || event.ToolName != "" || event.StopReason != "" {
+					if strings.Contains(string(raw), "private") || event.Text != "" || event.ToolID != "" || event.ToolName != "" {
 						t.Fatalf("diagnostics included response/request/header data: %s", raw)
 					}
 				}
 				acc.Add(event)
 			}
-			if (streamErr != nil) != (tc.readFailure || tc.requestError) {
+			if (streamErr != nil) != (tc.wantIncomplete != "" || tc.requestError) {
 				t.Fatalf("error behavior changed: %v", streamErr)
+			}
+			if tc.wantIncomplete != "" {
+				assertIncomplete(t, streamErr, tc.wantIncomplete)
 			}
 			if requests.Load() != 1 || len(diagnostics) != 1 {
 				t.Fatalf("requests=%d diagnostics=%d", requests.Load(), len(diagnostics))
@@ -100,10 +104,10 @@ func TestOpenAIStreamDiagnosticsDoNotPreventEmptyRetry(t *testing.T) {
 	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requests.Add(1) == 1 {
-			_, _ = fmt.Fprint(w, "data: {malformed\n\n"+emptyStop)
+			_, _ = fmt.Fprint(w, emptyStop)
 			return
 		}
-		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"fixture\"}}]}\n\ndata: [DONE]\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"fixture\"}}]}\n\ndata: [DONE]\n\n")
 	}))
 	defer srv.Close()
 	provider, err := NewProvider(Config{Format: FormatOpenAI, BaseURL: srv.URL, Model: "fixture", EmptyResponseRetries: 1, EmptyResponseInterval: time.Nanosecond})
@@ -119,7 +123,7 @@ func TestOpenAIStreamDiagnosticsDoNotPreventEmptyRetry(t *testing.T) {
 			diagnostics = append(diagnostics, *event.Diagnostics)
 		}
 	}
-	if requests.Load() != 2 || len(diagnostics) != 2 || !diagnostics[0].FinishReasonSeen || diagnostics[0].ParseErrors != 1 || diagnostics[1].FinishReasonSeen || diagnostics[1].ParseErrors != 0 {
+	if requests.Load() != 2 || len(diagnostics) != 2 || !diagnostics[0].FinishReasonSeen || diagnostics[0].ParseErrors != 0 || diagnostics[1].FinishReasonSeen || diagnostics[1].ParseErrors != 0 {
 		t.Fatalf("requests=%d diagnostics=%+v", requests.Load(), diagnostics)
 	}
 }

@@ -3,10 +3,12 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"net/http"
+	"strings"
 )
 
 type anthropicProvider struct{ cfg Config }
@@ -112,68 +114,257 @@ func (p *anthropicProvider) Stream(ctx context.Context, req CompletionRequest) i
 			yield(StreamEvent{}, err)
 			return
 		}
-		resp, err := doStream(ctx, p.cfg, p.cfg.BaseURL+"/v1/messages", body, func(r *http.Request) {
-			r.Header.Set("content-type", "application/json")
-			r.Header.Set("x-api-key", p.cfg.APIKey)
-			r.Header.Set("anthropic-version", p.cfg.APIVersion)
-			r.Header.Set("accept", "text/event-stream")
-		}, "anthropic")
-		if err != nil {
-			yield(StreamEvent{}, err)
+		for attempt := 0; ; attempt++ {
+			resp, err := doStream(ctx, p.cfg, p.cfg.BaseURL+"/v1/messages", body, func(r *http.Request) {
+				r.Header.Set("content-type", "application/json")
+				r.Header.Set("x-api-key", p.cfg.APIKey)
+				r.Header.Set("anthropic-version", p.cfg.APIVersion)
+				r.Header.Set("accept", "text/event-stream")
+			}, "anthropic")
+			if err != nil {
+				if !yield(StreamEvent{Type: SEStreamDiagnostics, Diagnostics: &StreamDiagnostics{StreamEnd: StreamEndRequestError}}, nil) {
+					return
+				}
+				yield(StreamEvent{}, incompleteRetryRequestError(ctx, err, attempt))
+				return
+			}
+			scan := newSSEScanner(resp.Body)
+			diagnostics := StreamDiagnostics{}
+			var stopReason string
+			var terminalDelta *StreamEvent
+			var incomplete IncompleteResponseReason
+			var streamErr error
+			var upstreamCause error
+			committed, meaningful, observed, consumerStopped := false, false, false, false
+			messageStartSeen := false
+			pendingTool := false
+			var toolInput strings.Builder
+			validToolInput := func() bool {
+				raw := strings.TrimSpace(toolInput.String())
+				return !pendingTool || raw == "" || strings.HasPrefix(raw, "{") && json.Valid([]byte(raw))
+			}
+			for {
+				_, data, serr := scan.next()
+				if serr == io.EOF {
+					diagnostics.StreamEnd = StreamEndEOF
+					break
+				}
+				if serr != nil {
+					diagnostics.StreamEnd = StreamEndReadError
+					incomplete = IncompleteStreamRead
+					break
+				}
+				if strings.TrimSpace(data) == "" {
+					continue
+				}
+				ev, ok, perr, kind := parseAnthropicFrameKind(data)
+				if perr != nil {
+					diagnostics.StreamEnd = StreamEndProtocolError
+					var malformed *IncompleteResponseError
+					if errors.As(perr, &malformed) {
+						diagnostics.ParseErrors++
+						incomplete = IncompleteMalformedFrame
+					} else if observed || attempt > 0 {
+						incomplete, upstreamCause = IncompleteUpstreamError, perr
+					} else {
+						streamErr = perr
+					}
+					break
+				}
+				if kind == "content_block_stop" && !validToolInput() {
+					diagnostics.StreamEnd = StreamEndProtocolError
+					incomplete = IncompleteInvalidToolInput
+					break
+				}
+				if !ok {
+					continue
+				}
+				if ev.Type == SEMessageStart {
+					// A compatible gateway may repeat the start header in one HTTP
+					// response. Only its first header defines this attempt's input
+					// usage/boundary, even when usage was absent or later differs.
+					// Ignore duplicates before they can finalize a pending tool.
+					if messageStartSeen {
+						continue
+					}
+					messageStartSeen = true
+				}
+				if ev.Type == SEMessageDelta {
+					// This event is a tool boundary in the harness. Buffer it until
+					// the response is validated; input usage already streamed above.
+					if ev.StopReason != "" {
+						stopReason = ev.StopReason
+						diagnostics.FinishReasonSeen = true
+					}
+					copy := ev
+					copy.StopReason = stopReason
+					// Output usage is cumulative within this response. A later
+					// metadata-only delta must not erase or double its earlier count.
+					if terminalDelta != nil {
+						copy.Usage.OutputTokens = max(copy.Usage.OutputTokens, terminalDelta.Usage.OutputTokens)
+					}
+					terminalDelta = &copy
+					continue
+				}
+				if ev.Type == SEMessageStop {
+					diagnostics.StreamEnd = StreamEndDone
+					break
+				}
+				if ev.Type != SEToolInputJSON && !validToolInput() {
+					diagnostics.StreamEnd = StreamEndProtocolError
+					incomplete = IncompleteInvalidToolInput
+					break
+				}
+				switch ev.Type {
+				case SEToolUseStart:
+					pendingTool = true
+					toolInput.Reset()
+					committed, meaningful, observed = true, true, true
+				case SEToolInputJSON:
+					committed, observed = true, true
+					toolInput.WriteString(ev.Text)
+					if !pendingTool {
+						diagnostics.StreamEnd = StreamEndProtocolError
+						incomplete = IncompleteInvalidToolInput
+					}
+				case SETextDelta:
+					committed = committed || ev.Text != ""
+					observed = observed || ev.Text != ""
+					meaningful = meaningful || strings.TrimSpace(ev.Text) != ""
+					pendingTool = false
+				case SEThinkingDelta, SEThinkingSignature:
+					observed = observed || ev.Text != ""
+					pendingTool = false
+				}
+				initialInput := ""
+				if ev.Type == SEToolUseStart {
+					// Anthropic normally starts with input:{}, then streams JSON.
+					// Compatible gateways may put the full input on the start frame.
+					initialInput, ev.Text = ev.Text, ""
+				}
+				if !yield(ev, nil) {
+					consumerStopped = true
+					break
+				}
+				if initialInput != "" {
+					toolInput.WriteString(initialInput)
+					if !yield(StreamEvent{Type: SEToolInputJSON, Text: initialInput}, nil) {
+						consumerStopped = true
+						break
+					}
+				}
+				if incomplete != "" {
+					break
+				}
+			}
+			resp.Body.Close()
+			if consumerStopped {
+				return
+			}
+			if incomplete == "" && streamErr == nil {
+				if diagnostics.StreamEnd == StreamEndEOF && !diagnostics.FinishReasonSeen {
+					incomplete = IncompleteMissingTerminal
+				} else if !validToolInput() {
+					incomplete = IncompleteInvalidToolInput
+				} else if !meaningful && stopReason != "max_tokens" {
+					incomplete = IncompleteEmptyOutput
+				}
+			}
+			retryable := incomplete == IncompleteEmptyOutput || incomplete == IncompleteMissingTerminal || incomplete == IncompleteStreamRead
+			retryIncomplete := retryable && !committed && isEmptyResponseRetryable(stopReason) && attempt < p.cfg.emptyRetries() && ctx.Err() == nil
+			diagnostics.DiscardThinking = retryIncomplete
+			// On success, normal input/output events retain their historical usage
+			// split. A failed attempt reports only its buffered output via metadata,
+			// which cannot dispatch the still-pending tool.
+			var pendingUsage Usage
+			if terminalDelta != nil {
+				pendingUsage = terminalDelta.Usage
+			}
+			if incomplete == "" && streamErr == nil && ctx.Err() == nil && terminalDelta != nil {
+				if !yield(*terminalDelta, nil) {
+					return
+				}
+				pendingUsage = Usage{}
+			}
+			if !yield(StreamEvent{Type: SEStreamDiagnostics, StopReason: stopReason, Usage: pendingUsage, Diagnostics: &diagnostics}, nil) {
+				return
+			}
+			if ctx.Err() != nil {
+				yield(StreamEvent{}, ctx.Err())
+				return
+			}
+			if streamErr != nil {
+				yield(StreamEvent{}, streamErr)
+				return
+			}
+			if retryIncomplete {
+				if !backoffSleep(ctx, p.cfg.emptyRetryDelay(attempt)) {
+					yield(StreamEvent{}, ctx.Err())
+					return
+				}
+				continue
+			}
+			if incomplete != "" {
+				yield(StreamEvent{}, &IncompleteResponseError{Reason: incomplete, StopReason: stopReason, Diagnostics: diagnostics, cause: upstreamCause})
+				return
+			}
+			yield(StreamEvent{Type: SEMessageStop}, nil)
 			return
-		}
-		defer resp.Body.Close()
-		scan := newSSEScanner(resp.Body)
-		for {
-			_, data, serr := scan.next()
-			if serr == io.EOF {
-				return
-			}
-			if serr != nil {
-				yield(StreamEvent{}, serr)
-				return
-			}
-			if data == "" {
-				continue
-			}
-			ev, ok, perr := parseAnthropicFrame(data)
-			if perr != nil {
-				yield(StreamEvent{}, perr)
-				return
-			}
-			if !ok {
-				continue
-			}
-			if !yield(ev, nil) {
-				return
-			}
 		}
 	}
 }
 
-// Complete performs a real non-streaming completion: it sends stream:false and
-// parses the single JSON response from /v1/messages into a full assistant
-// Message, returning it with the stop reason and normalized usage.
+// Complete preserves the same bounded incomplete-response handling as Stream.
 func (p *anthropicProvider) Complete(ctx context.Context, req CompletionRequest) (Message, string, Usage, error) {
 	body, err := p.buildBody(req, false)
 	if err != nil {
 		return Message{}, "", Usage{}, err
 	}
-	resp, err := doStream(ctx, p.cfg, p.cfg.BaseURL+"/v1/messages", body, func(r *http.Request) {
-		r.Header.Set("content-type", "application/json")
-		r.Header.Set("x-api-key", p.cfg.APIKey)
-		r.Header.Set("anthropic-version", p.cfg.APIVersion)
-		r.Header.Set("accept", "application/json")
-	}, "anthropic")
-	if err != nil {
-		return Message{}, "", Usage{}, err
+	var totalUsage Usage
+	var lastPartial Message
+	for attempt := 0; ; attempt++ {
+		resp, err := doStream(ctx, p.cfg, p.cfg.BaseURL+"/v1/messages", body, func(r *http.Request) {
+			r.Header.Set("content-type", "application/json")
+			r.Header.Set("x-api-key", p.cfg.APIKey)
+			r.Header.Set("anthropic-version", p.cfg.APIVersion)
+			r.Header.Set("accept", "application/json")
+		}, "anthropic")
+		if err != nil {
+			return lastPartial, "", totalUsage, incompleteRetryRequestError(ctx, err, attempt)
+		}
+		raw, rerr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if rerr != nil {
+			if ctx.Err() != nil {
+				return lastPartial, "", totalUsage, ctx.Err()
+			}
+			return lastPartial, "", totalUsage, &IncompleteResponseError{Reason: IncompleteStreamRead, Diagnostics: StreamDiagnostics{StreamEnd: StreamEndReadError}}
+		}
+		msg, stop, usage, perr := parseAnthropicResponse(raw)
+		totalUsage.Add(usage)
+		if ctx.Err() != nil {
+			return msg, stop, totalUsage, ctx.Err()
+		}
+		if perr != nil {
+			var incomplete *IncompleteResponseError
+			if attempt > 0 && !errors.As(perr, &incomplete) {
+				return lastPartial, stop, totalUsage, &IncompleteResponseError{Reason: IncompleteRetryRequest, StopReason: stop, Diagnostics: StreamDiagnostics{StreamEnd: StreamEndEOF}, cause: perr}
+			}
+			return msg, stop, totalUsage, perr
+		}
+		empty := strings.TrimSpace(msg.Text()) == "" && len(msg.ToolUses()) == 0 && stop != "max_tokens"
+		if empty && isEmptyResponseRetryable(stop) && attempt < p.cfg.emptyRetries() {
+			lastPartial = msg
+			if !backoffSleep(ctx, p.cfg.emptyRetryDelay(attempt)) {
+				return msg, stop, totalUsage, ctx.Err()
+			}
+			continue
+		}
+		if empty {
+			return msg, stop, totalUsage, &IncompleteResponseError{Reason: IncompleteEmptyOutput, StopReason: stop, Diagnostics: StreamDiagnostics{FinishReasonSeen: stop != "", StreamEnd: StreamEndEOF}}
+		}
+		return msg, stop, totalUsage, nil
 	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return Message{}, "", Usage{}, err
-	}
-	return parseAnthropicResponse(raw)
 }
 
 // parseAnthropicResponse decodes a non-streaming Messages API response into the
@@ -199,7 +390,7 @@ func parseAnthropicResponse(raw []byte) (Message, string, Usage, error) {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &r); err != nil {
-		return Message{}, "", Usage{}, fmt.Errorf("anthropic: decode response: %w (body: %s)", err, truncate(string(raw), 500))
+		return Message{}, "", Usage{}, &IncompleteResponseError{Reason: IncompleteMalformedFrame, Diagnostics: StreamDiagnostics{StreamEnd: StreamEndProtocolError, ParseErrors: 1}}
 	}
 	if r.Error != nil || r.Type == "error" {
 		msg := "error response"
@@ -213,6 +404,7 @@ func parseAnthropicResponse(raw []byte) (Message, string, Usage, error) {
 		usage = r.Usage.norm()
 	}
 	var blocks []ContentBlock
+	invalidToolInput := false
 	for _, b := range r.Content {
 		switch b.Type {
 		case "text":
@@ -226,19 +418,34 @@ func parseAnthropicResponse(raw []byte) (Message, string, Usage, error) {
 			if len(in) == 0 {
 				in = json.RawMessage("{}")
 			}
+			if raw := strings.TrimSpace(string(in)); !json.Valid(in) || !strings.HasPrefix(raw, "{") {
+				invalidToolInput = true
+			}
 			blocks = append(blocks, ContentBlock{Type: BlockToolUse, ID: b.ID, Name: b.Name, Input: in})
 		}
 	}
-	return Message{Role: RoleAssistant, Content: blocks}, r.StopReason, usage, nil
+	msg := Message{Role: RoleAssistant, Content: blocks}
+	if invalidToolInput {
+		return msg, r.StopReason, usage, &IncompleteResponseError{Reason: IncompleteInvalidToolInput, StopReason: r.StopReason, Diagnostics: StreamDiagnostics{StreamEnd: StreamEndEOF, FinishReasonSeen: r.StopReason != ""}}
+	}
+	return msg, r.StopReason, usage, nil
 }
 
 func parseAnthropicFrame(data string) (StreamEvent, bool, error) {
+	ev, ok, err, _ := parseAnthropicFrameKind(data)
+	return ev, ok, err
+}
+
+func parseAnthropicFrameKind(data string) (ev StreamEvent, ok bool, err error, kind string) {
 	var f struct {
 		Type         string `json:"type"`
 		ContentBlock struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
-			Name string `json:"name"`
+			Type     string          `json:"type"`
+			ID       string          `json:"id"`
+			Name     string          `json:"name"`
+			Input    json.RawMessage `json:"input"`
+			Text     string          `json:"text"`
+			Thinking string          `json:"thinking"`
 		} `json:"content_block"`
 		Delta struct {
 			Type        string `json:"type"`
@@ -257,7 +464,7 @@ func parseAnthropicFrame(data string) (StreamEvent, bool, error) {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(data), &f); err != nil {
-		return StreamEvent{}, false, nil // tolerate non-JSON keepalives
+		return StreamEvent{}, false, &IncompleteResponseError{Reason: IncompleteMalformedFrame}, ""
 	}
 	switch f.Type {
 	case "message_start":
@@ -269,22 +476,38 @@ func parseAnthropicFrame(data string) (StreamEvent, bool, error) {
 			// a placeholder (≈1), so drop it — the real output comes from message_delta.
 			u := f.Message.Usage.norm()
 			u.OutputTokens = 0
-			return StreamEvent{Type: SEMessageStart, Usage: u}, true, nil
+			return StreamEvent{Type: SEMessageStart, Usage: u}, true, nil, f.Type
 		}
+		// The attempt boundary is meaningful even when a compatible gateway
+		// omits usage; it clears stale stop evidence without inventing tokens.
+		return StreamEvent{Type: SEMessageStart}, true, nil, f.Type
 	case "content_block_start":
 		if f.ContentBlock.Type == "tool_use" {
-			return StreamEvent{Type: SEToolUseStart, ToolID: f.ContentBlock.ID, ToolName: f.ContentBlock.Name}, true, nil
+			initial := strings.TrimSpace(string(f.ContentBlock.Input))
+			var initialObject map[string]json.RawMessage
+			if json.Unmarshal(f.ContentBlock.Input, &initialObject) == nil && initialObject != nil && len(initialObject) == 0 {
+				initial = ""
+			}
+			// Text is internal to this parser until Stream emits the start and
+			// its initial input as separate normalized events.
+			return StreamEvent{Type: SEToolUseStart, ToolID: f.ContentBlock.ID, ToolName: f.ContentBlock.Name, Text: initial}, true, nil, f.Type
+		}
+		if f.ContentBlock.Type == "text" && f.ContentBlock.Text != "" {
+			return StreamEvent{Type: SETextDelta, Text: f.ContentBlock.Text}, true, nil, f.Type
+		}
+		if f.ContentBlock.Type == "thinking" && f.ContentBlock.Thinking != "" {
+			return StreamEvent{Type: SEThinkingDelta, Text: f.ContentBlock.Thinking}, true, nil, f.Type
 		}
 	case "content_block_delta":
 		switch f.Delta.Type {
 		case "text_delta":
-			return StreamEvent{Type: SETextDelta, Text: f.Delta.Text}, true, nil
+			return StreamEvent{Type: SETextDelta, Text: f.Delta.Text}, true, nil, f.Type
 		case "thinking_delta":
-			return StreamEvent{Type: SEThinkingDelta, Text: f.Delta.Thinking}, true, nil
+			return StreamEvent{Type: SEThinkingDelta, Text: f.Delta.Thinking}, true, nil, f.Type
 		case "signature_delta":
-			return StreamEvent{Type: SEThinkingSignature, Text: f.Delta.Signature}, true, nil
+			return StreamEvent{Type: SEThinkingSignature, Text: f.Delta.Signature}, true, nil, f.Type
 		case "input_json_delta":
-			return StreamEvent{Type: SEToolInputJSON, Text: f.Delta.PartialJSON}, true, nil
+			return StreamEvent{Type: SEToolInputJSON, Text: f.Delta.PartialJSON}, true, nil, f.Type
 		}
 	case "message_delta":
 		ev := StreamEvent{Type: SEMessageDelta, StopReason: f.Delta.StopReason}
@@ -294,17 +517,17 @@ func parseAnthropicFrame(data string) (StreamEvent, bool, error) {
 			// double the input/cache totals.
 			ev.Usage = Usage{OutputTokens: f.Usage.OutputTokens}
 		}
-		return ev, true, nil
+		return ev, true, nil, f.Type
 	case "message_stop":
-		return StreamEvent{Type: SEMessageStop}, true, nil
+		return StreamEvent{Type: SEMessageStop}, true, nil, f.Type
 	case "error":
 		msg := "stream error"
 		if f.Error != nil {
 			msg = f.Error.Message
 		}
-		return StreamEvent{}, false, fmt.Errorf("anthropic: %s", msg)
+		return StreamEvent{}, false, fmt.Errorf("anthropic: %s", msg), f.Type
 	}
-	return StreamEvent{}, false, nil
+	return StreamEvent{}, false, nil, f.Type
 }
 
 type anthropicUsage struct {

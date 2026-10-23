@@ -41,6 +41,7 @@ func TestStreamDiagnosticsLedgerWithoutBodies(t *testing.T) {
 	d := streamDiagnosticsDB(t)
 	const private = "PRIVATE-SYNTHETIC-CONTENT"
 	thinking := `data: {"choices":[{"delta":{"reasoning_content":"` + private + `"}}]}` + "\n\n"
+	answer := `data: {"choices":[{"delta":{"content":"` + private + `"}}]}` + "\n\n"
 	finish := `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\n"
 	done := "data: [DONE]\n\n"
 	for _, tc := range []struct {
@@ -52,14 +53,17 @@ func TestStreamDiagnosticsLedgerWithoutBodies(t *testing.T) {
 		requestFailure bool
 		emptyRetry     bool
 		consumerStop   bool
+		wantError      bool
+		requests       int32
 	}{
-		{name: "done_without_finish", body: thinking + done, end: "done"},
-		{name: "eof_without_finish", body: thinking, end: "eof"},
-		{name: "explicit_finish", body: thinking + finish + done, end: "done", finish: true},
-		{name: "malformed_frame", body: thinking + "data: {" + private + "\n\n" + done, end: "done", parseErrors: 1},
-		{name: "read_error", body: thinking, end: "read_error", readFailure: true},
-		{name: "request_error", body: private, end: "request_error", requestFailure: true},
-		{name: "empty_retry_final_evidence", body: thinking + done, end: "done", emptyRetry: true, parseErrors: 1},
+		{name: "done_without_finish", body: thinking + done, end: "done", wantError: true, requests: 2},
+		{name: "eof_without_finish", body: thinking, end: "eof", wantError: true, requests: 2},
+		{name: "explicit_finish", body: thinking + answer + finish + done, end: "done", finish: true},
+		{name: "explicit_finish_without_output", body: thinking + finish + done, end: "done", finish: true, wantError: true, requests: 2},
+		{name: "malformed_frame", body: thinking + "data: {" + private + "\n\n" + done, end: "protocol_error", parseErrors: 1, wantError: true},
+		{name: "read_error", body: thinking, end: "read_error", readFailure: true, wantError: true, requests: 2},
+		{name: "request_error", body: private, end: "request_error", requestFailure: true, wantError: true},
+		{name: "empty_retry_final_evidence", body: thinking + answer + done, end: "done", emptyRetry: true, requests: 2},
 		{name: "consumer_stop", body: thinking + finish + done, end: "consumer_stop", consumerStop: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,7 +74,7 @@ func TestStreamDiagnosticsLedgerWithoutBodies(t *testing.T) {
 				call := requests.Add(1)
 				w.Header().Set("X-Private-Fixture", private)
 				if tc.emptyRetry && call == 1 {
-					_, _ = fmt.Fprint(w, "data: {"+private+"\n\n"+finish+done)
+					_, _ = fmt.Fprint(w, finish+done)
 					return
 				}
 				if tc.readFailure {
@@ -97,7 +101,7 @@ func TestStreamDiagnosticsLedgerWithoutBodies(t *testing.T) {
 					break
 				}
 			}
-			if (streamErr != nil) != (tc.readFailure || tc.requestFailure) {
+			if (streamErr != nil) != tc.wantError {
 				t.Fatalf("unexpected completion error: %v", streamErr)
 			}
 			var count, records int
@@ -130,10 +134,7 @@ func TestStreamDiagnosticsLedgerWithoutBodies(t *testing.T) {
 			} else if !seen.Valid || seen.Bool != tc.finish || !parseErrors.Valid || parseErrors.Int64 != tc.parseErrors {
 				t.Fatalf("seen=%+v parse_errors=%+v", seen, parseErrors)
 			}
-			wantRequests := int32(1)
-			if tc.emptyRetry {
-				wantRequests = 2
-			}
+			wantRequests := max(tc.requests, 1)
 			if requests.Load() != wantRequests {
 				t.Fatalf("retry policy changed: requests=%d want %d", requests.Load(), wantRequests)
 			}
@@ -163,5 +164,47 @@ func TestStreamDiagnosticsUninstrumentedCallsRemainUnknown(t *testing.T) {
 		if !unknown {
 			t.Fatalf("streaming=%v invented adapter diagnostics", streaming)
 		}
+	}
+}
+
+func TestOpenAIUsageSurvivesIncompleteStreamWithoutDoubleCounting(t *testing.T) {
+	d := streamDiagnosticsDB(t)
+	const usage = `data: {"choices":[],"usage":{"prompt_tokens":101,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":80}}}` + "\n\n"
+	const terminal = `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}` + "\n\ndata: [DONE]\n\n"
+	for _, incomplete := range []bool{false, true} {
+		t.Run(fmt.Sprintf("incomplete=%v", incomplete), func(t *testing.T) {
+			profile := "http-usage-" + uuid.NewString()
+			t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM llm_usage WHERE profile_name=$1`, profile) })
+			field := "content"
+			if incomplete {
+				field = "reasoning_content"
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"%s\":\"private fixture\"}}]}\n\n%s%s", field, usage, terminal)
+			}))
+			defer srv.Close()
+			provider, err := llm.NewProvider(llm.Config{Format: llm.FormatOpenAI, BaseURL: srv.URL, Model: "fixture", MaxRetries: -1, EmptyResponseRetries: -1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := Wrap(provider, d, "fixture", profile, "", "", func() bool { return false })
+			var completionErr error
+			for _, err := range recorder.Stream(t.Context(), llm.CompletionRequest{}) {
+				if err != nil {
+					completionErr = err
+				}
+			}
+			if (completionErr != nil) != incomplete {
+				t.Fatalf("completion error=%v incomplete=%v", completionErr, incomplete)
+			}
+			var input, output, cached int
+			var stop, status string
+			if err := d.QueryRow(`SELECT input_tokens,output_tokens,cache_read,stop_reason,status FROM llm_usage WHERE profile_name=$1`, profile).Scan(&input, &output, &cached, &stop, &status); err != nil {
+				t.Fatal(err)
+			}
+			if input != 101 || output != 7 || cached != 80 || stop != "end_turn" || (status == "error") != incomplete {
+				t.Fatalf("input/output/cache=%d/%d/%d stop=%q status=%q", input, output, cached, stop, status)
+			}
+		})
 	}
 }

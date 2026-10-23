@@ -28,28 +28,32 @@ const (
 )
 
 // StreamEnd describes the transport/consumer boundary, not whether the model
-// actually finished its answer. In particular, EOF and [DONE] without a decoded
-// finish_reason are distinct observations, not proof of truncation or success.
+// actually finished its answer. Done means a protocol terminal marker such as
+// OpenAI [DONE] or Anthropic message_stop; EOF records the transport boundary.
 type StreamEnd string
 
 const (
-	StreamEndDone         StreamEnd = "done"
-	StreamEndEOF          StreamEnd = "eof"
-	StreamEndReadError    StreamEnd = "read_error"
-	StreamEndRequestError StreamEnd = "request_error"
-	StreamEndConsumerStop StreamEnd = "consumer_stop"
+	StreamEndDone          StreamEnd = "done"
+	StreamEndEOF           StreamEnd = "eof"
+	StreamEndReadError     StreamEnd = "read_error"
+	StreamEndRequestError  StreamEnd = "request_error"
+	StreamEndConsumerStop  StreamEnd = "consumer_stop"
+	StreamEndProtocolError StreamEnd = "protocol_error"
 )
 
 // StreamDiagnostics contains only structural observations from one HTTP stream
 // attempt. It never contains provider payloads, headers or error messages.
-// FinishReasonSeen refers to a non-empty finish_reason decoded for the selected
-// choice. ParseErrors counts frames ignored because JSON/type decoding failed;
-// unknown but valid frames do not count. Consumers must ignore this event when
-// accumulating content or deciding whether a tool-input block has finished.
+// FinishReasonSeen refers to a non-empty OpenAI finish_reason or Anthropic
+// stop_reason. ParseErrors counts frames whose JSON/type decoding failed; unknown but
+// valid frames do not count. Its StreamEvent carries attempt usage/stop evidence.
+// Consumers must not treat this event as a content/tool-input block boundary.
 type StreamDiagnostics struct {
 	FinishReasonSeen bool      `json:"finish_reason_seen"`
 	StreamEnd        StreamEnd `json:"stream_end"`
 	ParseErrors      int       `json:"parse_errors"`
+	// DiscardThinking marks a safe provider retry before any text/tool output.
+	// Failed-attempt reasoning/signatures must not enter replayable history.
+	DiscardThinking bool `json:"discard_thinking,omitempty"`
 }
 
 // StreamEvent is one normalized model-level streaming event (FR-03.5).
@@ -58,8 +62,8 @@ type StreamEvent struct {
 	Text        string             // text/thinking/tool_input JSON fragment
 	ToolID      string             // tool_use_start
 	ToolName    string             // tool_use_start
-	StopReason  string             // message_delta
-	Usage       Usage              // message_start / message_delta
+	StopReason  string             // message_delta / stream_diagnostics
+	Usage       Usage              // message_start / message_delta / stream_diagnostics (never duplicated)
 	Diagnostics *StreamDiagnostics // stream_diagnostics; nil for other events
 }
 
@@ -103,8 +107,9 @@ type Config struct {
 	// 0.5s/1s/2s… ladder capped at 8s. A host that wants a predictable,
 	// operator-set cadence sets both MaxRetries and this.
 	RetryInterval time.Duration
-	// EmptyResponseRetries bounds how many times a completed-but-EMPTY response
-	// is re-requested (FormatOpenAI only; see emptyResponseRetries). 0 = default
+	// EmptyResponseRetries bounds how many times a response with no answer
+	// text or tool call (including reasoning-only stops or stream interruptions)
+	// is re-requested (OpenAI Chat and Anthropic; see emptyResponseRetries). 0 = default
 	// 2; negative disables. Separate from MaxRetries because an empty-response
 	// retry re-sends the whole prompt rather than re-establishing a request.
 	EmptyResponseRetries int
