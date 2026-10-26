@@ -1,0 +1,272 @@
+{
+  "schema": 1,
+  "release": "tack-v0.1.2",
+  "source_commit": "b47e9417b5257ba8d14a0762b026778f86599373",
+  "metadata": {
+    "manifest.json": {
+      "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/manifest.json",
+      "sha256": "4d71a49e27a1f201d16dfaaade87362c92f510e501e20389ccf9dae9313124ea"
+    },
+    "SHA256SUMS": {
+      "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/SHA256SUMS",
+      "sha256": "02a7afc6cd4fca38cb25865824d344142d1622e8b734fe3f7cc6979728c01277"
+    }
+  },
+  "tools": {
+    "tack-control": {
+      "version": "0.1.2",
+      "native_install": true,
+      "platforms": {
+        "linux/amd64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-control_0.1.2_linux_amd64.tar.gz",
+          "sha256": "c5fa99fa2e8f6f26ae908517dbf60de307e03ee2982a2ee7c5e9c3307ac470f7",
+          "format": "tar.gz",
+          "member": "tack-control",
+          "filename": "tack-control"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-control_0.1.2_linux_arm64.tar.gz",
+          "sha256": "49d9ace687cb90f060f696660a0b11945425604645c1c6328086da4d74678825",
+          "format": "tar.gz",
+          "member": "tack-control",
+          "filename": "tack-control"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-control_0.1.2_windows_amd64.zip",
+          "sha256": "23b05f51e9fec49f843bab8706dd2895d3e4c2d97a60187e4ca49ca012b098a9",
+          "format": "zip",
+          "member": "tack-control.exe",
+          "filename": "tack-control.exe"
+        }
+      }
+    },
+    "tack-node": {
+      "version": "0.1.2",
+      "native_install": true,
+      "platforms": {
+        "linux/386": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_386.tar.gz",
+          "sha256": "1f77422c84421d01d0c2b3122ab8773b2cbd306a7713fb291622b7939b0d3b40",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/amd64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_amd64.tar.gz",
+          "sha256": "1de4d5b433d9af91c713bbf7b778df3a4701a4bc405b5894824e39eda3b2c005",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_arm64.tar.gz",
+          "sha256": "b543560c9a122400cc456dc1105c8d9a01b924966ace6e62f521faf5eed07fef",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/armv5": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_armv5.tar.gz",
+          "sha256": "aeb14c959b423fe05d9147581e5d57ba6abc750c75bd6f7f88cc43a805166299",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/armv6": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_armv6.tar.gz",
+          "sha256": "ff7108022c6748059eb404454766ffd6b4024ffc319b3c53cc4385203880171a",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/armv7": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_armv7.tar.gz",
+          "sha256": "cb2a38f56252ad8225e11427f857004738c722da97bf00895abcd8b434e765fc",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/mips": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_mips-softfloat.tar.gz",
+          "sha256": "660e4c4d1eb019ffb29a32ef238e1e16b5ad990672cfc77698b38208adf3d965",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/mips64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_mips64-softfloat.tar.gz",
+          "sha256": "4288d17599cead1134cc3a4f9cbeb35bf9434527c974728cb41d99586daea4d7",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/mips64le": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_mips64le-softfloat.tar.gz",
+          "sha256": "d1a9d1eb790cad9646ce84e3320f5a371352943b53f32dab158a500b45c97dd3",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/mipsle": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_mipsle-softfloat.tar.gz",
+          "sha256": "2dc47a50faec5e437e4db59f11f192fdc46b2cbad18b3b0eda263f1df671033d",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "windows/386": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_windows_386.zip",
+          "sha256": "461868d86882cbca5c950b3945f2a1c483a397192fcaa1e75a2ca7175ae522e7",
+          "format": "zip",
+          "member": "tack-node.exe",
+          "filename": "tack-node.exe"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_windows_amd64.zip",
+          "sha256": "0a4321b9618510b9248216ef93612a3b428a58fc139539f841ecef04ea1b7715",
+          "format": "zip",
+          "member": "tack-node.exe",
+          "filename": "tack-node.exe"
+        },
+        "windows/arm64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_windows_arm64.zip",
+          "sha256": "9bda6ba19bb4046c1d2905b2599fe4d9add5605d01b95bb31b0330ab4d4096ce",
+          "format": "zip",
+          "member": "tack-node.exe",
+          "filename": "tack-node.exe"
+        }
+      }
+    },
+    "tack-node-legacy": {
+      "version": "0.1.2",
+      "native_install": false,
+      "platforms": {
+        "linux/386": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_386_legacy.tar.gz",
+          "sha256": "a5b9c2c5ffaced4b8910ff61b58f54632545c9a9349e1bbc0dea91b842a5f0d3",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/amd64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_amd64_legacy.tar.gz",
+          "sha256": "b3dcbd12b704f55c206dcdacfa0fdd48316a01da8bc44470725a68a6860a7de9",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_arm64_legacy.tar.gz",
+          "sha256": "63d572445d1a086848ddd5b7aca6bf479b0203015fab88ee06e029e6cd340501",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/armv5": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_armv5_legacy.tar.gz",
+          "sha256": "9d83670e21827365c3c0ac1f9a9ad51209a81033873d58f641166b2e32a4dc49",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/armv6": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_armv6_legacy.tar.gz",
+          "sha256": "11b24e13d2d2cd2ebd5472198414466ac86cc4f7fca6fc8e4cf904afecf92c0d",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/armv7": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_armv7_legacy.tar.gz",
+          "sha256": "90cdbb62eb6a09fde0da0e342ff52179ee27e9e740c2453635e24dfd2b6e09d5",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/mips": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_mips-softfloat_legacy.tar.gz",
+          "sha256": "362ca33067696d415f2e9fa8b3523c4dd088a0b00c086fc1fe50d0237508581a",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/mips64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_mips64-softfloat_legacy.tar.gz",
+          "sha256": "64b0155d71f51260bd6e88d6bbdd7277ed5823979a44797766ecfa9cab99510a",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/mips64le": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_mips64le-softfloat_legacy.tar.gz",
+          "sha256": "da351f0d0ed7b87255c19b6e2eab2a581176cc9be77c8cdfdfc034d3617bd757",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        },
+        "linux/mipsle": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack-node_0.1.2_linux_mipsle-softfloat_legacy.tar.gz",
+          "sha256": "3e65c7984d34ac6016135727b968df7703f7b0a62a872fe170f8b40f321b7ee0",
+          "format": "tar.gz",
+          "member": "tack-node",
+          "filename": "tack-node"
+        }
+      }
+    },
+    "tack": {
+      "version": "0.1.2",
+      "native_install": true,
+      "platforms": {
+        "darwin/amd64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack_0.1.2_darwin_amd64.tar.gz",
+          "sha256": "de0436acd7963ab4ab9d914f9019c6e9769cc696c499216f8513fa068dd1c25d",
+          "format": "tar.gz",
+          "member": "tack",
+          "filename": "tack"
+        },
+        "darwin/arm64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack_0.1.2_darwin_arm64.tar.gz",
+          "sha256": "26d28ce39c515f32766e559deab5f85443ab2e9e54422f083c5aa8638e95d85a",
+          "format": "tar.gz",
+          "member": "tack",
+          "filename": "tack"
+        },
+        "linux/amd64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack_0.1.2_linux_amd64.tar.gz",
+          "sha256": "636af31b90f90a335442ffa4c6e8c22d7c7e5e3aa9632059581b85d60f344b0c",
+          "format": "tar.gz",
+          "member": "tack",
+          "filename": "tack"
+        },
+        "linux/arm64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack_0.1.2_linux_arm64.tar.gz",
+          "sha256": "440dc9a40aa4590c94d9455156f1f55eeeb7c8f09292c24dbbaeb979a80481c9",
+          "format": "tar.gz",
+          "member": "tack",
+          "filename": "tack"
+        },
+        "windows/386": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack_0.1.2_windows_386.zip",
+          "sha256": "001d0e9ea72426dc4761d4a95222d7dcd98bf1bcf93db0d4dc8686a87a3fdd09",
+          "format": "zip",
+          "member": "tack.exe",
+          "filename": "tack.exe"
+        },
+        "windows/amd64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack_0.1.2_windows_amd64.zip",
+          "sha256": "da04ed6eb5ea63402518f1f864db87339fdf38bfb35a4ef47f3de5edea06d174",
+          "format": "zip",
+          "member": "tack.exe",
+          "filename": "tack.exe"
+        },
+        "windows/arm64": {
+          "url": "https://github.com/RC-CHN/tack/releases/download/tack-v0.1.2/tack_0.1.2_windows_arm64.zip",
+          "sha256": "1060bc9e698acc488781b1639cbb768d6d16214ea4766502a1d234b90eb258d1",
+          "format": "zip",
+          "member": "tack.exe",
+          "filename": "tack.exe"
+        }
+      }
+    }
+  }
+}

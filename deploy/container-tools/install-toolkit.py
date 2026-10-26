@@ -18,11 +18,20 @@ for name, tool in portable["tools"].items():
         raise SystemExit("official/portable version mismatch: " + name)
     for platform, entry in tool["platforms"].items():
         official["platforms"][platform] = {**entry, "file": "portable/" + entry["file"]}
+tack = json.loads((root / "opt/artex-kit/tack/catalog.lock.json").read_text())
+for name, tool in tack["tools"].items():
+    if name in manifest["tools"]:
+        raise SystemExit("duplicate bundled tool: " + name)
+    manifest["tools"][name] = {**tool, "platforms": {
+        platform: {**entry, "file": "tack/" + entry["file"]}
+        for platform, entry in tool["platforms"].items()}}
 catalog_path.write_text(json.dumps(manifest, indent=2) + "\n")
 catalog = Catalog(catalog_path, root / "opt/artex-kit/cache")
 metadata = root / "opt/artex-tools/security-tools.lock.json"
 lock = json.loads(metadata.read_text())
 for name in catalog.data["tools"]:
+    if catalog.data["tools"][name].get("native_install", True) is False:
+        continue
     result = catalog.fetch(name, "linux/" + sys.argv[1])
     target = root / "usr/local/bin" / name
     target.parent.mkdir(parents=True, exist_ok=True)

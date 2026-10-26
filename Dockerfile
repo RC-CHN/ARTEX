@@ -149,6 +149,13 @@ RUN python3 /verify/portable_bundle.py validate /portable-tools --lock /verify/s
 
 FROM ${PORTABLE_TOOLS_SOURCE} AS portable-tools-selected
 
+########## Tack 固定发布包：各架构共用压缩层 ##########
+FROM --platform=$BUILDPLATFORM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258 AS tack-bundle
+COPY toolkit/tack.lock.json /src/tack.lock.json
+COPY deploy/tack_bundle.py /src/tack_bundle.py
+RUN --mount=type=bind,source=deploy/container-tools/download-cache,target=/tool-downloads,readonly \
+    python3 /src/tack_bundle.py --lock /src/tack.lock.json --output /tack --archives /tool-downloads
+
 ########## 固定版本的漏洞查询和检测工具 ##########
 FROM runtime-tools AS security-tools
 ARG TARGETARCH
@@ -162,6 +169,7 @@ COPY toolkit/catalog.lock.json /opt/artex-kit/catalog.lock.json
 COPY toolkit/ip-data.lock.json /opt/artex-kit/ip-data.lock.json
 COPY toolkit/licenses/ /opt/artex-kit/licenses/
 COPY --from=portable-tools-selected /portable-tools/ /opt/artex-kit/portable/
+COPY --from=tack-bundle /tack/ /opt/artex-kit/tack/
 COPY deploy/container-tools/install-toolkit.py /tmp/install-toolkit.py
 RUN --mount=type=bind,source=deploy/container-tools/download-cache,target=/tool-downloads,readonly \
     ARTEX_TOOL_ARCHIVES=/tool-downloads python3 /tmp/install-toolkit.py "$TARGETARCH" && rm /tmp/install-toolkit.py

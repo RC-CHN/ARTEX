@@ -197,6 +197,15 @@ try:
         print(toolkit.stdout + toolkit.stderr, file=sys.stderr)
         raise RuntimeError('toolkit image smoke failed')
     print(toolkit.stdout.strip(), flush=True)
+    tack = docker('run', '--rm', '--network', 'none', '--read-only', '--user', '10001:10001',
+                  '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+                  '--tmpfs', '/tmp:rw,mode=1777', '-e', 'HOME=/tmp/artex-tack-smoke',
+                  '-v', str(Path(__file__).resolve().parent) + ':/smoke:ro',
+                  '--entrypoint', 'python3', image, '/smoke/tack-smoke.py', check=False)
+    if tack.returncode:
+        print(tack.stdout + tack.stderr, file=sys.stderr)
+        raise RuntimeError('Tack CLI and node smoke failed')
+    print(tack.stdout.strip(), flush=True)
     print('IMAGE SMOKE PASSED', flush=True)
 except Exception:
     if app_name in created:

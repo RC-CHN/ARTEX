@@ -110,7 +110,7 @@ def main(argv=None):
                 "python_imports": {name: PYTHON_MODULES[name] for name in packages},
                 "tools": {name: shutil.which(name) for name in (
                     "httpx", "katana", "ffuf", "sqlmap", "testssl", "nuclei", "vulnx", "interactsh-client", "jq", "yq", "chisel",
-                    "subfinder", "dnsx", "naabu", "tlsx", "grpcurl", "websocat", "ssh", "sshpass", "rsync", "socat", "tcpdump", "busybox",
+                    "subfinder", "dnsx", "naabu", "tlsx", "grpcurl", "websocat", "tack", "tack-control", "tack-node", "ssh", "sshpass", "rsync", "socat", "tcpdump", "busybox",
                     "python3", "node", "npm", "playwright-cli", "pwn", "readelf", "objdump", "as", "ld", "cpp") if shutil.which(name)},
                 "ip_database": describe(directory()),
                 "coordinator_configured": bool(os.environ.get("ARTEX_KIT_TOKEN_FILE"))}

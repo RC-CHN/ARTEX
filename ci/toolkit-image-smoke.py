@@ -52,6 +52,8 @@ print("Python libraries: real HTTP/parse/crypto/LDAP operations available", flus
 
 catalog = json.loads(Path("/opt/artex-kit/catalog.lock.json").read_text())
 for name, tool in catalog["tools"].items():
+    if tool.get("native_install", True) is False:
+        continue
     assert name in inventory["tools"], name
     flag = "--version" if name in ("yq", "chisel", "jq", "websocat") else "-V" if name == "ffuf" else "-version"
     assert tool["version"] in run(name, flag), name

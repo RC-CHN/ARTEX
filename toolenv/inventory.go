@@ -75,7 +75,7 @@ func detect(searchPath string, manifest map[string]struct {
 	}
 	i := Inventory{Vulnx: find("vulnx"), Nuclei: find("nuclei"), Kit: find("artex-kit"),
 		HTTPX: find("httpx"), Katana: find("katana"), FFUF: find("ffuf"), SQLMap: find("sqlmap"), TestSSL: find("testssl")}
-	for _, name := range []string{"subfinder", "dnsx", "naabu", "tlsx", "yq", "chisel", "grpcurl", "websocat", "ssh", "sshpass", "rsync", "socat", "tcpdump"} {
+	for _, name := range []string{"subfinder", "dnsx", "naabu", "tlsx", "yq", "chisel", "grpcurl", "websocat", "tack", "tack-control", "tack-node", "ssh", "sshpass", "rsync", "socat", "tcpdump"} {
 		if t := find(name); t != nil {
 			if i.Extras == nil {
 				i.Extras = make(map[string]*Tool)
@@ -111,6 +111,7 @@ func (i Inventory) Prompt() string {
 		{"sqlmap", "针对具体请求和参数的 SQL 注入验证。", i.SQLMap},
 		{"testssl", "TLS 协议与配置检查。", i.TestSSL},
 		{"grpcurl", "gRPC 调用与服务描述；支持反射或显式 proto/protoset。", i.Extras["grpcurl"]},
+		{"tack", "指定远端节点的异步命令执行与状态查询；完整镜像内置全平台包，加载 tack Skill 了解幂等提交、部署及撤除。", i.Extras["tack"]},
 		{"websocat", "WebSocket 文本/二进制消息交互，支持 ws/wss。", i.Extras["websocat"]},
 	} {
 		if item.tool != nil {
