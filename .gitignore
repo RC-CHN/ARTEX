@@ -31,6 +31,7 @@ web/next-env.d.ts
 !/docs/owned-resources.md
 !/docs/worker-budgets-and-record-export.md
 !/docs/工具仓库与验证工作流.md
+!/docs/tack.md
 
 # os
 .DS_Store

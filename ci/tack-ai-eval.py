@@ -52,10 +52,8 @@ def main():
                         '--user', '10001:10001', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
                         '--pids-limit', '128', '--memory', '768m', '--cpus', '2',
                         '--tmpfs', '/tmp:rw,mode=1777', '--tmpfs', '/work:rw,mode=1777', '-w', '/work', '-e', 'HOME=/work/home',
-                        '-e', 'PATH=/work/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                         '-v', str(Path(a.probe).resolve()) + ':/probe:ro',
                         '-v', str(seeded.resolve()) + ':/skills:ro',
-                        '-v', str(project / 'ci/tack-ai-path.sh') + ':/etc/profile.d/99-tack-ai-path.sh:ro',
                         '-v', str(project / 'ci') + ':/test:ro', '--entrypoint', 'python3', a.image, '/test/tack_ai_fixture.py')
                     context = None
                     for attempt in range(100):
@@ -82,22 +80,22 @@ def main():
                         '--credential', context['credential_file'], '--allow-insecure-loopback', '--id', task_id, '--format', 'json'))
                     page = json.loads(command('docker', 'exec', name, 'tack', 'tasks', '--server', context['server'],
                         '--credential', context['credential_file'], '--allow-insecure-loopback', '--node', 'fixture-a'))
-                    calls = [json.loads(line) for line in command('docker', 'exec', name, 'cat', '/work/cli-calls.jsonl').splitlines()]
+                    calls = [json.loads(line) for line in command('docker', 'exec', name, 'cat', '/work/api-calls.jsonl').splitlines()]
                     checks = {'skill_used': report.get('calls', {}).get('Skill', 0) >= 1,
                               'model_completed': report.get('terminal') == 'completed',
                               'no_provider_error': not report.get('provider_error'),
                               'one_remote_execution': len(page['tasks']) == 1,
                               'output_complete': not current.get('result_pending', False)}
                     if case == 'retry':
-                        submissions = [c for c in calls if c['args'] and c['args'][0] == 'submit']
-                        checks['retry_exercised'] = len(submissions) >= 2 and all(c['exit_code'] == 0 for c in submissions)
+                        submissions = [c for c in calls if c['method'] == 'POST' and c['path'] == '/v1/tasks' and c['http_status'] in (200, 201)]
+                        checks['retry_exercised'] = len(submissions) >= 2 and all(c['id'] == task_id for c in submissions)
                         checks['marker_once'] = command('docker', 'exec', name, 'cat', '/work/once.marker') == 'x'
                         checks['correct_result'] = answer['state'] == current['state'] == 'succeeded' and answer['stdout'] == current['result']['stdout'] == 'ready\n'
                         saved = json.loads(command('docker', 'exec', name, 'cat', '/work/request.json'))
                         checks['durable_request_identity'] = bool(saved.get('request_id')) and saved['request_id'] == current['request_id']
                     elif case == 'cancel':
-                        checks['bounded_wait_exercised'] = any(c['args'][0] == 'wait' and c['exit_code'] == 4 for c in calls)
-                        checks['cancel_exercised'] = any(c['args'][0] == 'cancel' and c['exit_code'] == 0 for c in calls)
+                        checks['running_observed'] = any(c['method'] == 'GET' and c.get('state') == 'running' and not c.get('cancel_requested') for c in calls)
+                        checks['cancel_exercised'] = any(c['method'] == 'POST' and c['path'] == '/v1/tasks/' + task_id + '/cancel' and c['http_status'] == 200 for c in calls)
                         checks['wait_not_cancel'] = answer['wait_exit_code'] == 4 and answer['state_after_wait'] in ('queued', 'dispatched', 'running') and answer['cancel_requested_after_wait'] is False
                         checks['canceled'] = answer['final_state'] == current['state'] == 'canceled'
                     else:
@@ -108,7 +106,8 @@ def main():
                         checks['staged_legacy'] = receipt['tool'] == 'tack-node-legacy'
                     summary = {'case': case, 'round': round_number, 'checks': checks, 'passed': all(checks.values()),
                                'elapsed_seconds': round(time.monotonic()-started, 1), 'turns': report.get('turns'), 'model': report.get('model')}
-                    prefix.with_suffix('.receipt.json').write_text(json.dumps({'answer': answer, 'state': current['state'], 'checks': checks}, ensure_ascii=False, indent=2))
+                    prefix.with_suffix('.receipt.json').write_text(json.dumps({'answer': answer, 'state': current['state'],
+                        'checks': checks, 'api_calls': calls}, ensure_ascii=False, indent=2))
                 except Exception as e:
                     summary = {'case': case, 'round': round_number, 'passed': False, 'error_class': type(e).__name__}
                     if isinstance(e, subprocess.CalledProcessError):
