@@ -335,6 +335,7 @@ var builtinSkillVisibility = map[string][]string{
 	"protocol-check":       {"mainagent", "planner", "worker", "auto", "pentest"},
 	"ip-lookup":            {"mainagent", "planner", "worker", "auto", "pentest"},
 	"python-environment":   {"mainagent", "planner", "worker", "auto", "pentest"},
+	"tack":                 {"mainagent", "planner", "worker", "auto", "pentest"},
 	"resource-creator":     {"mainagent", "planner", "worker", "auto", "pentest"},
 }
 

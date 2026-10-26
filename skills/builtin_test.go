@@ -38,9 +38,46 @@ func TestConcurrentSeedAndNativeInvocation(t *testing.T) {
 			t.Fatalf("native Skill failed: %+v %v", result, err)
 		}
 		files, _ := os.ReadDir(filepath.Join(dir, name))
-		if len(files) != 1 || files[0].Name() != "SKILL.md" {
+		if name != "tack" && (len(files) != 1 || files[0].Name() != "SKILL.md") {
 			t.Fatalf("partial seed files: %v", files)
 		}
+	}
+}
+
+func TestTackSupportingFilesSurvivePartialSeedAndOperatorEdits(t *testing.T) {
+	dir := t.TempDir()
+	if err := SeedDefaults(dir); err != nil {
+		t.Fatal(err)
+	}
+	ref := filepath.Join(dir, "tack", "references", "operations.md")
+	script := filepath.Join(dir, "tack", "scripts", "select-node-artifact.py")
+	if err := os.WriteFile(ref, []byte("operator notes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(script); err != nil {
+		t.Fatal(err)
+	}
+	if err := SeedDefaults(dir); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(ref); string(b) != "operator notes" {
+		t.Fatal("overwrote edited reference")
+	}
+	if b, err := os.ReadFile(script); err != nil || !strings.Contains(string(b), "def select(") {
+		t.Fatal("missing recovered supporting script", err)
+	}
+	outside := t.TempDir()
+	if err := os.RemoveAll(filepath.Join(dir, "tack", "references")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "tack", "references")); err != nil {
+		t.Skip(err)
+	}
+	if err := SeedDefaults(dir); err == nil {
+		t.Fatal("accepted escaping supporting directory")
+	}
+	if files, _ := os.ReadDir(outside); len(files) != 0 {
+		t.Fatal("wrote outside skill directory")
 	}
 }
 

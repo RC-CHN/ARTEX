@@ -22,7 +22,7 @@ func TestBuiltinSecuritySkillsDefaultOnAndRespectDisabledState(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer d.SetAgentSkillVisibility(a.ID, original)
-		for _, name := range []string{"nuclei", "vulnx", "web-discovery", "authenticated-verify", "portable-tools", "targeted-verify", "protocol-check", "ip-lookup", "python-environment", "resource-creator"} {
+		for _, name := range []string{"nuclei", "vulnx", "web-discovery", "authenticated-verify", "portable-tools", "targeted-verify", "protocol-check", "ip-lookup", "python-environment", "resource-creator", "tack"} {
 			if !slices.Contains(original, name) {
 				t.Fatalf("%s is not enabled for %s", name, key)
 			}
@@ -37,7 +37,7 @@ func TestBuiltinSecuritySkillsDefaultOnAndRespectDisabledState(t *testing.T) {
 		if err != nil || slices.Contains(got, "nuclei") || slices.Contains(got, "vulnx") {
 			t.Fatalf("disabled skill resurrected: %v, %v", got, err)
 		}
-		for _, name := range []string{"web-discovery", "authenticated-verify", "portable-tools", "targeted-verify", "protocol-check", "ip-lookup", "python-environment", "resource-creator"} {
+		for _, name := range []string{"web-discovery", "authenticated-verify", "portable-tools", "targeted-verify", "protocol-check", "ip-lookup", "python-environment", "resource-creator", "tack"} {
 			if slices.Contains(got, name) {
 				t.Fatalf("disabled toolkit skill resurrected: %s", name)
 			}
