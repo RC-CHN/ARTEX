@@ -1,0 +1,124 @@
+{
+  "date": "2026-10-26",
+  "tack_release": "tack-v0.1.2",
+  "skill_source_commit": "011d935c996965e16cc09660841380fb50fc0219",
+  "harness_source_commit": "0d2c3747628074635977ced53997eed464d89866",
+  "model": "deepseek-v4.1-flash",
+  "execution": "native ARTEX tools inside disposable Linux amd64 non-root offline containers",
+  "runs": [
+    {
+      "case": "cancel",
+      "round": 1,
+      "checks": {
+        "skill_used": true,
+        "model_completed": true,
+        "no_provider_error": true,
+        "one_remote_execution": true,
+        "output_complete": true,
+        "running_observed": true,
+        "cancel_exercised": true,
+        "wait_not_cancel": true,
+        "canceled": true
+      },
+      "passed": true,
+      "elapsed_seconds": 59.1,
+      "turns": 11,
+      "model": "deepseek-v4.1-flash"
+    },
+    {
+      "case": "cancel",
+      "round": 2,
+      "checks": {
+        "skill_used": true,
+        "model_completed": true,
+        "no_provider_error": true,
+        "one_remote_execution": true,
+        "output_complete": true,
+        "running_observed": true,
+        "cancel_exercised": true,
+        "wait_not_cancel": true,
+        "canceled": true
+      },
+      "passed": true,
+      "elapsed_seconds": 79.4,
+      "turns": 13,
+      "model": "deepseek-v4.1-flash"
+    },
+    {
+      "case": "platform",
+      "round": 1,
+      "checks": {
+        "skill_used": true,
+        "model_completed": true,
+        "no_provider_error": true,
+        "one_remote_execution": true,
+        "output_complete": true,
+        "correct_legacy": true,
+        "reject_unsupported": true,
+        "correct_failure": true,
+        "staged_legacy": true
+      },
+      "passed": true,
+      "elapsed_seconds": 113.9,
+      "turns": 17,
+      "model": "deepseek-v4.1-flash"
+    },
+    {
+      "case": "platform",
+      "round": 2,
+      "checks": {
+        "skill_used": true,
+        "model_completed": true,
+        "no_provider_error": true,
+        "one_remote_execution": true,
+        "output_complete": true,
+        "correct_legacy": true,
+        "reject_unsupported": true,
+        "correct_failure": true,
+        "staged_legacy": true
+      },
+      "passed": true,
+      "elapsed_seconds": 174.7,
+      "turns": 27,
+      "model": "deepseek-v4.1-flash"
+    },
+    {
+      "case": "retry",
+      "round": 1,
+      "checks": {
+        "skill_used": true,
+        "model_completed": true,
+        "no_provider_error": true,
+        "one_remote_execution": true,
+        "output_complete": true,
+        "retry_exercised": true,
+        "marker_once": true,
+        "correct_result": true,
+        "durable_request_identity": true
+      },
+      "passed": true,
+      "elapsed_seconds": 96.1,
+      "turns": 12,
+      "model": "deepseek-v4.1-flash"
+    },
+    {
+      "case": "retry",
+      "round": 2,
+      "checks": {
+        "skill_used": true,
+        "model_completed": true,
+        "no_provider_error": true,
+        "one_remote_execution": true,
+        "output_complete": true,
+        "retry_exercised": true,
+        "marker_once": true,
+        "correct_result": true,
+        "durable_request_identity": true
+      },
+      "passed": true,
+      "elapsed_seconds": 124.7,
+      "turns": 21,
+      "model": "deepseek-v4.1-flash"
+    }
+  ]
+}
