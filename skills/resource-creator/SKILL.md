@@ -9,7 +9,7 @@ compatibility: ARTEX 自有资源库工具；修改与领取需要当前任务�
 
 先用 `search_resources` 检索，已有同用途资源优先更新。用 `resource_versions` 读取登记信息、版本和草稿；`use_resource` 固定当前任务的版本，返回入口说明、文件目录、服务端点以及凭据文件路径。资源的类型只用于分类：纯文字、静态文件、多平台工具、连接信息可以任意组合。
 
-按独立使用、更新和撤除的单位登记。不同位置的独立部署分别记录；同一工具的说明、配置和多架构文件仍可组织为一个包。任务临时部署用 `manage_deployments` 记录，不必全部发布到全局资源库，也不占用选中资源的 32 项额度。记录位置、准确标识、撤除方法和实际验证方式；不写凭据明文。
+按独立使用、更新和撤除的单位登记。不同位置的独立部署分别记录；同一工具的说明、配置和多架构文件仍可组织为一个包。同一实例优先更新已有资源，避免跨任务重复登记。实例的位置、准确标识、撤除方法和验证结果统一写入对应资源的说明；多个实例可分节或拆成引用文件，入口注明何时读取。登记资源不等于把所有资源选入当前任务；不写凭据明文。
 
 ## 资源目录
 
@@ -50,8 +50,7 @@ tags: [内部资料]
 
 ## 撤除与删除
 
-- `manage_deployments(action=save, item={request_id,name,kind,location,identifier,cleanup})` 登记一个独立部署；工具只记账，不执行撤除。返回 `id/revision`。更新只传需修改字段、`id/expected_revision/request_id`；每次新操作使用新 request_id，回执丢失时原参数原 request_id 重试。
-- 撤除前先查清目标标识和影响，按任务授权执行。完成后记录 `state=removed` 和本次真实 `verification`；结果不确定用 `unknown`，失败用 `failed`。明确保留时用 `retained`，verification 写保留依据。不得因命令发出、进程不可达或任务结束就声称撤除成功。
-- `resource_references(resource_id)` 查看活动任务与部署引用。`delete_resource(resource_id,expected_revision,request_id,reason)` 删除整个登记并阻止新领取；历史版本保留，已有目录不会立即消失，工具不会停止远端服务。其他活动任务引用或未验证撤除的关联部署会明确拒绝删除。
+- 撤除前读取对应资源的实例说明，核对目标标识和影响，按任务授权执行。将实际撤除结果、验证方式及时间更新到该资源说明；结果未知、失败或明确保留都如实记录。不得因命令发出、进程不可达或任务结束就声称撤除成功。
+- `resource_references(resource_id)` 查看活动任务引用。`delete_resource(resource_id,expected_revision,request_id,reason)` 删除整个登记并阻止新领取；历史版本保留，已有目录不会立即消失，工具不会停止远端服务。其他活动任务引用会明确拒绝删除。
 - `manage_resources_batch(items=[...])` 可批量创建、更新、删除最多 25 项。每项独立提交，按 index 查看结果；只重试未确认的原始项，不重新执行已成功项。
-- `check_task_handoff()` 检查已登记的清理事项和未完成执行。没有待处理项只代表记录完整性检查通过，不能证明未登记的外部副作用不存在。
+- `check_task_handoff()` 检查未完成的 Worker、主 Agent 问答和任务预算。没有待处理项只代表记录完整性检查通过，不能证明未登记的外部副作用不存在。

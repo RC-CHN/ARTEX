@@ -54,63 +54,12 @@ func seed(root *os.Root, name string) error {
 		return err
 	}
 	defer sub.Close()
-	upgrade := false
-	if info, err := sub.Lstat("SKILL.md"); err == nil {
-		// Only replace the exact, unedited bundled predecessor. Custom files
-		// and symlinks remain operator-owned. Startup runs before editors open.
-		if !info.Mode().IsRegular() || name != "resource-creator" {
-			return nil
-		}
-		old, err := sub.ReadFile("SKILL.md")
-		if err != nil {
-			return err
-		}
-		if fmt.Sprintf("%x", sha256.Sum256(old)) != "02143138496b678d4fe1f7c7299b9e9cceccf87b269296b80eb4482a6cb3b8fb" {
-			return nil
-		}
-		upgrade = true
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	data, err := bundled.ReadFile(name + "/SKILL.md")
-	if err != nil {
-		return err
-	}
-	tmp := ".skill-seed-" + rand.Text()
-	f, err := sub.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer sub.Remove(tmp)
-	defer f.Close()
-	if _, err = f.Write(data); err != nil {
-		return err
-	}
-	if err = f.Sync(); err != nil {
-		return err
-	}
-	if err = f.Close(); err != nil {
-		return err
-	}
-	// Link is an atomic no-replace publication, also across concurrent starters.
-	if upgrade {
-		old, err := sub.ReadFile("SKILL.md")
-		if err != nil {
-			return err
-		}
-		if fmt.Sprintf("%x", sha256.Sum256(old)) != "02143138496b678d4fe1f7c7299b9e9cceccf87b269296b80eb4482a6cb3b8fb" {
-			return nil
-		}
-		return sub.Rename(tmp, "SKILL.md")
-	}
-	if err = sub.Link(tmp, "SKILL.md"); err != nil && !errors.Is(err, os.ErrExist) {
-		return err
-	}
-	return nil
+	return publishBundled(sub, name, "SKILL.md")
 }
 
 // Supporting files are published before the entrypoint. Every file uses an
-// atomic no-replace link; existing operator edits survive a restart or upgrade.
+// atomic no-replace link, except exact bundled predecessors of SKILL.md.
+// Existing operator edits survive a restart or upgrade.
 func seedTree(root *os.Root, name string) error {
 	if err := root.MkdirAll(name, 0755); err != nil {
 		return err
@@ -143,11 +92,24 @@ func seedTree(root *os.Root, name string) error {
 }
 
 func publishBundled(root *os.Root, name, path string) error {
-	if _, err := root.Lstat(path); err == nil {
-		return nil
+	upgrade := false
+	var predecessor []byte
+	if info, err := root.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() || path != "SKILL.md" || (name != "resource-creator" && name != "tack") {
+			return nil
+		}
+		predecessor, err = root.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if !bundledPredecessor(name, path, predecessor) {
+			return nil
+		}
+		upgrade = true
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+
 	dir := filepath.Dir(path)
 	if err := root.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -172,8 +134,33 @@ func publishBundled(root *os.Root, name, path string) error {
 	if err := f.Close(); err != nil {
 		return err
 	}
+	if upgrade {
+		current, err := root.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if string(current) != string(predecessor) {
+			return nil
+		}
+		return root.Rename(tmp, path)
+	}
 	if err := root.Link(tmp, path); err != nil && !errors.Is(err, os.ErrExist) {
 		return err
 	}
 	return nil
+}
+
+// Only exact bundled predecessors may be upgraded; operator edits are retained.
+func bundledPredecessor(name, path string, content []byte) bool {
+	if path != "SKILL.md" {
+		return false
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(content))
+	switch name {
+	case "resource-creator":
+		return digest == "02143138496b678d4fe1f7c7299b9e9cceccf87b269296b80eb4482a6cb3b8fb" || digest == "27fa331d8d71becd7ad1e1590d75a94a469bb03b92135a0e0e621734303fb3c5"
+	case "tack":
+		return digest == "1aff3e28a3a1c5cd651de3911b83d08bd837ce6f1d3ac6b32e337151585645b9"
+	}
+	return false
 }

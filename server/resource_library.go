@@ -106,8 +106,6 @@ func (s *Server) registerLibraryRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/resources/{id}/tasks", s.grantOwnedResource)
 	mux.HandleFunc("DELETE /api/resources/{id}/tasks/{task}", s.revokeOwnedResource)
 	mux.HandleFunc("GET /api/tasks/{id}/resources", s.taskOwnedResources)
-	mux.HandleFunc("GET /api/tasks/{id}/deployments", s.taskDeployments)
-	mux.HandleFunc("POST /api/tasks/{id}/deployments", s.taskDeployments)
 	mux.HandleFunc("GET /api/tasks/{id}/handoff", s.taskHandoff)
 	mux.HandleFunc("GET /api/tasks/{id}/worker-budgets", s.workerBudgets)
 	mux.HandleFunc("POST /api/tasks/{id}/worker-budgets", s.workerBudgets)

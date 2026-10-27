@@ -10,18 +10,17 @@ import (
 )
 
 type Reference struct {
-	TaskID       int64  `json:"task_id"`
-	VersionID    int64  `json:"version_id,omitempty"`
-	DeploymentID int64  `json:"deployment_id,omitempty"`
-	State        string `json:"state"`
-	Blocking     bool   `json:"blocking"`
+	TaskID    int64  `json:"task_id"`
+	VersionID int64  `json:"version_id,omitempty"`
+	State     string `json:"state"`
+	Blocking  bool   `json:"blocking"`
 }
 type InUse struct {
 	References []Reference `json:"references"`
 }
 
 func (e *InUse) Error() string {
-	return "resource_in_use: release active task references and verify deployments before deleting this resource"
+	return "resource_in_use: release active task references before deleting this resource"
 }
 
 type referenceQuery interface {
@@ -29,13 +28,12 @@ type referenceQuery interface {
 }
 
 func references(ctx context.Context, q referenceQuery, id int64) ([]Reference, error) {
-	rows, err := q.QueryContext(ctx, `SELECT b.task_id,b.version_id,0,t.status,
+	rows, err := q.QueryContext(ctx, `SELECT b.task_id,b.version_id,t.status,
  (t.deleted_at IS NULL AND t.archived_at IS NULL AND (NOT t.paused AND t.status NOT IN ('done','failed','timeout')
  OR EXISTS(SELECT 1 FROM exploration_nodes n WHERE n.exploration_id=t.exploration_id AND n.kind='intent' AND n.state='running')
  OR EXISTS(SELECT 1 FROM runner_diagnostics d,jsonb_array_elements(d.sessions)e WHERE e->>'task_id'=t.id::text AND e->>'state' NOT IN ('closed','expired') AND (e->>'lease_until')::timestamptz>now())))
  FROM task_owned_resources b JOIN tasks t ON t.id=b.task_id WHERE b.resource_id=$1
- UNION ALL SELECT task_id,0,id,state,state NOT IN ('removed','retained') FROM task_deployments WHERE resource_id=$1
- ORDER BY 1,3,2`, id)
+ ORDER BY 1,2`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +41,7 @@ func references(ctx context.Context, q referenceQuery, id int64) ([]Reference, e
 	out := []Reference{}
 	for rows.Next() {
 		var r Reference
-		if err = rows.Scan(&r.TaskID, &r.VersionID, &r.DeploymentID, &r.State, &r.Blocking); err != nil {
+		if err = rows.Scan(&r.TaskID, &r.VersionID, &r.State, &r.Blocking); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -96,7 +94,7 @@ func (s *Store) Delete(ctx context.Context, in DeleteRequest, actor Actor) (Dele
 	}
 	blocked := []Reference{}
 	for _, ref := range refs {
-		if ref.Blocking && (ref.DeploymentID > 0 || actor.TaskID == 0 || ref.TaskID != actor.TaskID) {
+		if ref.Blocking && (actor.TaskID == 0 || ref.TaskID != actor.TaskID) {
 			blocked = append(blocked, ref)
 		}
 	}

@@ -138,7 +138,8 @@ func TestUpgradeOnlyUneditedResourceSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 	now, err := os.ReadFile(file)
-	if err != nil || !strings.Contains(string(now), "manage_deployments") {
+	want, _ := bundled.ReadFile("resource-creator/SKILL.md")
+	if err != nil || string(now) != string(want) {
 		t.Fatalf("missing upgrade: %v", err)
 	}
 	custom := append(old, []byte("\noperator note")...)
@@ -150,5 +151,51 @@ func TestUpgradeOnlyUneditedResourceSkill(t *testing.T) {
 	}
 	if now, _ = os.ReadFile(file); string(now) != string(custom) {
 		t.Fatal("operator edit overwritten")
+	}
+}
+
+func TestRetiredDeploymentInstructionsUpgrade(t *testing.T) {
+	for _, name := range []string{"resource-creator", "tack"} {
+		t.Run(name, func(t *testing.T) {
+			old, err := os.ReadFile("testdata/" + name + "-v0150.md")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := bundled.ReadFile(name + "/SKILL.md")
+			if err != nil || strings.Contains(string(want), "manage_deployments") {
+				t.Fatal("bundled instructions still recommend retired tool", err)
+			}
+			for _, edited := range []bool{false, true} {
+				dir := t.TempDir()
+				path := filepath.Join(dir, name, "SKILL.md")
+				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+					t.Fatal(err)
+				}
+				content := append([]byte(nil), old...)
+				if edited {
+					content = append(content, []byte("\nOperator customization\n")...)
+				}
+				if err := os.WriteFile(path, content, 0644); err != nil {
+					t.Fatal(err)
+				}
+				var wg sync.WaitGroup
+				for range 8 {
+					wg.Go(func() {
+						if err := SeedDefaults(dir); err != nil {
+							t.Error(err)
+						}
+					})
+				}
+				wg.Wait()
+				expected := want
+				if edited {
+					expected = content
+				}
+				got, err := os.ReadFile(path)
+				if err != nil || string(got) != string(expected) {
+					t.Fatalf("edited=%v: incorrect instruction upgrade: %v", edited, err)
+				}
+			}
+		})
 	}
 }

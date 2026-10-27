@@ -20,7 +20,7 @@ type exportReference struct {
 func exportHandoff(b *recordexport.Builder, prefix string) error {
 	refs := []*exportReference{}
 	groups := map[string]*exportReference{}
-	for _, table := range []string{"exploration_nodes", "task_deployments", "main_requests", "findings", "traffic_evidence_snapshots"} {
+	for _, table := range []string{"exploration_nodes", "main_requests", "findings", "traffic_evidence_snapshots"} {
 		source := prefix + "/database/" + table + ".jsonl"
 		if err := readExportRows(filepath.Join(b.Dir, source), func(raw json.RawMessage) error {
 			var r struct {
@@ -30,7 +30,7 @@ func exportHandoff(b *recordexport.Builder, prefix string) error {
 			if err := json.Unmarshal(raw, &r); err != nil {
 				return err
 			}
-			// Group only graph kinds and lifecycle states, never deployment labels.
+			// Group only graph kinds and lifecycle states, never user labels.
 			if table != "exploration_nodes" {
 				r.Kind = ""
 			}

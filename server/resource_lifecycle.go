@@ -9,12 +9,12 @@ import (
 	"github.com/RC-CHN/ARTEX/resourcelib"
 )
 
-const resourceAtomicGuidance = "按可独立使用、更新和撤除的单位登记资源；不同部署分别登记，同一工具的说明与多架构文件可放在一个包内。任务临时部署用 manage_deployments 记录所属位置、准确标识、撤除方法和验证结果；不占用任务选中资源额度。删除资源登记不会执行远端撤除。"
+const resourceAtomicGuidance = "按可独立使用、更新和撤除的单位登记资源；先查找已有资源，避免同一实例重复登记；同一工具的说明与多架构文件可放在一个包内。实例的位置、准确标识、撤除方法和验证结果写入对应资源说明，多个实例可分节或拆成引用文件。删除资源登记不会执行远端撤除。"
 
 func (s *Server) resourceLifecycleTools() []actool.CoreTool {
 	integer := map[string]any{"type": "integer"}
 	return append([]actool.CoreTool{
-		roTool("resource_references", "查看资源的任务版本引用和部署记录。blocking 表示活动引用或尚未完成撤除；删除时当前任务自己的版本引用不拦截，旧文件仍保留。", objSchema(map[string]any{"resource_id": integer}, "resource_id"), func(ctx context.Context, raw json.RawMessage) (actool.Result, error) {
+		roTool("resource_references", "查看资源的任务版本引用。blocking 表示活动任务仍在引用；删除时当前任务自己的版本引用不拦截，旧文件仍保留。", objSchema(map[string]any{"resource_id": integer}, "resource_id"), func(ctx context.Context, raw json.RawMessage) (actool.Result, error) {
 			var in struct {
 				ID int64 `json:"resource_id"`
 			}
@@ -34,7 +34,7 @@ func (s *Server) resourceLifecycleTools() []actool.CoreTool {
 			}
 			return jsonResult(map[string]any{"resource_id": in.ID, "references": refs})
 		}),
-		wrTool("delete_resource", "删除整个自有资源登记：从可用列表移除、阻止新领取，保留历史版本和证据。不会撤除远端进程或文件。其他活动任务引用或未验证撤除的部署会返回 resource_in_use。必须携带 expected_revision、reason、request_id；回执丢失时用相同参数和 request_id 重试。", objSchema(map[string]any{"resource_id": integer, "expected_revision": integer, "reason": strParam("删除原因，不含凭据"), "request_id": strParam("本次操作稳定唯一标识，重试沿用")}, "resource_id", "expected_revision", "reason", "request_id"), func(ctx context.Context, raw json.RawMessage) (actool.Result, error) {
+		wrTool("delete_resource", "删除整个自有资源登记：从可用列表移除、阻止新领取，保留历史版本和证据。不会撤除远端进程或文件。其他活动任务引用会返回 resource_in_use。必须携带 expected_revision、reason、request_id；回执丢失时用相同参数和 request_id 重试。", objSchema(map[string]any{"resource_id": integer, "expected_revision": integer, "reason": strParam("删除原因，不含凭据"), "request_id": strParam("本次操作稳定唯一标识，重试沿用")}, "resource_id", "expected_revision", "reason", "request_id"), func(ctx context.Context, raw json.RawMessage) (actool.Result, error) {
 			var in resourcelib.DeleteRequest
 			if json.Unmarshal(raw, &in) != nil {
 				return actool.Fail("invalid_input", "删除参数不是有效 JSON。", "提供 resource_id、expected_revision、reason、request_id。"), nil
@@ -50,7 +50,7 @@ func (s *Server) resourceLifecycleTools() []actool.CoreTool {
 			return jsonResult(out)
 		}),
 		wrTool("manage_resources_batch", "批量创建、更新或删除独立资源，最多25项；各项独立提交，失败项不回滚成功项。每项提供唯一 request_id；重试只提交未确认的原始项。返回按输入索引排列的结果。"+resourceAtomicGuidance, objSchema(map[string]any{"items": map[string]any{"type": "array", "maxItems": 25, "minItems": 1, "items": map[string]any{"type": "object", "properties": map[string]any{"action": map[string]any{"type": "string", "enum": []string{"create", "update", "delete"}}, "request_id": strParam("稳定操作标识"), "resource": map[string]any{"type": "object", "description": "create/update: 完整资源元数据，更新含 id/revision"}, "resource_id": integer, "expected_revision": integer, "reason": strParam("删除原因")}, "required": []string{"action", "request_id"}}}}, "items"), s.manageResourcesBatch),
-	}, append(s.deploymentTools(), s.recordExportTools()...)...)
+	}, append(s.handoffTools(), s.recordExportTools()...)...)
 }
 
 func (s *Server) manageResourcesBatch(ctx context.Context, raw json.RawMessage) (actool.Result, error) {

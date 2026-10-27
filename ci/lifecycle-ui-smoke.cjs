@@ -23,6 +23,8 @@ async function main() {
     if(process.env.EXPECT_HTTP_ORIGIN==='1')assert.equal(secureContext,false,'fixture must cover an ordinary HTTP origin');
     await page.getByRole('tab',{name:'记录与收尾',exact:true}).click();
     await page.getByRole('heading',{name:'Worker 预算'}).waitFor();
+    // Initial budget loading populates the input; wait before editing it.
+    await page.getByText(/已记录 .*不限/).waitFor();
     await page.getByLabel('累计 Token 上限',{exact:true}).fill('1000000');
     await page.getByRole('button',{name:'保存软预算',exact:true}).click();
     await page.getByText(/已记录 .*1,000,000/).waitFor();
@@ -42,17 +44,9 @@ async function main() {
     await page.getByLabel('追加预算理由').fill('Synthetic pending verification');
     await page.getByRole('button',{name:'确认追加',exact:true}).click();
     await page.getByText(/执行 150\/170/).waitFor();
-    await page.getByRole('button',{name:'登记部署',exact:true}).click();
-    const dialog=page.getByRole('dialog');
-    for(const [label,value] of Object.entries({'名称':'Synthetic fixture','类型':'file','部署位置':'isolated test workspace','准确标识 / 路径':'fixture.txt','撤除与验证方法':'Remove exact synthetic file then verify absence','关联资源 ID（可选）':String(resource.id)}))await dialog.getByLabel(label,{exact:true}).fill(value);
-    await dialog.getByRole('button',{name:'保存登记',exact:true}).click();
-    await page.getByText('待处理部署 · 1',{exact:true}).waitFor();
-    await page.getByRole('button',{name:'更新记录',exact:true}).click();
-    await dialog.getByLabel('部署状态').selectOption('removed');
-    await dialog.getByLabel('实际验证结果 / 保留依据',{exact:true}).fill('Synthetic fixture was never deployed externally; absent in disposable workspace.');
-    await dialog.getByRole('button',{name:'保存登记',exact:true}).click();
-    await page.getByText(/已验证撤除/).waitFor();
-    assert.equal((await api(`/tasks/${taskId}/deployments`))[0].revision,2);
+    assert.equal(await page.getByRole('button',{name:'登记部署',exact:true}).count(),0);
+    const retired=await context.request.get(new URL(`/api/tasks/${taskId}/deployments`,base).href,{headers:{Authorization:'Bearer '+token}});
+    assert.equal(retired.status(),404);
     await page.getByRole('button',{name:'导出完整记录',exact:true}).click();
     await page.getByRole('button',{name:'开始生成',exact:true}).click();
     const downloadButton=page.getByRole('link',{name:'下载 ZIP',exact:true});await downloadButton.waitFor({timeout:60000});
@@ -67,7 +61,7 @@ async function main() {
     await page.getByRole('heading',{name:resourceName,exact:true}).waitFor({state:'detached'});
     assert.equal((await api('/resources?q='+encodeURIComponent(resourceName))).some(r=>r.id===resource.id),false);
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({lifecycle:{task_budget_cas:true,budget_grant:true,deployment_create_update:true,record_export_download:true,resource_delete:true,browser_errors:0,secure_context:secureContext}}));
+    console.log(JSON.stringify({lifecycle:{task_budget_cas:true,budget_grant:true,deployment_feature_removed:true,record_export_download:true,resource_delete:true,browser_errors:0,secure_context:secureContext}}));
   } catch(e) {console.error(JSON.stringify({browser_errors:errors}));console.error((await page.locator('body').innerText()).slice(0,5000));throw e;}
   finally {await browser.close();}
 }

@@ -48,7 +48,7 @@ export function ResourceLifecycle({ resource, onDeleted }: { resource: Resource;
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="font-medium">任务与部署引用</h3>
+        <h3 className="font-medium">任务引用</h3>
         <Button variant="outline" size="sm" disabled={busy} onClick={() => load().catch((e) => setError(String(e)))}>
           刷新引用
         </Button>
@@ -64,13 +64,12 @@ export function ResourceLifecycle({ resource, onDeleted }: { resource: Resource;
         <p className="text-muted-foreground text-sm">没有已登记的引用。</p>
       ) : (
         <div className="space-y-2">
-          {refs.map((r, i) => (
-            <div key={`${r.task_id}:${r.deployment_id ?? r.version_id}:${i}`} className="rounded border p-3 text-sm">
+          {refs.map((r) => (
+            <div key={r.task_id} className="rounded border p-3 text-sm">
               <a className="underline" href={`/function/tasks/detail?id=${r.task_id}&tab=handoff`}>
                 任务 #{r.task_id}
               </a>{" "}
-              · {r.deployment_id ? `部署 #${r.deployment_id}` : `版本 #${r.version_id}`} · {r.state} ·{" "}
-              {r.blocking ? "需处理后删除" : "历史记录保留"}
+              · {`版本 #${r.version_id}`} · {r.state} · {r.blocking ? "需处理后删除" : "历史记录保留"}
             </div>
           ))}
         </div>
@@ -78,7 +77,7 @@ export function ResourceLifecycle({ resource, onDeleted }: { resource: Resource;
       <div className="space-y-3 rounded-lg border p-4">
         <h3 className="font-medium">删除资源登记</h3>
         <p className="text-muted-foreground text-sm">
-          将从可用列表移除并阻止新领取，历史版本和证据保留。远端进程和文件需单独撤除并验证；有活动引用或未完成的部署时会拒绝删除。
+          将从可用列表移除并阻止新领取，历史版本和证据保留。远端进程和文件需单独撤除并验证；有活动任务引用时会拒绝删除。
         </p>
         <Input
           aria-label="资源删除原因"

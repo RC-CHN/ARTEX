@@ -38,6 +38,16 @@ func TestResourceDeleteReceiptsReferencesAndHistory(t *testing.T) {
 	if _, err = s.DB.Exec(`UPDATE tasks SET status='done' WHERE id=$1`, other); err != nil {
 		t.Fatal(err)
 	}
+	// Retired deployment rows remain exportable but never create live references.
+	for _, state := range []string{"active", "retained", "unknown", "failed", "removed"} {
+		if _, err = s.DB.Exec(`INSERT INTO task_deployments(task_id,resource_id,name,kind,location,identifier,cleanup,state,actor) VALUES($1,$2,'legacy fixture','file','local','fixture.txt','verify absence',$3,'{}')`, other, r.ID, state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refs, err := s.References(t.Context(), r.ID)
+	if err != nil || len(refs) != 2 {
+		t.Fatalf("legacy rows leaked into task references: %+v %v", refs, err)
+	}
 	out, err := s.Delete(t.Context(), in, a)
 	if err != nil {
 		t.Fatal(err)

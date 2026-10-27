@@ -1,11 +1,15 @@
 package server
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/RC-CHN/ARTEX/agent"
@@ -52,28 +56,16 @@ func TestLifecycleToolDogfood(t *testing.T) {
 	id := r["id"]
 	call("manage_resource", map[string]any{"action": "create", "request_id": "register-synthetic", "resource": map[string]any{"name": "synthetic local fixture", "kind": "tool"}}, false)
 	call("manage_resource", map[string]any{"action": "create", "request_id": "register-synthetic", "resource": map[string]any{"name": "changed input", "kind": "tool"}}, true)
-	entry := map[string]any{"request_id": "register-file", "name": "synthetic fixture file", "kind": "file", "location": "local synthetic directory", "identifier": "fixture.txt", "cleanup": "Remove this synthetic file after checking its exact path, then verify absence.", "resource_id": id}
-	d := call("manage_deployments", map[string]any{"action": "save", "item": entry}, false)
-	call("manage_deployments", map[string]any{"action": "list"}, false)
-	call("manage_deployments", map[string]any{"action": "get", "id": 9223372036854775807}, true)
-	call("manage_deployments", map[string]any{"action": "get", "id": d["id"]}, false)
-	call("resource_references", map[string]any{"resource_id": id}, false)
-	check := call("check_task_handoff", map[string]any{}, false)
-	if check["references"] == nil || check["task_budget"] == nil {
-		t.Fatal("handoff lacks navigation/budget", check)
+	// The only lifecycle ledger is the resource document. Exercise the actual
+	// Agent interfaces for writing, publishing and reading its cleanup record.
+	if _, exists := tools["manage_deployments"]; exists {
+		t.Fatal("retired deployment tool remains exposed")
 	}
-	if len(check["checks"].([]any)) == 0 {
-		t.Fatal("cleanup gap missing")
+	root := filepath.Join(s.m.dir, "tasks", task.ID)
+	if err = os.MkdirAll(root, 0755); err != nil {
+		t.Fatal(err)
 	}
-	deletion := map[string]any{"resource_id": id, "expected_revision": r["revision"], "request_id": "delete-synthetic", "reason": "synthetic cleanup complete"}
-	blocked := call("delete_resource", deletion, true)
-	if blocked["code"] != "resource_in_use" {
-		t.Fatal(blocked)
-	}
-	update := map[string]any{"id": d["id"], "expected_revision": d["revision"], "request_id": "cleanup-result", "state": "removed"}
-	call("manage_deployments", map[string]any{"action": "save", "item": update}, true)
-	// Actually exercise a harmless local cleanup before recording success.
-	file := filepath.Join(t.TempDir(), "fixture.txt")
+	file := filepath.Join(root, "fixture.txt")
 	if err = os.WriteFile(file, []byte("synthetic"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -83,26 +75,43 @@ func TestLifecycleToolDogfood(t *testing.T) {
 	if _, err = os.Stat(file); !os.IsNotExist(err) {
 		t.Fatal("synthetic file remains")
 	}
-	update["verification"] = "Created and removed the exact synthetic fixture.txt; stat confirmed absence."
-	d2 := call("manage_deployments", map[string]any{"action": "save", "item": update}, false)
-	call("manage_deployments", map[string]any{"action": "save", "item": update}, false)
-	stale := map[string]any{"id": d["id"], "expected_revision": d["revision"], "request_id": "stale-change", "note": "late writer"}
-	conflict := call("manage_deployments", map[string]any{"action": "save", "item": stale}, true)
-	if conflict["current_revision"] != d2["revision"] {
-		t.Fatal(conflict)
+	document := "---\nname: synthetic local fixture\ndescription: Fixture with cleanup history\n---\n\n## Instance\nLocation: isolated test directory; identifier: fixture.txt.\nCleanup: remove the exact file, then verify absence.\nVerification: removed fixture.txt; stat confirmed absence.\n"
+	if err = os.WriteFile(filepath.Join(root, "RESOURCE.md"), []byte(document), 0600); err != nil {
+		t.Fatal(err)
 	}
+	draft := call("resource_draft", map[string]any{"action": "create", "resource_id": id}, false)
+	draft = call("resource_draft", map[string]any{"action": "import_file", "draft_id": draft["id"], "revision": draft["revision"], "source_path": "RESOURCE.md", "path": "RESOURCE.md", "sha256": fmt.Sprintf("%x", sha256.Sum256([]byte(document)))}, false)
+	version := call("publish_resource", map[string]any{"draft_id": draft["id"], "revision": draft["revision"], "note": "Record verified cleanup", "validation": "Created and removed the local synthetic fixture; stat confirmed absence."}, false)
+	used := call("use_resource", map[string]any{"resource_id": id, "version_id": version["id"]}, false)
+	if !strings.Contains(used["document"].(string), "stat confirmed absence") {
+		t.Fatal("resource lost cleanup record", used)
+	}
+	refs := call("resource_references", map[string]any{"resource_id": id}, false)
+	if len(refs["references"].([]any)) != 1 {
+		t.Fatal("task reference missing", refs)
+	}
+	check := call("check_task_handoff", map[string]any{}, false)
+	if check["references"] == nil || check["task_budget"] == nil {
+		t.Fatal("handoff lacks navigation/budget", check)
+	}
+	if len(check["checks"].([]any)) != 0 {
+		t.Fatal("unexpected handoff gap", check)
+	}
+	deletion := map[string]any{"resource_id": id, "expected_revision": r["revision"], "request_id": "delete-stale", "reason": "synthetic cleanup complete"}
+	stale := call("delete_resource", deletion, true)
+	if stale["code"] != "resource_conflict" {
+		t.Fatal("stale delete lacks actionable conflict", stale)
+	}
+	current := call("resource_versions", map[string]any{"resource_id": id}, false)
+	deletion["expected_revision"] = current["resource"].(map[string]any)["revision"]
+	deletion["request_id"] = "delete-synthetic"
 	deleted := call("delete_resource", deletion, false)
-	if deleted["remote_cleanup_performed"] != false {
-		t.Fatal("deletion claimed remote cleanup")
+	if deleted["remote_cleanup_performed"] != false || deleted["history_retained"] != true {
+		t.Fatal("misleading deletion receipt", deleted)
 	}
 	call("delete_resource", deletion, false)
-	call("manage_deployments", map[string]any{"action": "save", "item": map[string]any{"id": d["id"], "expected_revision": d2["revision"], "request_id": "annotate-after-delete", "note": "Historical resource deleted; verified removal remains recorded."}}, false)
 	call("check_task_handoff", map[string]any{}, false)
 	batch := call("manage_resources_batch", map[string]any{"items": []any{map[string]any{"action": "create", "request_id": "batch-new", "resource": map[string]any{"name": "batch fixture", "kind": "file"}}, map[string]any{"action": "create", "resource": map[string]any{"name": "invalid item", "kind": "file"}}}}, false)
-	if batch["succeeded"] != float64(1) || batch["failed"] != float64(1) {
-		t.Fatal(batch)
-	}
-	batch = call("manage_deployments", map[string]any{"action": "save", "items": []any{map[string]any{"id": d["id"], "expected_revision": d2["revision"].(float64) + 1, "request_id": "batch-annotation", "note": "Synthetic batch verified"}, map[string]any{"request_id": "invalid-deployment"}}}, false)
 	if batch["succeeded"] != float64(1) || batch["failed"] != float64(1) {
 		t.Fatal(batch)
 	}
@@ -122,4 +131,16 @@ func TestLifecycleToolDogfood(t *testing.T) {
 		}
 	}
 	t.Log(fmt.Sprintf("manually reviewable synthetic tool workflow: %d calls", len(transcript)))
+}
+
+func TestRetiredDeploymentHTTPRoutes(t *testing.T) {
+	mux := http.NewServeMux()
+	(&Server{}).registerLibraryRoutes(mux)
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(method, "/api/tasks/1/deployments", strings.NewReader("{}")))
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("retired %s route still reachable: %d", method, w.Code)
+		}
+	}
 }

@@ -1532,7 +1532,8 @@ CREATE TABLE IF NOT EXISTS operation_receipts (
  created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(scope,request_id)
 );
 
--- Deployment instances belong to a task, independently of the reusable library.
+-- Legacy deployment records are retained solely for archive/export compatibility.
+-- The registration API, tools and lifecycle checks have been removed.
 CREATE TABLE IF NOT EXISTS task_deployments (
  id BIGSERIAL PRIMARY KEY, task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
  resource_id BIGINT REFERENCES owned_resources(id),

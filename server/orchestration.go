@@ -492,6 +492,9 @@ func (s *Server) seedOrchestrationTools() {
 		schema, _ := json.Marshal(t.InputSchema())
 		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, json.RawMessage(`["worker","planner","mainagent","auto","pentest"]`))
 	}
+	if err := s.retireDeploymentCatalog(); err != nil {
+		log.Printf("[tools] retire deployment catalog failed")
+	}
 	// Add the new optional idempotency field while preserving edited tool
 	// descriptions, schemas, bindings and enabled flags.
 	if _, err := s.m.pg.Exec(`UPDATE tools SET schema=jsonb_set(schema,'{properties}',COALESCE(schema->'properties','{}'::jsonb)||'{"request_id":{"type":"string","description":"稳定操作标识；回执丢失用相同参数和原值重试"}}'::jsonb),updated_at=now() WHERE key='manage_resource' AND system AND NOT COALESCE(schema->'properties','{}'::jsonb) ? 'request_id'`); err != nil {
