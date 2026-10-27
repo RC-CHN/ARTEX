@@ -63,7 +63,7 @@ type StreamEvent struct {
 	ToolID      string             // tool_use_start
 	ToolName    string             // tool_use_start
 	StopReason  string             // message_delta / stream_diagnostics
-	Usage       Usage              // message_start / message_delta / stream_diagnostics (never duplicated)
+	Usage       Usage              // additive accounting; may correct an earlier estimate with a signed delta
 	Diagnostics *StreamDiagnostics // stream_diagnostics; nil for other events
 }
 

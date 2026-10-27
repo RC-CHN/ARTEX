@@ -415,7 +415,7 @@ func TestAnthropicDuplicateMessageStartCountsFirstHeaderOnly(t *testing.T) {
 	}{
 		{name: "identical_usage", first: anthropicStart, second: anthropicStart, input: 14, cacheRead: 2, cacheWrite: 1},
 		{name: "different_usage", first: anthropicStart, second: `{"type":"message_start","message":{"usage":{"input_tokens":305,"output_tokens":90,"cache_read_input_tokens":30,"cache_creation_input_tokens":7}}}`, input: 14, cacheRead: 2, cacheWrite: 1},
-		{name: "first_usage_absent", first: `{"type":"message_start","message":{}}`, second: anthropicStart},
+		{name: "first_usage_absent", first: `{"type":"message_start","message":{}}`, second: anthropicStart, input: 14, cacheRead: 2, cacheWrite: 1},
 		{name: "later_usage_absent", first: anthropicStart, second: `{"type":"message_start","message":{}}`, input: 14, cacheRead: 2, cacheWrite: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -547,9 +547,9 @@ func TestAnthropicZeroTokenThinkingStopRecoversToToolWithDefaultRetryBudget(t *t
 					body += anthropicFrame(`{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"synthetic-fixture.txt\"}"}}`)
 					body += anthropicFrame(`{"type":"content_block_stop","index":1}`)
 					// The gateway's later input/cache values differ from message_start.
-					// This test records the existing input-start/output-delta policy;
-					// it does not assert which gateway input values reflect billing.
-					body += anthropicFrame(`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":51255,"output_tokens":197,"cache_read_input_tokens":51200,"cache_creation_input_tokens":0}}`)
+					// Explicit OpenAI billing semantics keep the cached subset inside
+					// the final input total while replacing the initial estimate.
+					body += anthropicFrame(`{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":51255,"output_tokens":197,"cache_read_input_tokens":51200,"cache_creation_input_tokens":0,"billing_usage":{"semantic":"openai","openai_usage":{"prompt_tokens":51255,"completion_tokens":197,"prompt_tokens_details":{"cached_tokens":51200}}}}}`)
 				} else {
 					body += anthropicFrame(`{"type":"content_block_stop","index":0}`)
 					body += anthropicFrame(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":34759,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}`)
@@ -590,7 +590,11 @@ func TestAnthropicZeroTokenThinkingStopRecoversToToolWithDefaultRetryBudget(t *t
 					t.Fatal("thinking-only attempts exposed a successful/tool boundary")
 				}
 			}
-			if calls.Load() != wantCalls || acc.Usage.InputTokens != 34759*int(wantCalls) || acc.Usage.OutputTokens != wantOutput || acc.Usage.CacheReadTokens != 0 || acc.Usage.CacheWriteTokens != 0 {
+			wantInput, wantCache := 34759*int(wantCalls), 0
+			if recoverWithTool {
+				wantInput, wantCache = 34759+51255, 51200
+			}
+			if calls.Load() != wantCalls || acc.Usage.InputTokens != wantInput || acc.Usage.OutputTokens != wantOutput || acc.Usage.CacheReadTokens != wantCache || acc.Usage.CacheWriteTokens != 0 {
 				t.Fatalf("calls=%d usage=%+v", calls.Load(), acc.Usage)
 			}
 			mu.Lock()

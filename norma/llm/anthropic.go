@@ -137,6 +137,8 @@ func (p *anthropicProvider) Stream(ctx context.Context, req CompletionRequest) i
 			var upstreamCause error
 			committed, meaningful, observed, consumerStopped := false, false, false, false
 			messageStartSeen := false
+			var meter anthropicMeter
+			var initialUsage Usage
 			pendingTool := false
 			var toolInput strings.Builder
 			validToolInput := func() bool {
@@ -157,7 +159,7 @@ func (p *anthropicProvider) Stream(ctx context.Context, req CompletionRequest) i
 				if strings.TrimSpace(data) == "" {
 					continue
 				}
-				ev, ok, perr, kind := parseAnthropicFrameKind(data)
+				ev, ok, perr, kind, rawUsage := parseAnthropicFrameKind(data)
 				if perr != nil {
 					diagnostics.StreamEnd = StreamEndProtocolError
 					var malformed *IncompleteResponseError
@@ -181,13 +183,17 @@ func (p *anthropicProvider) Stream(ctx context.Context, req CompletionRequest) i
 				}
 				if ev.Type == SEMessageStart {
 					// A compatible gateway may repeat the start header in one HTTP
-					// response. Only its first header defines this attempt's input
-					// usage/boundary, even when usage was absent or later differs.
+					// response. Only its first header defines this attempt's initial
+					// usage/boundary; message_delta may later correct that estimate.
 					// Ignore duplicates before they can finalize a pending tool.
 					if messageStartSeen {
 						continue
 					}
 					messageStartSeen = true
+					meter.update(rawUsage)
+					meter.output = 0 // The start count is a placeholder.
+					initialUsage = meter.usage()
+					ev.Usage = initialUsage
 				}
 				if ev.Type == SEMessageDelta {
 					// This event is a tool boundary in the harness. Buffer it until
@@ -198,11 +204,13 @@ func (p *anthropicProvider) Stream(ctx context.Context, req CompletionRequest) i
 					}
 					copy := ev
 					copy.StopReason = stopReason
-					// Output usage is cumulative within this response. A later
-					// metadata-only delta must not erase or double its earlier count.
-					if terminalDelta != nil {
-						copy.Usage.OutputTokens = max(copy.Usage.OutputTokens, terminalDelta.Usage.OutputTokens)
-					}
+					// Correct the initial estimate once per HTTP attempt. A negative
+					// difference is intentional when the final input count is lower.
+					meter.update(rawUsage)
+					copy.Usage = meter.usage()
+					copy.Usage.InputTokens -= initialUsage.InputTokens
+					copy.Usage.CacheReadTokens -= initialUsage.CacheReadTokens
+					copy.Usage.CacheWriteTokens -= initialUsage.CacheWriteTokens
 					terminalDelta = &copy
 					continue
 				}
@@ -273,8 +281,7 @@ func (p *anthropicProvider) Stream(ctx context.Context, req CompletionRequest) i
 			retryable := incomplete == IncompleteEmptyOutput || incomplete == IncompleteMissingTerminal || incomplete == IncompleteStreamRead
 			retryIncomplete := retryable && !committed && isEmptyResponseRetryable(stopReason) && attempt < p.cfg.emptyRetries() && ctx.Err() == nil
 			diagnostics.DiscardThinking = retryIncomplete
-			// On success, normal input/output events retain their historical usage
-			// split. A failed attempt reports only its buffered output via metadata,
+			// A failed attempt reports its buffered metering corrections via metadata,
 			// which cannot dispatch the still-pending tool.
 			var pendingUsage Usage
 			if terminalDelta != nil {
@@ -432,11 +439,11 @@ func parseAnthropicResponse(raw []byte) (Message, string, Usage, error) {
 }
 
 func parseAnthropicFrame(data string) (StreamEvent, bool, error) {
-	ev, ok, err, _ := parseAnthropicFrameKind(data)
+	ev, ok, err, _, _ := parseAnthropicFrameKind(data)
 	return ev, ok, err
 }
 
-func parseAnthropicFrameKind(data string) (ev StreamEvent, ok bool, err error, kind string) {
+func parseAnthropicFrameKind(data string) (ev StreamEvent, ok bool, err error, kind string, usage *anthropicUsage) {
 	var f struct {
 		Type         string `json:"type"`
 		ContentBlock struct {
@@ -464,23 +471,20 @@ func parseAnthropicFrameKind(data string) (ev StreamEvent, ok bool, err error, k
 		} `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(data), &f); err != nil {
-		return StreamEvent{}, false, &IncompleteResponseError{Reason: IncompleteMalformedFrame}, ""
+		return StreamEvent{}, false, &IncompleteResponseError{Reason: IncompleteMalformedFrame}, "", nil
 	}
 	switch f.Type {
 	case "message_start":
 		if f.Message.Usage != nil {
-			// Anthropic reports the full input side (input + cache read/creation) in
-			// BOTH message_start and message_delta. To avoid double-counting when the
-			// accumulator folds both events, message_start carries ONLY the input side
-			// and message_delta carries ONLY output. The initial output_tokens here is
-			// a placeholder (≈1), so drop it — the real output comes from message_delta.
+			// Emit the initial input estimate immediately. Stream reconciles any
+			// later cumulative usage; the initial output count is a placeholder.
 			u := f.Message.Usage.norm()
 			u.OutputTokens = 0
-			return StreamEvent{Type: SEMessageStart, Usage: u}, true, nil, f.Type
+			return StreamEvent{Type: SEMessageStart, Usage: u}, true, nil, f.Type, f.Message.Usage
 		}
 		// The attempt boundary is meaningful even when a compatible gateway
 		// omits usage; it clears stale stop evidence without inventing tokens.
-		return StreamEvent{Type: SEMessageStart}, true, nil, f.Type
+		return StreamEvent{Type: SEMessageStart}, true, nil, f.Type, nil
 	case "content_block_start":
 		if f.ContentBlock.Type == "tool_use" {
 			initial := strings.TrimSpace(string(f.ContentBlock.Input))
@@ -490,64 +494,41 @@ func parseAnthropicFrameKind(data string) (ev StreamEvent, ok bool, err error, k
 			}
 			// Text is internal to this parser until Stream emits the start and
 			// its initial input as separate normalized events.
-			return StreamEvent{Type: SEToolUseStart, ToolID: f.ContentBlock.ID, ToolName: f.ContentBlock.Name, Text: initial}, true, nil, f.Type
+			return StreamEvent{Type: SEToolUseStart, ToolID: f.ContentBlock.ID, ToolName: f.ContentBlock.Name, Text: initial}, true, nil, f.Type, nil
 		}
 		if f.ContentBlock.Type == "text" && f.ContentBlock.Text != "" {
-			return StreamEvent{Type: SETextDelta, Text: f.ContentBlock.Text}, true, nil, f.Type
+			return StreamEvent{Type: SETextDelta, Text: f.ContentBlock.Text}, true, nil, f.Type, nil
 		}
 		if f.ContentBlock.Type == "thinking" && f.ContentBlock.Thinking != "" {
-			return StreamEvent{Type: SEThinkingDelta, Text: f.ContentBlock.Thinking}, true, nil, f.Type
+			return StreamEvent{Type: SEThinkingDelta, Text: f.ContentBlock.Thinking}, true, nil, f.Type, nil
 		}
 	case "content_block_delta":
 		switch f.Delta.Type {
 		case "text_delta":
-			return StreamEvent{Type: SETextDelta, Text: f.Delta.Text}, true, nil, f.Type
+			return StreamEvent{Type: SETextDelta, Text: f.Delta.Text}, true, nil, f.Type, nil
 		case "thinking_delta":
-			return StreamEvent{Type: SEThinkingDelta, Text: f.Delta.Thinking}, true, nil, f.Type
+			return StreamEvent{Type: SEThinkingDelta, Text: f.Delta.Thinking}, true, nil, f.Type, nil
 		case "signature_delta":
-			return StreamEvent{Type: SEThinkingSignature, Text: f.Delta.Signature}, true, nil, f.Type
+			return StreamEvent{Type: SEThinkingSignature, Text: f.Delta.Signature}, true, nil, f.Type, nil
 		case "input_json_delta":
-			return StreamEvent{Type: SEToolInputJSON, Text: f.Delta.PartialJSON}, true, nil, f.Type
+			return StreamEvent{Type: SEToolInputJSON, Text: f.Delta.PartialJSON}, true, nil, f.Type, nil
 		}
 	case "message_delta":
 		ev := StreamEvent{Type: SEMessageDelta, StopReason: f.Delta.StopReason}
 		if f.Usage != nil {
-			// Only output here — the input side (input/cache) was already counted at
-			// message_start; message_delta re-echoes it, so counting it again would
-			// double the input/cache totals.
-			ev.Usage = Usage{OutputTokens: f.Usage.OutputTokens}
+			ev.Usage = f.Usage.norm()
 		}
-		return ev, true, nil, f.Type
+		return ev, true, nil, f.Type, f.Usage
 	case "message_stop":
-		return StreamEvent{Type: SEMessageStop}, true, nil, f.Type
+		return StreamEvent{Type: SEMessageStop}, true, nil, f.Type, nil
 	case "error":
 		msg := "stream error"
 		if f.Error != nil {
 			msg = f.Error.Message
 		}
-		return StreamEvent{}, false, fmt.Errorf("anthropic: %s", msg), f.Type
+		return StreamEvent{}, false, fmt.Errorf("anthropic: %s", msg), f.Type, nil
 	}
-	return StreamEvent{}, false, nil, f.Type
-}
-
-type anthropicUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-}
-
-// norm maps Anthropic usage to the canonical Usage. InputTokens is the TOTAL input
-// INCLUDING cached tokens (OpenAI-style: prompt_tokens semantics) — Anthropic's raw
-// input_tokens counts only the non-cached portion, so cache read+creation are folded
-// in. CacheReadTokens/CacheWriteTokens are the cached SUBSET (⊆ InputTokens).
-func (u anthropicUsage) norm() Usage {
-	return Usage{
-		InputTokens:      u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens,
-		OutputTokens:     u.OutputTokens,
-		CacheReadTokens:  u.CacheReadInputTokens,
-		CacheWriteTokens: u.CacheCreationInputTokens,
-	}
+	return StreamEvent{}, false, nil, f.Type, nil
 }
 
 // filterThinkingBlocks normalizes message history before it is sent to the
